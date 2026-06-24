@@ -1,14 +1,9 @@
 import type { MemoryEntry, Profile, Trip } from "@/types";
 import { getCurrentUser } from "./auth";
 import { supabase } from "./client";
+import { getTripMembers } from "./members";
 import { getProfile } from "./profiles";
 import { getTripsForCurrentUser } from "./trips";
-
-type MemberRow = {
-  trip_id: string;
-  user_id: string;
-  profiles: { id: string; display_name: string; avatar_url: string | null } | null;
-};
 
 type MemoryRow = {
   id: string;
@@ -40,12 +35,7 @@ export async function getPeopleOverview() {
     return { me, trips, companions: [] as Companion[] };
   }
 
-  const { data: members, error: memberError } = await supabase
-    .from("trip_members")
-    .select("trip_id, user_id, profiles(id, display_name, avatar_url)")
-    .in("trip_id", tripIds);
-
-  if (memberError) throw memberError;
+  const members = (await Promise.all(tripIds.map(getTripMembers))).flat();
 
   const { data: memories } = await supabase
     .from("memory_entries")
@@ -55,20 +45,20 @@ export async function getPeopleOverview() {
   const tripsById = new Map(trips.map((trip) => [trip.id, trip]));
   const byUser = new Map<string, { profile: Profile; tripIds: Set<string> }>();
 
-  ((members ?? []) as unknown as MemberRow[])
-    .filter((member) => member.user_id !== user.id)
+  members
+    .filter((member) => member.userId !== user.id)
     .forEach((member) => {
-      const existing = byUser.get(member.user_id);
+      const existing = byUser.get(member.userId);
       const profile = {
-        id: member.user_id,
-        displayName: member.profiles?.display_name || "Traveler",
-        avatarUrl: member.profiles?.avatar_url ?? null,
+        id: member.userId,
+        displayName: member.name || "Traveler",
+        avatarUrl: member.avatarUrl,
         createdAt: "",
       };
       if (existing) {
-        existing.tripIds.add(member.trip_id);
+        existing.tripIds.add(member.tripId);
       } else {
-        byUser.set(member.user_id, { profile, tripIds: new Set([member.trip_id]) });
+        byUser.set(member.userId, { profile, tripIds: new Set([member.tripId]) });
       }
     });
 

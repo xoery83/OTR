@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { getErrorMessage } from "@/lib/errors";
 import { acceptJourneyInvite } from "@/lib/supabase/invites";
 import { supabase } from "@/lib/supabase/client";
+import { upsertProfileForUser } from "@/lib/supabase/profiles";
 import type { InviteAcceptStatus } from "@/types";
 
 const statusCopy: Record<InviteAcceptStatus, string> = {
@@ -35,6 +37,7 @@ export default function InviteAcceptPage() {
       }
 
       try {
+        await upsertProfileForUser(data.session.user);
         const result = await acceptJourneyInvite(token);
 
         if (isMounted) {
@@ -50,11 +53,7 @@ export default function InviteAcceptPage() {
         }
       } catch (inviteError) {
         if (isMounted) {
-          setError(
-            inviteError instanceof Error
-              ? inviteError.message
-              : "Could not accept invite.",
-          );
+          setError(getErrorMessage(inviteError, "Could not accept invite."));
         }
       } finally {
         if (isMounted) {

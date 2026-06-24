@@ -19,6 +19,16 @@ type MemberRow = {
     | null;
 };
 
+type MemberRpcRow = {
+  member_id: string;
+  member_trip_id: string;
+  member_user_id: string;
+  member_role: string | null;
+  member_created_at: string;
+  display_name: string | null;
+  avatar_url: string | null;
+};
+
 function mapMember(row: MemberRow): TripMember {
   const profile = Array.isArray(row.profiles) ? row.profiles[0] : row.profiles;
 
@@ -33,7 +43,28 @@ function mapMember(row: MemberRow): TripMember {
   };
 }
 
+function mapRpcMember(row: MemberRpcRow): TripMember {
+  return {
+    id: row.member_id,
+    tripId: row.member_trip_id,
+    userId: row.member_user_id,
+    name: row.display_name || "Traveler",
+    role: row.member_role ?? "member",
+    avatarUrl: row.avatar_url,
+    createdAt: row.member_created_at,
+  };
+}
+
 export async function getTripMembers(tripId: string) {
+  const { data: rpcData, error: rpcError } = await supabase.rpc(
+    "get_trip_members_for_current_user",
+    { target_trip_id: tripId },
+  );
+
+  if (!rpcError) {
+    return ((rpcData ?? []) as MemberRpcRow[]).map(mapRpcMember);
+  }
+
   const { data, error } = await supabase
     .from("trip_members")
     .select("id, trip_id, user_id, role, created_at, profiles(display_name, avatar_url)")

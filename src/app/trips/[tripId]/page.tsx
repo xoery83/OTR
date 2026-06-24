@@ -8,6 +8,7 @@ import { MemoryCard } from "@/components/MemoryCard";
 import { formatDateRange } from "@/lib/format";
 import { getJourneyDayNumber, getJourneyStatus, getDaysUntilJourney } from "@/lib/journeys/status";
 import { getMemoryStats, getTodayMemoryStats } from "@/lib/journeys/stats";
+import { getCurrentUser } from "@/lib/supabase/auth";
 import { getItineraryEvents } from "@/lib/supabase/itinerary";
 import { getTripMembers } from "@/lib/supabase/members";
 import {
@@ -26,6 +27,7 @@ function TripDashboardContent() {
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [events, setEvents] = useState<ItineraryEvent[]>([]);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
@@ -36,10 +38,11 @@ function TripDashboardContent() {
 
     async function loadDashboard() {
       try {
-        const [tripData, memberData, memoryData] = await Promise.all([
+        const [tripData, memberData, memoryData, user] = await Promise.all([
           getTrip(tripId),
           getTripMembers(tripId),
           getTripMemories(tripId),
+          getCurrentUser(),
         ]);
         const eventData = await getItineraryEvents(tripId);
         const signedUrls = await getSignedMemoryImageUrls(memoryData);
@@ -50,6 +53,7 @@ function TripDashboardContent() {
           setMemories(memoryData);
           setEvents(eventData);
           setImageUrls(signedUrls);
+          setCurrentUserId(user?.id ?? null);
         }
       } catch (dashboardError) {
         if (isMounted) {
@@ -99,9 +103,19 @@ function TripDashboardContent() {
   const dayNumber = getJourneyDayNumber(trip);
   const totalStats = getMemoryStats(memories);
   const todayStats = getTodayMemoryStats(memories);
+  const currentMember = members.find((member) => member.userId === currentUserId);
+  const canManageJourney =
+    currentMember?.role === "owner" ||
+    currentMember?.role === "admin" ||
+    trip.createdBy === currentUserId;
 
   async function handleDeleteJourney() {
     if (!trip) {
+      return;
+    }
+
+    if (!canManageJourney) {
+      setError("Only journey owners and admins can delete this journey.");
       return;
     }
 
@@ -281,34 +295,36 @@ function TripDashboardContent() {
         )}
       </section>
 
-      <section className="rounded-3xl border border-red-200 bg-red-50 p-5 shadow-sm">
-        <h2 className="text-xl font-semibold text-red-900">Danger Zone</h2>
-        <p className="mt-2 text-sm leading-6 text-red-800">
-          Delete this journey and all related memories, media records, members,
-          and planner items. Storage files may remain in the bucket and can be
-          cleaned separately.
-        </p>
-        <label
-          htmlFor="delete-journey-confirm"
-          className="mt-4 block text-sm font-bold text-red-900"
-        >
-          Type “{trip.name}” to confirm
-        </label>
-        <input
-          id="delete-journey-confirm"
-          value={deleteConfirmation}
-          onChange={(event) => setDeleteConfirmation(event.target.value)}
-          className="mt-3 w-full rounded-2xl border border-red-200 bg-white px-4 py-3 text-stone-950 outline-none focus:border-red-500 focus:ring-4 focus:ring-red-100"
-        />
-        <button
-          type="button"
-          onClick={handleDeleteJourney}
-          disabled={isDeleting || deleteConfirmation !== trip.name}
-          className="mt-4 w-full rounded-2xl bg-red-700 px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-red-200 disabled:text-red-500"
-        >
-          {isDeleting ? "Deleting journey..." : "Delete Journey"}
-        </button>
-      </section>
+      {canManageJourney ? (
+        <section className="rounded-3xl border border-red-200 bg-red-50 p-5 shadow-sm">
+          <h2 className="text-xl font-semibold text-red-900">Danger Zone</h2>
+          <p className="mt-2 text-sm leading-6 text-red-800">
+            Delete this journey and all related memories, media records, members,
+            and planner items. Storage files may remain in the bucket and can be
+            cleaned separately.
+          </p>
+          <label
+            htmlFor="delete-journey-confirm"
+            className="mt-4 block text-sm font-bold text-red-900"
+          >
+            Type “{trip.name}” to confirm
+          </label>
+          <input
+            id="delete-journey-confirm"
+            value={deleteConfirmation}
+            onChange={(event) => setDeleteConfirmation(event.target.value)}
+            className="mt-3 w-full rounded-2xl border border-red-200 bg-white px-4 py-3 text-stone-950 outline-none focus:border-red-500 focus:ring-4 focus:ring-red-100"
+          />
+          <button
+            type="button"
+            onClick={handleDeleteJourney}
+            disabled={isDeleting || deleteConfirmation !== trip.name}
+            className="mt-4 w-full rounded-2xl bg-red-700 px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-red-200 disabled:text-red-500"
+          >
+            {isDeleting ? "Deleting journey..." : "Delete Journey"}
+          </button>
+        </section>
+      ) : null}
     </div>
   );
 }

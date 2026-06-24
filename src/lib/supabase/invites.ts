@@ -100,7 +100,7 @@ export async function acceptJourneyInvite(token: string) {
   if (error) throw error;
   const result = Array.isArray(data) ? data[0] : data;
   return {
-    tripId: result?.trip_id as string | null,
-    status: result?.status as InviteAcceptStatus,
+    tripId: (result?.accepted_trip_id ?? result?.trip_id) as string | null,
+    status: (result?.invite_status ?? result?.status) as InviteAcceptStatus,
   };
 }
