@@ -120,3 +120,26 @@ export type CreateItineraryEventInput = {
   bookingReference: string;
   url: string;
 };
+
+export type JourneyInviteRole = "member" | "admin";
+
+export type JourneyInvite = {
+  id: string;
+  tripId: string;
+  token: string;
+  invitedEmail: string | null;
+  role: JourneyInviteRole;
+  createdBy: string | null;
+  expiresAt: string | null;
+  maxUses: number;
+  usedCount: number;
+  isActive: boolean;
+  createdAt: string;
+};
+
+export type InviteAcceptStatus =
+  | "joined"
+  | "already_member"
+  | "expired"
+  | "invalid"
+  | "full";

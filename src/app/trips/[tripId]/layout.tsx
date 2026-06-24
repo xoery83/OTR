@@ -12,7 +12,7 @@ export default async function JourneyLayout({
     ["Overview", `/trips/${tripId}`],
     ["Planner", `/trips/${tripId}/planner`],
     ["Timeline", `/trips/${tripId}/timeline`],
-    ["People", "/people"],
+    ["People", `/trips/${tripId}/people`],
     ["Highlights", `/trips/${tripId}/highlights`],
   ];
 

@@ -1,4 +1,5 @@
 import type { User } from "@supabase/supabase-js";
+import { getAppOrigin } from "@/lib/app-url";
 import { supabase } from "./client";
 
 export async function getCurrentUser() {
@@ -11,8 +12,9 @@ export async function getCurrentUser() {
   return data.user;
 }
 
-export async function signInWithGoogle() {
-  const redirectTo = `${window.location.origin}/auth/callback`;
+export async function signInWithGoogle(nextPath?: string | null) {
+  const next = nextPath ? `?next=${encodeURIComponent(nextPath)}` : "";
+  const redirectTo = `${getAppOrigin()}/auth/callback${next}`;
 
   const { error } = await supabase.auth.signInWithOAuth({
     provider: "google",
@@ -24,8 +26,9 @@ export async function signInWithGoogle() {
   }
 }
 
-export async function signInWithEmailOtp(email: string) {
-  const redirectTo = `${window.location.origin}/auth/callback`;
+export async function signInWithEmailOtp(email: string, nextPath?: string | null) {
+  const next = nextPath ? `?next=${encodeURIComponent(nextPath)}` : "";
+  const redirectTo = `${getAppOrigin()}/auth/callback${next}`;
 
   const { error } = await supabase.auth.signInWithOtp({
     email,

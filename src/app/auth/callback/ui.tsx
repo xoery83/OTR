@@ -26,6 +26,7 @@ export function AuthCallback() {
         }
 
         const code = searchParams.get("code");
+        const next = searchParams.get("next") || "/trips";
 
         if (code) {
           setStatus("Exchanging login code...");
@@ -67,7 +68,7 @@ export function AuthCallback() {
         setStatus("Setting up profile...");
         await upsertProfileForUser(user);
         if (isMounted) {
-          router.replace("/trips");
+          router.replace(next);
         }
       } catch (callbackError) {
         if (isMounted) {

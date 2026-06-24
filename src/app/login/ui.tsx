@@ -14,19 +14,20 @@ export function LoginForm() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
+    const next = searchParams.get("next") || "/trips";
     supabase.auth.getSession().then(({ data }) => {
       if (data.session?.user) {
-        router.replace("/trips");
+        router.replace(next);
       }
     });
-  }, [router]);
+  }, [router, searchParams]);
 
   async function handleGoogleLogin() {
     setError(null);
     setIsSubmitting(true);
 
     try {
-      await signInWithGoogle();
+      await signInWithGoogle(searchParams.get("next"));
     } catch (loginError) {
       setError(
         loginError instanceof Error
@@ -44,7 +45,7 @@ export function LoginForm() {
     setIsSubmitting(true);
 
     try {
-      await signInWithEmailOtp(email);
+      await signInWithEmailOtp(email, searchParams.get("next"));
       setMessage("Check your email for the magic link.");
     } catch (loginError) {
       setError(
