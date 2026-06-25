@@ -20,6 +20,8 @@ export function SidebarNav() {
     ? [
         { label: "Overview", href: `/trips/${tripId}` },
         { label: "Planner", href: `/trips/${tripId}/planner` },
+        { label: "Capture", href: `/trips/${tripId}/capture` },
+        { label: "Map", href: `/trips/${tripId}/map` },
         { label: "Ledger", href: `/trips/${tripId}/ledger` },
         { label: "Timeline", href: `/trips/${tripId}/timeline` },
         { label: "Highlights", href: `/trips/${tripId}/highlights` },

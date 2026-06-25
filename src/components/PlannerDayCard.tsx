@@ -125,6 +125,7 @@ const eventTypes: ItineraryEventType[] = [
   "hotel",
   "car",
   "activity",
+  "shopping",
   "meal",
   "transport",
   "note",
@@ -166,10 +167,32 @@ function tonightStay(plannerDay: PlannerV2Day) {
   );
 }
 
+function shouldShowInStory(
+  dayDate: string,
+  startValue: string | null | undefined,
+  endValue: string | null | undefined,
+) {
+  if (dayDate === "unscheduled") return true;
+  const startDate = dateOnly(startValue);
+  const endDate = dateOnly(endValue);
+
+  if (startDate && endDate && startDate !== endDate) {
+    return dayDate === startDate || dayDate === endDate;
+  }
+
+  return true;
+}
+
 function storyItems(plannerDay: PlannerV2Day): StoryItem[] {
+  const dayDate = plannerDay.day.dayDate;
+
   return [
     ...plannerDay.reservations
-      .filter((item) => item.reservationType !== "hotel")
+      .filter(
+        (item) =>
+          item.reservationType !== "hotel" &&
+          shouldShowInStory(dayDate, item.startsAt, item.endsAt),
+      )
       .map((item) => ({
         id: `reservation-${item.id}`,
         time: item.startsAt,
@@ -189,25 +212,29 @@ function storyItems(plannerDay: PlannerV2Day): StoryItem[] {
         url: item.url,
         participantNames: item.participants.map((participant) => participant.name),
       })),
-    ...plannerDay.activities.map((item) => ({
-      id: `activity-${item.id}`,
-      time: item.plannedStart,
-      title: item.title,
-      detail: item.description,
-      location: item.locationName,
-      kind: item.eventType,
-      note: item.sourceText || item.description,
-      itineraryEventId: item.id,
-      itineraryReservationId: item.reservationId,
-      itemType: "event" as const,
-      status: item.status,
-      typeValue: item.eventType,
-      startsAt: item.plannedStart,
-      endsAt: item.plannedEnd,
-      secondary: item.bookingReference || "",
-      url: item.url,
-      participantNames: item.participants.map((participant) => participant.name),
-    })),
+    ...plannerDay.activities
+      .filter((item) =>
+        shouldShowInStory(dayDate, item.plannedStart, item.plannedEnd),
+      )
+      .map((item) => ({
+        id: `activity-${item.id}`,
+        time: item.plannedStart,
+        title: item.title,
+        detail: item.description,
+        location: item.locationName,
+        kind: item.eventType,
+        note: item.sourceText || item.description,
+        itineraryEventId: item.id,
+        itineraryReservationId: item.reservationId,
+        itemType: "event" as const,
+        status: item.status,
+        typeValue: item.eventType,
+        startsAt: item.plannedStart,
+        endsAt: item.plannedEnd,
+        secondary: item.bookingReference || "",
+        url: item.url,
+        participantNames: item.participants.map((participant) => participant.name),
+      })),
   ].sort((a, b) => {
     if (!a.time && !b.time) return a.title.localeCompare(b.title);
     if (!a.time) return 1;
@@ -259,14 +286,25 @@ function daysBetweenInclusive(startDate: string, endDate: string) {
   return Math.floor((end - start) / dayMs) + 1;
 }
 
-function allocatedAmountForDay(entry: LedgerEntry, dayDate: string) {
+function dateOnly(value: string | null | undefined) {
+  return value ? value.slice(0, 10) : null;
+}
+
+function allocatedAmountForDay(
+  entry: LedgerEntry,
+  dayDate: string,
+  range?: { startDate: string | null; endDate: string | null },
+) {
+  const startDate = range?.startDate ?? entry.startDate;
+  const endDate = range?.endDate ?? entry.endDate;
+
   if (
-    entry.startDate &&
-    entry.endDate &&
-    entry.startDate <= dayDate &&
-    entry.endDate >= dayDate
+    startDate &&
+    endDate &&
+    startDate <= dayDate &&
+    endDate >= dayDate
   ) {
-    return entry.baseAmount / daysBetweenInclusive(entry.startDate, entry.endDate);
+    return entry.baseAmount / daysBetweenInclusive(startDate, endDate);
   }
 
   return entry.expenseDate === dayDate ? entry.baseAmount : 0;
@@ -413,7 +451,7 @@ function inferEventType(text: string): ItineraryEventType {
   if (/bus|taxi|ferry|transfer|交通|渡轮|巴士|打车/.test(lower)) {
     return "transport";
   }
-  if (/购物|采购|超市|costco|bonus|shop|shopping/.test(lower)) return "activity";
+  if (/购物|采购|超市|costco|bonus|shop|shopping/.test(lower)) return "shopping";
   return "activity";
 }
 
@@ -649,26 +687,60 @@ export function PlannerDayCard({
   const nextStory = nextDay ? storyItems(nextDay).slice(0, 2) : [];
   const aliases = memberAliases(journeyMembers ?? []);
   const ledgerCurrency = ledgerEntries[0]?.baseCurrency ?? "NZD";
+  const reservationsById = new Map(
+    plannerDay.reservations.map((reservation) => [reservation.id, reservation]),
+  );
+  const activitiesById = new Map(
+    plannerDay.activities.map((activity) => [activity.id, activity]),
+  );
+  function linkedLedgerRange(entry: LedgerEntry) {
+    if (entry.itineraryReservationId) {
+      const reservation = reservationsById.get(entry.itineraryReservationId);
+      if (reservation) {
+        const startDate = dateOnly(reservation.startsAt) ?? dateOnly(reservation.endsAt);
+        const endDate = dateOnly(reservation.endsAt) ?? startDate;
+        return { startDate, endDate };
+      }
+    }
+
+    if (entry.itineraryEventId) {
+      const activity = activitiesById.get(entry.itineraryEventId);
+      if (activity) {
+        const startDate = dateOnly(activity.plannedStart) ?? dateOnly(activity.plannedEnd);
+        const endDate = dateOnly(activity.plannedEnd) ?? startDate;
+        return { startDate, endDate };
+      }
+    }
+
+    return {
+      startDate: entry.startDate,
+      endDate: entry.endDate,
+    };
+  }
+
+  function allocatedLedgerAmount(entry: LedgerEntry) {
+    return allocatedAmountForDay(entry, day.dayDate, linkedLedgerRange(entry));
+  }
+
   const ledgerTotal = ledgerEntries.reduce(
-    (total, entry) => total + allocatedAmountForDay(entry, day.dayDate),
+    (total, entry) => total + allocatedLedgerAmount(entry),
     0,
   );
   const sharedTotal = ledgerEntries
     .filter((entry) => entry.accountingMode === "shared")
     .reduce(
-      (total, entry) => total + allocatedAmountForDay(entry, day.dayDate),
+      (total, entry) => total + allocatedLedgerAmount(entry),
       0,
     );
   const statsOnlyTotal = ledgerEntries
     .filter((entry) => entry.accountingMode === "stats_only")
     .reduce(
-      (total, entry) => total + allocatedAmountForDay(entry, day.dayDate),
+      (total, entry) => total + allocatedLedgerAmount(entry),
       0,
     );
   const reviewCount = ledgerEntries.filter(
-    (entry) => entry.status !== "complete",
+    (entry) => entry.status !== "complete" && allocatedLedgerAmount(entry) > 0,
   ).length;
-  const [activeComposerId, setActiveComposerId] = useState<string | null>(null);
   const [memoryTextByItem, setMemoryTextByItem] = useState<Record<string, string>>(
     {},
   );
@@ -807,10 +879,14 @@ export function PlannerDayCard({
     return currentMemberAliases().some((alias) => lower.includes(alias));
   }
 
+  function textMentionsEveryone(text: string | null | undefined) {
+    return Boolean(text && /@所有人|@all|@everyone/i.test(text));
+  }
+
   function memoryTargetsMe(memory: MemoryEntry) {
     const lower = memory.content.toLocaleLowerCase();
     const hasMention = /@/.test(lower);
-    const mentionsAll = /@所有人|@all|@everyone/.test(lower);
+    const mentionsAll = textMentionsEveryone(memory.content);
 
     if (mentionsAll) return true;
     if (textMentionsMe(memory.content)) return true;
@@ -820,6 +896,15 @@ export function PlannerDayCard({
 
   function itemRelatesToMe(item: StoryItem) {
     if (!currentMember) return true;
+    if (
+      textMentionsEveryone(item.title) ||
+      textMentionsEveryone(item.detail) ||
+      textMentionsEveryone(item.note) ||
+      textMentionsEveryone(item.location)
+    ) {
+      return true;
+    }
+
     if (
       textMentionsMe(item.title) ||
       textMentionsMe(item.detail) ||
@@ -1065,7 +1150,6 @@ export function PlannerDayCard({
         [item.id]: [...(current[item.id] ?? []), saved],
       }));
       setMemoryTextByItem((current) => ({ ...current, [item.id]: "" }));
-      setActiveComposerId(null);
 
       const detectedExpense = detectExpense(content, item, ledgerBaseCurrency);
       if (detectedExpense) {
@@ -1209,8 +1293,8 @@ export function PlannerDayCard({
 
       <div className="space-y-5 p-4 sm:p-5">
         {stay && stayItem ? (
-          <section className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
-            <div className="grid grid-cols-[1fr_auto] gap-3">
+          <details className="group rounded-2xl border border-amber-200 bg-amber-50 p-3 open:bg-[#fffaf1]">
+            <summary className="grid cursor-pointer list-none grid-cols-[1fr_auto] gap-3">
               <div className="min-w-0">
                 <p className="text-xs font-bold uppercase tracking-wide text-amber-800">
                   Tonight
@@ -1224,65 +1308,44 @@ export function PlannerDayCard({
                   </p>
                 ) : null}
               </div>
-              <div className="flex items-start gap-2">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setActiveComposerId((current) =>
-                      current === stayItem.id ? null : stayItem.id,
-                    )
-                  }
-                  className="grid size-9 place-items-center rounded-full bg-white text-xs font-bold text-amber-700 shadow-sm"
-                  title="Add memory"
-                >
-                  M
-                </button>
-                {(stayMapsHref || mapsHref(stay.title)) ? (
-                  <a
-                    href={stayMapsHref || mapsHref(stay.title) || "#"}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="grid size-9 place-items-center rounded-full bg-white shadow-sm"
-                    title="Open location"
-                  >
-                    <Image
-                      src="/icons/location.png"
-                      alt=""
-                      width={16}
-                      height={16}
-                      className="object-contain opacity-70"
-                    />
-                  </a>
-                ) : (
-                  <span className="grid size-9 place-items-center rounded-full bg-white opacity-35 shadow-sm">
-                    <Image
-                      src="/icons/location.png"
-                      alt=""
-                      width={16}
-                      height={16}
-                      className="object-contain"
-                    />
-                  </span>
-                )}
+              <span className="pt-1 text-xs font-bold text-amber-800">
+                <span className="group-open:hidden">Open</span>
+                <span className="hidden group-open:inline">Close</span>
+              </span>
+            </summary>
+            <div className="mt-3 rounded-xl bg-white p-3 text-sm leading-6 text-stone-600">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  {stay.locationName ? (
+                    <a
+                      href={stayMapsHref || mapsHref(stay.locationName) || "#"}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-semibold text-emerald-800 underline decoration-emerald-200 underline-offset-4"
+                    >
+                      {stay.locationName}
+                    </a>
+                  ) : (
+                    <span className="text-stone-400">Location TBD</span>
+                  )}
+                </div>
                 {canManagePlans ? (
                   <button
                     type="button"
                     onClick={() => startEditItem(stayItem)}
-                    className="grid size-9 place-items-center rounded-full bg-white shadow-sm"
+                    className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-50 shadow-sm"
                     title="Modify booking"
                   >
                     <Image
                       src="/icons/modify.png"
                       alt=""
-                      width={16}
-                      height={16}
+                      width={14}
+                      height={14}
                       className="object-contain opacity-75"
                     />
                   </button>
                 ) : null}
               </div>
-            </div>
-            {activeComposerId === stayItem.id ? (
               <form
                 onSubmit={(event) => addInlineMemory(event, stayItem)}
                 className="mt-3 rounded-2xl border border-amber-100 bg-white p-2 shadow-sm"
@@ -1339,8 +1402,7 @@ export function PlannerDayCard({
                   </div>
                 ) : null}
               </form>
-            ) : null}
-            {activeComposerId === stayItem.id && memoriesForItem(stayItem).length > 0 ? (
+            {memoriesForItem(stayItem).length > 0 ? (
               <div className="mt-3 space-y-2 border-t border-amber-100 pt-3">
                 {memoriesForItem(stayItem).map((memory) => (
                   <div
@@ -1523,7 +1585,8 @@ export function PlannerDayCard({
                 ) : null}
               </section>
             ) : null}
-          </section>
+            </div>
+          </details>
         ) : null}
 
         <section className="space-y-3">
@@ -1580,7 +1643,7 @@ export function PlannerDayCard({
                         : "bg-stone-50"
                     }`}
                   >
-                    <summary className="grid cursor-pointer list-none grid-cols-[48px_1fr_auto] gap-3">
+                    <summary className="grid cursor-pointer list-none grid-cols-[48px_1fr] gap-3">
                       <span className="absolute -left-[17px] top-5 size-3 rounded-full border-2 border-white bg-emerald-700 shadow-sm" />
                       <span className="text-sm font-bold text-emerald-800">
                         {item.time ? formatTime(item.time) : "Any"}
@@ -1601,66 +1664,28 @@ export function PlannerDayCard({
                           />
                         </span>
                       </span>
-                      <span className="flex items-start gap-1">
-                        {day.dayDate !== "unscheduled" ? (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              const row = event.currentTarget.closest("details");
-                              if (row) row.open = true;
-                              setActiveComposerId((current) =>
-                                current === item.id ? null : item.id,
-                              );
-                            }}
-                            className="grid size-8 place-items-center rounded-full bg-white text-xs font-bold text-amber-700 shadow-sm"
-                            title="Add memory"
-                          >
-                            M
-                          </button>
-                        ) : (
-                          <span className="grid size-8 place-items-center rounded-full bg-white text-xs font-bold text-stone-300 shadow-sm">
-                            M
-                          </span>
-                        )}
-                        {navHref ? (
-                          <a
-                            href={navHref}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={(event) => event.stopPropagation()}
-                            className="grid size-8 place-items-center rounded-full bg-white shadow-sm"
-                            title="Open navigation"
-                          >
-                            <Image
-                              src="/icons/location.png"
-                              alt=""
-                              width={14}
-                              height={14}
-                              className="object-contain opacity-70"
-                            />
-                          </a>
-                        ) : (
-                          <span className="grid size-8 place-items-center rounded-full bg-white opacity-35 shadow-sm">
-                            <Image
-                              src="/icons/location.png"
-                              alt=""
-                              width={14}
-                              height={14}
-                              className="object-contain"
-                            />
-                          </span>
-                        )}
+                    </summary>
+                    <div className="mt-3 rounded-xl bg-white p-3 text-sm leading-6 text-stone-600">
+                      <div className="mb-3 flex items-start justify-between gap-3 border-b border-stone-100 pb-3">
+                        <div className="min-w-0">
+                          {item.location ? (
+                            <a
+                              href={navHref || mapsHref(item.location) || "#"}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-semibold text-emerald-800 underline decoration-emerald-200 underline-offset-4"
+                            >
+                              {item.location}
+                            </a>
+                          ) : (
+                            <span className="text-stone-400">Location TBD</span>
+                          )}
+                        </div>
                         {canManagePlans ? (
                           <button
                             type="button"
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              startEditItem(item);
-                            }}
-                            className="grid size-8 place-items-center rounded-full bg-white shadow-sm"
+                            onClick={() => startEditItem(item)}
+                            className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-50 shadow-sm"
                             title="Modify schedule item"
                           >
                             <Image
@@ -1672,9 +1697,7 @@ export function PlannerDayCard({
                             />
                           </button>
                         ) : null}
-                      </span>
-                    </summary>
-                    <div className="mt-3 rounded-xl bg-white p-3 text-sm leading-6 text-stone-600">
+                      </div>
                       <HighlightedText
                         text={
                           item.note ||
@@ -1699,7 +1722,7 @@ export function PlannerDayCard({
                           ))}
                         </div>
                       ) : null}
-                      {activeComposerId === item.id ? (
+                      {day.dayDate !== "unscheduled" ? (
                         <form
                           onSubmit={(event) => addInlineMemory(event, item)}
                           className="mt-3 rounded-2xl border border-emerald-100 bg-[#fffdf8] p-2 shadow-sm"

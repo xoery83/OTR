@@ -92,17 +92,6 @@ function getStoredDayId(tripId: string, days: PlannerV2Data["days"]) {
   return days.find((day) => day.day.dayDate === storedDate)?.day.id ?? null;
 }
 
-function entriesForDay(entries: LedgerEntry[], dayDate: string) {
-  if (dayDate === "unscheduled") return [];
-  return entries.filter((entry) => {
-    const coversDay =
-      entry.startDate && entry.endDate
-        ? entry.startDate <= dayDate && entry.endDate >= dayDate
-        : false;
-    return entry.expenseDate === dayDate || coversDay;
-  });
-}
-
 function PlannerContent() {
   const params = useParams<{ tripId: string }>();
   const tripId = params.tripId;
@@ -167,6 +156,11 @@ function PlannerContent() {
     const day = planner.days.find((plannerDay) => plannerDay.day.id === dayId);
     if (day) {
       window.localStorage.setItem(`otr:planner-day:${tripId}`, day.day.dayDate);
+      window.dispatchEvent(
+        new CustomEvent("journey:workspace-day-change", {
+          detail: { tripId, day: day.day.dayDate },
+        }),
+      );
     }
   }
 
@@ -319,10 +313,7 @@ function PlannerContent() {
             tripId={tripId}
             plannerDay={selectedDay}
             journeyMembers={activeMembers}
-            ledgerEntries={entriesForDay(
-              ledgerEntries,
-              selectedDay.day.dayDate,
-            )}
+            ledgerEntries={ledgerEntries}
             ledgerBaseCurrency={ledgerBaseCurrency}
             onLedgerEntryCreated={async () => {
               const data = await getLedgerData(tripId);

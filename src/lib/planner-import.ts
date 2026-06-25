@@ -125,6 +125,7 @@ const validEventTypes: ItineraryEventType[] = [
   "hotel",
   "car",
   "activity",
+  "shopping",
   "meal",
   "transport",
   "note",

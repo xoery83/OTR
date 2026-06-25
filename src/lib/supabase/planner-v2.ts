@@ -56,6 +56,18 @@ function dateKey(value: string | null | undefined) {
   return value.slice(0, 10);
 }
 
+function coversDate(
+  date: string,
+  startValue: string | null | undefined,
+  endValue: string | null | undefined,
+) {
+  const start = dateKey(startValue);
+  const end = dateKey(endValue) ?? start;
+
+  if (!start) return false;
+  return start <= date && (!end || end >= date);
+}
+
 function tripDateRange(trip: Trip) {
   if (!trip.startDate || !trip.endDate) return [];
 
@@ -203,6 +215,9 @@ export async function getPlannerV2(trip: Trip): Promise<PlannerV2Data> {
         dayNumber: index + 1,
         reservations: sortByTime(
           reservations.filter((reservation) => {
+            if (coversDate(date, reservation.startsAt, reservation.endsAt)) {
+              return true;
+            }
             if (reservation.tripDayId) return reservation.tripDayId === day.id;
             return (
               dateKey(reservation.startsAt) === date ||
@@ -214,6 +229,9 @@ export async function getPlannerV2(trip: Trip): Promise<PlannerV2Data> {
         ),
         activities: sortByTime(
           activities.filter((activity) => {
+            if (coversDate(date, activity.plannedStart, activity.plannedEnd)) {
+              return true;
+            }
             if (activity.tripDayId) return activity.tripDayId === day.id;
             return (
               dateKey(activity.plannedStart) === date ||

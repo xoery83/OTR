@@ -111,6 +111,7 @@ const eventSchema = {
               "hotel",
               "car",
               "activity",
+              "shopping",
               "meal",
               "transport",
               "note",

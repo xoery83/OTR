@@ -34,6 +34,7 @@ const eventTypes: ItineraryEventType[] = [
   "hotel",
   "car",
   "activity",
+  "shopping",
   "meal",
   "transport",
   "note",

@@ -121,6 +121,7 @@ export type ItineraryEventType =
   | "hotel"
   | "car"
   | "activity"
+  | "shopping"
   | "meal"
   | "transport"
   | "note"
