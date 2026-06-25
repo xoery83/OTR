@@ -20,16 +20,49 @@ function mapProfile(row: ProfileRow): Profile {
 }
 
 export async function upsertProfileForUser(user: User) {
+  const { data: existing, error: existingError } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (existingError) {
+    throw existingError;
+  }
+
+  if (existing) {
+    return mapProfile(existing as ProfileRow);
+  }
+
   const { data, error } = await supabase
     .from("profiles")
-    .upsert(
-      {
-        id: user.id,
-        display_name: getUserDisplayName(user),
-        avatar_url: getUserAvatarUrl(user),
-      },
-      { onConflict: "id" },
-    )
+    .insert({
+      id: user.id,
+      display_name: getUserDisplayName(user),
+      avatar_url: getUserAvatarUrl(user),
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return mapProfile(data);
+}
+
+export async function updateProfile(input: {
+  id: string;
+  displayName: string;
+  avatarUrl: string | null;
+}) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .update({
+      display_name: input.displayName.trim(),
+      avatar_url: input.avatarUrl?.trim() || null,
+    })
+    .eq("id", input.id)
     .select("*")
     .single();
 

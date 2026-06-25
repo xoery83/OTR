@@ -61,7 +61,7 @@ export function TripCard({
             ) : null}
             {typeof memberCount === "number" ? (
               <span className="rounded-full bg-stone-100 px-3 py-1 font-semibold text-stone-700">
-                {memberCount} people
+                {memberCount} travelers
               </span>
             ) : null}
           </div>

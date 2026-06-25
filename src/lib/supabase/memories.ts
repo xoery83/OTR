@@ -7,6 +7,9 @@ import { createImageMediaAsset } from "./media-assets";
 type MemoryRow = {
   id: string;
   trip_id: string;
+  trip_day_id: string | null;
+  itinerary_event_id: string | null;
+  itinerary_reservation_id: string | null;
   user_id: string | null;
   type: MemoryEntry["type"];
   content: string | null;
@@ -19,12 +22,18 @@ type MemoryRow = {
 export type CreateMemoryBaseInput = {
   capturedAt: string;
   locationName: string;
+  tripDayId?: string | null;
+  itineraryEventId?: string | null;
+  itineraryReservationId?: string | null;
 };
 
 function mapMemory(row: MemoryRow): MemoryEntry {
   return {
     id: row.id,
     tripId: row.trip_id,
+    tripDayId: row.trip_day_id,
+    itineraryEventId: row.itinerary_event_id,
+    itineraryReservationId: row.itinerary_reservation_id,
     userId: row.user_id ?? "",
     type: row.type,
     content: row.content ?? "",
@@ -161,6 +170,9 @@ export async function createTextMemory(
       id: memoryId,
       trip_id: tripId,
       user_id: user.id,
+      trip_day_id: input.tripDayId || null,
+      itinerary_event_id: input.itineraryEventId || null,
+      itinerary_reservation_id: input.itineraryReservationId || null,
       type: "text",
       content,
       location_name: input.locationName.trim() || null,
@@ -174,6 +186,9 @@ export async function createTextMemory(
   return {
     id: memoryId,
     tripId,
+    tripDayId: input.tripDayId || null,
+    itineraryEventId: input.itineraryEventId || null,
+    itineraryReservationId: input.itineraryReservationId || null,
     userId: user.id,
     type: "text",
     content,
@@ -223,6 +238,9 @@ export async function createPhotoMemory(
     id: memoryId,
     trip_id: tripId,
     user_id: user.id,
+    trip_day_id: input.tripDayId || null,
+    itinerary_event_id: input.itineraryEventId || null,
+    itinerary_reservation_id: input.itineraryReservationId || null,
     type: "photo",
     content: caption.trim() || null,
     media_url: compressedFilePath,
@@ -256,6 +274,9 @@ export async function createPhotoMemory(
   return {
     id: memoryId,
     tripId,
+    tripDayId: input.tripDayId || null,
+    itineraryEventId: input.itineraryEventId || null,
+    itineraryReservationId: input.itineraryReservationId || null,
     userId: user.id,
     type: "photo",
     content: caption.trim(),

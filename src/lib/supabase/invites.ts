@@ -92,6 +92,18 @@ export async function getJourneyInvites(tripId: string) {
   return (data ?? []).map(mapInvite);
 }
 
+export async function revokeJourneyInvite(inviteId: string) {
+  const { data, error } = await supabase
+    .from("journey_invites")
+    .update({ is_active: false })
+    .eq("id", inviteId)
+    .select("*")
+    .single();
+
+  if (error) throw error;
+  return mapInvite(data);
+}
+
 export async function acceptJourneyInvite(token: string) {
   const { data, error } = await supabase.rpc("accept_journey_invite", {
     invite_token: token,

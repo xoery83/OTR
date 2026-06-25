@@ -1,7 +1,8 @@
 import type { MemoryEntry, Profile, Trip } from "@/types";
+import { getActiveJourneyMembers } from "@/lib/journeys/stats";
 import { getCurrentUser } from "./auth";
 import { supabase } from "./client";
-import { getTripMembers } from "./members";
+import { getJourneyMembers } from "./journey-members";
 import { getProfile } from "./profiles";
 import { getTripsForCurrentUser } from "./trips";
 
@@ -19,9 +20,12 @@ type MemoryRow = {
 
 export type Companion = {
   profile: Profile;
+  isLinked: boolean;
+  status: "linked" | "unlinked" | "invite_pending";
   journeysTogether: number;
   memoriesContributed: number;
   latestJourney: string | null;
+  latestJourneyId: string | null;
 };
 
 export async function getPeopleOverview() {
@@ -35,7 +39,9 @@ export async function getPeopleOverview() {
     return { me, trips, companions: [] as Companion[] };
   }
 
-  const members = (await Promise.all(tripIds.map(getTripMembers))).flat();
+  const members = (await Promise.all(tripIds.map(getJourneyMembers)))
+    .flat()
+    .flatMap((member) => getActiveJourneyMembers([member]));
 
   const { data: memories } = await supabase
     .from("memory_entries")
@@ -43,22 +49,36 @@ export async function getPeopleOverview() {
     .in("trip_id", tripIds);
 
   const tripsById = new Map(trips.map((trip) => [trip.id, trip]));
-  const byUser = new Map<string, { profile: Profile; tripIds: Set<string> }>();
+  const byPerson = new Map<
+    string,
+    {
+      profile: Profile;
+      isLinked: boolean;
+      status: Companion["status"];
+      tripIds: Set<string>;
+    }
+  >();
 
   members
     .filter((member) => member.userId !== user.id)
     .forEach((member) => {
-      const existing = byUser.get(member.userId);
+      const key = member.userId ?? `unlinked:${member.id}`;
+      const existing = byPerson.get(key);
       const profile = {
-        id: member.userId,
-        displayName: member.name || "Traveler",
+        id: member.userId ?? key,
+        displayName: member.displayName || "Traveler",
         avatarUrl: member.avatarUrl,
         createdAt: "",
       };
       if (existing) {
         existing.tripIds.add(member.tripId);
       } else {
-        byUser.set(member.userId, { profile, tripIds: new Set([member.tripId]) });
+        byPerson.set(key, {
+          profile,
+          isLinked: Boolean(member.userId),
+          status: member.status,
+          tripIds: new Set([member.tripId]),
+        });
       }
     });
 
@@ -72,7 +92,7 @@ export async function getPeopleOverview() {
   return {
     me,
     trips,
-    companions: [...byUser.values()].map((value) => {
+    companions: [...byPerson.values()].map((value) => {
       const latestTrip = [...value.tripIds]
         .map((tripId) => tripsById.get(tripId))
         .filter((trip): trip is Trip => Boolean(trip))
@@ -80,9 +100,14 @@ export async function getPeopleOverview() {
 
       return {
         profile: value.profile,
+        isLinked: value.isLinked,
+        status: value.status,
         journeysTogether: value.tripIds.size,
-        memoriesContributed: memoryCounts.get(value.profile.id) ?? 0,
+        memoriesContributed: value.isLinked
+          ? memoryCounts.get(value.profile.id) ?? 0
+          : 0,
         latestJourney: latestTrip?.name ?? null,
+        latestJourneyId: latestTrip?.id ?? null,
       };
     }),
   };

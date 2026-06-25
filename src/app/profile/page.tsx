@@ -5,9 +5,10 @@ import { useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { AuthGate } from "@/components/AuthGate";
 import { logout } from "@/lib/supabase/auth";
+import { getErrorMessage } from "@/lib/errors";
 import { getMemoryStats } from "@/lib/journeys/stats";
 import { getTripMemories } from "@/lib/supabase/memories";
-import { getProfile } from "@/lib/supabase/profiles";
+import { getProfile, updateProfile } from "@/lib/supabase/profiles";
 import { getTripsForCurrentUser } from "@/lib/supabase/trips";
 import type { Profile } from "@/types";
 
@@ -19,6 +20,9 @@ function ProfileContent({ user }: { user: User }) {
   const [photos, setPhotos] = useState(0);
   const [displayName, setDisplayName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadProfile() {
@@ -42,6 +46,32 @@ function ProfileContent({ user }: { user: User }) {
   async function handleLogout() {
     await logout();
     router.replace("/login");
+  }
+
+  async function saveProfile() {
+    if (!displayName.trim()) {
+      setError("Display name cannot be empty.");
+      return;
+    }
+
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await updateProfile({
+        id: user.id,
+        displayName,
+        avatarUrl,
+      });
+      setProfile(updated);
+      setDisplayName(updated.displayName);
+      setAvatarUrl(updated.avatarUrl ?? "");
+      setNotice("Profile saved.");
+    } catch (saveError) {
+      setError(getErrorMessage(saveError, "Could not save profile."));
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   return (
@@ -87,9 +117,20 @@ function ProfileContent({ user }: { user: User }) {
 
       <section className="space-y-4 rounded-3xl bg-white p-5 shadow-sm">
         <h2 className="text-xl font-semibold">Basic fields</h2>
+        {error ? (
+          <p className="rounded-2xl bg-red-50 p-3 text-sm font-medium text-red-700">
+            {error}
+          </p>
+        ) : null}
+        {notice ? (
+          <p className="rounded-2xl bg-emerald-50 p-3 text-sm font-medium text-emerald-800">
+            {notice}
+          </p>
+        ) : null}
         <input
           value={displayName}
           onChange={(event) => setDisplayName(event.target.value)}
+          placeholder="Display name"
           className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
         />
         <input
@@ -98,7 +139,14 @@ function ProfileContent({ user }: { user: User }) {
           placeholder="Avatar URL"
           className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
         />
-        <p className="text-xs text-stone-500">Editing persistence comes later.</p>
+        <button
+          type="button"
+          onClick={saveProfile}
+          disabled={isSaving || !displayName.trim()}
+          className="w-full rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:bg-stone-300"
+        >
+          {isSaving ? "Saving..." : "Save profile"}
+        </button>
       </section>
 
       <button

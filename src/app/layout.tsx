@@ -33,7 +33,7 @@ export default function RootLayout({
       <body className="min-h-full bg-[#f7f3ea] text-stone-950">
         <SidebarNav />
         <AppHeader />
-        <main className="mx-auto w-full max-w-3xl px-5 pb-28 pt-6 md:ml-64 md:pb-10 lg:max-w-4xl">
+        <main className="mx-auto w-full max-w-3xl px-5 pb-28 pt-6 md:ml-20 md:pb-10 lg:max-w-5xl">
           {children}
         </main>
         <BottomNav />

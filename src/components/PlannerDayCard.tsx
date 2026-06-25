@@ -1,0 +1,2514 @@
+"use client";
+
+import Image from "next/image";
+import Link from "next/link";
+import { type FormEvent, useEffect, useState } from "react";
+import type { PlannerV2Day } from "@/lib/supabase/planner-v2";
+import { getApproxExchangeRate } from "@/lib/exchange-rates";
+import { formatDayLabel, formatTime, toDateTimeLocalValue } from "@/lib/format";
+import { getErrorMessage } from "@/lib/errors";
+import { getCurrentUser } from "@/lib/supabase/auth";
+import {
+  createItineraryEvent,
+  deleteItineraryEvent,
+  deleteItineraryReservation,
+  updateItineraryEvent,
+  updateItineraryReservation,
+} from "@/lib/supabase/itinerary";
+import { createLedgerEntry } from "@/lib/supabase/ledger";
+import { createTextMemory } from "@/lib/supabase/memories";
+import type {
+  JourneyMember,
+  ItineraryEventType,
+  ItineraryItemStatus,
+  ItineraryReservationType,
+  LedgerAccountingMode,
+  LedgerCategory,
+  LedgerEntry,
+  MemoryEntry,
+} from "@/types";
+import { DayMemoryPreview } from "./DayMemoryPreview";
+
+type StoryItem = {
+  id: string;
+  time: string | null;
+  title: string;
+  detail: string | null;
+  location: string | null;
+  kind: string;
+  note: string | null;
+  itineraryEventId: string | null;
+  itineraryReservationId: string | null;
+  itemType: "event" | "reservation";
+  status: ItineraryItemStatus;
+  typeValue: ItineraryEventType | ItineraryReservationType;
+  startsAt: string | null;
+  endsAt: string | null;
+  secondary: string | null;
+  url: string | null;
+  participantNames: string[];
+};
+
+type InlineMemoryState = Record<string, MemoryEntry[]>;
+
+type PendingExpense = {
+  itemId: string;
+  memoryEntryId: string;
+  title: string;
+  category: LedgerCategory;
+  accountingMode: LedgerAccountingMode;
+  amount: string;
+  currency: string;
+  exchangeRate: string;
+  payerMemberId: string;
+  participantMemberIds: string[];
+  addressText: string;
+  description: string;
+  itineraryEventId: string | null;
+  itineraryReservationId: string | null;
+};
+
+type MemberAlias = {
+  alias: string;
+  member: JourneyMember;
+};
+
+type EditingItem = {
+  id: string;
+  itemType: "event" | "reservation";
+  title: string;
+  typeValue: string;
+  description: string;
+  locationName: string;
+  startsAt: string;
+  endsAt: string;
+  secondary: string;
+  url: string;
+  status: ItineraryItemStatus;
+};
+
+type DraftPlanItem = {
+  title: string;
+  eventType: ItineraryEventType;
+  locationName: string;
+  plannedStart: string;
+  plannedEnd: string;
+  description: string;
+};
+
+const bookingLabels: Record<string, string> = {
+  flight: "Flight",
+  hotel: "Stay",
+  car: "Car",
+  ferry: "Ferry",
+  tour: "Tour",
+  restaurant: "Dining",
+  other: "Booking",
+};
+
+const expenseCategories: { value: LedgerCategory; label: string }[] = [
+  { value: "flight", label: "Flight" },
+  { value: "hotel", label: "Hotel" },
+  { value: "car", label: "Car" },
+  { value: "fuel", label: "Fuel" },
+  { value: "food", label: "Food" },
+  { value: "ticket", label: "Ticket" },
+  { value: "shopping", label: "Shopping" },
+  { value: "transport", label: "Transport" },
+  { value: "insurance", label: "Insurance" },
+  { value: "other", label: "Other" },
+];
+
+const expenseCurrencies = ["ISK", "NZD", "DKK", "EUR", "CNY", "USD", "GBP"];
+const eventTypes: ItineraryEventType[] = [
+  "flight",
+  "hotel",
+  "car",
+  "activity",
+  "meal",
+  "transport",
+  "note",
+  "other",
+];
+const reservationTypes: ItineraryReservationType[] = [
+  "flight",
+  "hotel",
+  "car",
+  "ferry",
+  "tour",
+  "restaurant",
+  "other",
+];
+const itemStatuses: ItineraryItemStatus[] = [
+  "planned",
+  "cancelled",
+  "completed",
+  "skipped",
+];
+
+function mapsHref(location: string | null) {
+  if (!location) return null;
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(location)}`;
+}
+
+function dayLocation(plannerDay: PlannerV2Day) {
+  const locations = [
+    ...plannerDay.activities.map((item) => item.locationName),
+    ...plannerDay.reservations.map((item) => item.locationName),
+  ].filter((location): location is string => Boolean(location));
+
+  return [...new Set(locations)][0] ?? "Location TBD";
+}
+
+function tonightStay(plannerDay: PlannerV2Day) {
+  return plannerDay.reservations.find(
+    (reservation) => reservation.reservationType === "hotel",
+  );
+}
+
+function storyItems(plannerDay: PlannerV2Day): StoryItem[] {
+  return [
+    ...plannerDay.reservations
+      .filter((item) => item.reservationType !== "hotel")
+      .map((item) => ({
+        id: `reservation-${item.id}`,
+        time: item.startsAt,
+        title: item.title,
+        detail: item.provider || item.confirmationCode || null,
+        location: item.locationName,
+        kind: bookingLabels[item.reservationType] ?? item.reservationType,
+        note: item.sourceText,
+        itineraryEventId: null,
+        itineraryReservationId: item.id,
+        itemType: "reservation" as const,
+        status: item.status,
+        typeValue: item.reservationType,
+        startsAt: item.startsAt,
+        endsAt: item.endsAt,
+        secondary: item.provider || item.confirmationCode || "",
+        url: item.url,
+        participantNames: item.participants.map((participant) => participant.name),
+      })),
+    ...plannerDay.activities.map((item) => ({
+      id: `activity-${item.id}`,
+      time: item.plannedStart,
+      title: item.title,
+      detail: item.description,
+      location: item.locationName,
+      kind: item.eventType,
+      note: item.sourceText || item.description,
+      itineraryEventId: item.id,
+      itineraryReservationId: item.reservationId,
+      itemType: "event" as const,
+      status: item.status,
+      typeValue: item.eventType,
+      startsAt: item.plannedStart,
+      endsAt: item.plannedEnd,
+      secondary: item.bookingReference || "",
+      url: item.url,
+      participantNames: item.participants.map((participant) => participant.name),
+    })),
+  ].sort((a, b) => {
+    if (!a.time && !b.time) return a.title.localeCompare(b.title);
+    if (!a.time) return 1;
+    if (!b.time) return -1;
+    return a.time.localeCompare(b.time);
+  });
+}
+
+function groupedBookings(plannerDay: PlannerV2Day) {
+  return Object.entries(
+    plannerDay.reservations.reduce<Record<string, typeof plannerDay.reservations>>(
+      (groups, reservation) => {
+        groups[reservation.reservationType] = [
+          ...(groups[reservation.reservationType] ?? []),
+          reservation,
+        ];
+        return groups;
+      },
+      {},
+    ),
+  );
+}
+
+function SectionTitle({ title }: { title: string }) {
+  return (
+    <h3 className="text-sm font-bold uppercase tracking-[0.14em] text-emerald-900">
+      {title}
+    </h3>
+  );
+}
+
+function money(amount: number, currency: string) {
+  return new Intl.NumberFormat("en", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+function daysBetweenInclusive(startDate: string, endDate: string) {
+  const start = new Date(`${startDate}T00:00:00Z`).getTime();
+  const end = new Date(`${endDate}T00:00:00Z`).getTime();
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    return 1;
+  }
+
+  return Math.floor((end - start) / dayMs) + 1;
+}
+
+function allocatedAmountForDay(entry: LedgerEntry, dayDate: string) {
+  if (
+    entry.startDate &&
+    entry.endDate &&
+    entry.startDate <= dayDate &&
+    entry.endDate >= dayDate
+  ) {
+    return entry.baseAmount / daysBetweenInclusive(entry.startDate, entry.endDate);
+  }
+
+  return entry.expenseDate === dayDate ? entry.baseAmount : 0;
+}
+
+function toLocalInputValue(value: string | null) {
+  return value ? toDateTimeLocalValue(new Date(value)) : "";
+}
+
+function normalizeCurrency(value: string, fallbackCurrency: string) {
+  const normalized = value.trim().toLowerCase();
+
+  if (
+    normalized.includes("冰岛") ||
+    normalized === "isk" ||
+    normalized.includes("iceland")
+  ) {
+    return "ISK";
+  }
+  if (normalized.includes("丹麦") || normalized === "dkk") return "DKK";
+  if (normalized.includes("欧") || normalized === "eur") return "EUR";
+  if (normalized.includes("美元") || normalized === "usd" || normalized === "$") {
+    return "USD";
+  }
+  if (
+    normalized.includes("人民币") ||
+    normalized === "cny" ||
+    normalized === "rmb" ||
+    normalized === "¥" ||
+    normalized === "￥"
+  ) {
+    return "CNY";
+  }
+  if (normalized.includes("纽") || normalized === "nzd") return "NZD";
+  if (normalized.includes("英镑") || normalized === "gbp") return "GBP";
+  if (normalized.includes("本地")) return fallbackCurrency;
+
+  return value.toUpperCase();
+}
+
+function parseMoneyAmount(rawValue: string) {
+  const value = rawValue.trim();
+  const hasComma = value.includes(",");
+  const hasDot = value.includes(".");
+
+  if (hasComma && hasDot) {
+    return value.replace(/,/g, "");
+  }
+
+  if (hasComma) {
+    const parts = value.split(",");
+    const last = parts[parts.length - 1];
+    const looksLikeThousands =
+      parts.length > 1 &&
+      parts.slice(1).every((part) => /^\d{3}$/.test(part));
+
+    if (looksLikeThousands) {
+      return value.replace(/,/g, "");
+    }
+
+    if (last.length <= 2) {
+      return value.replace(",", ".");
+    }
+  }
+
+  return value;
+}
+
+function detectExpense(
+  text: string,
+  item: StoryItem,
+  baseCurrency: string,
+): Pick<
+  PendingExpense,
+  "title" | "category" | "amount" | "currency" | "description"
+> | null {
+  const amountMatch = text.match(
+    /(?:^|[^\d])([¥￥€$]|冰岛本地货币|冰岛克朗|冰岛币|本地货币|丹麦克朗|人民币|纽币|美元|欧元|英镑|ISK|DKK|CNY|RMB|NZD|USD|EUR|GBP|kr)?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(冰岛本地货币|冰岛克朗|冰岛币|本地货币|丹麦克朗|人民币|纽币|美元|欧元|英镑|ISK|DKK|CNY|RMB|NZD|USD|EUR|GBP|kr)?/i,
+  );
+
+  if (!amountMatch) return null;
+
+  const amount = parseMoneyAmount(amountMatch[2]);
+  const rawCurrency = amountMatch[1] || amountMatch[3] || baseCurrency;
+  const lowerText = `${text} ${item.title} ${item.kind}`.toLowerCase();
+  let category: LedgerCategory = "other";
+
+  if (/costco|bonus|购物|采购|超市|shop/.test(lowerText)) {
+    category = "shopping";
+  } else if (/加油|fuel|gas|petrol/.test(lowerText)) {
+    category = "fuel";
+  } else if (/晚饭|午饭|早餐|餐|dinner|lunch|meal|restaurant/.test(lowerText)) {
+    category = "food";
+  } else if (/hotel|stay|accommodation|住宿/.test(lowerText)) {
+    category = "hotel";
+  } else if (/flight|航班|机票|机场/.test(lowerText)) {
+    category = "flight";
+  } else if (/car|rental|租车|取车/.test(lowerText)) {
+    category = "car";
+  } else if (/ticket|tour|门票/.test(lowerText)) {
+    category = "ticket";
+  } else if (/transport|ferry|bus|taxi|交通|渡轮/.test(lowerText)) {
+    category = "transport";
+  }
+
+  return {
+    title: item.title,
+    category,
+    amount,
+    currency: normalizeCurrency(rawCurrency, baseCurrency),
+    description: text,
+  };
+}
+
+function capturedAtForItem(item: StoryItem, dayDate: string) {
+  if (item.time) return item.time;
+  if (dayDate === "unscheduled") return new Date().toISOString();
+
+  const now = new Date();
+  return `${dayDate}T${String(now.getHours()).padStart(2, "0")}:${String(
+    now.getMinutes(),
+  ).padStart(2, "0")}:00`;
+}
+
+function localDateTime(dayDate: string, hour: number, minute = 0) {
+  return `${dayDate}T${String(hour).padStart(2, "0")}:${String(minute).padStart(
+    2,
+    "0",
+  )}:00`;
+}
+
+function addHours(value: string, hours: number) {
+  const date = new Date(value);
+  date.setHours(date.getHours() + hours);
+  return toDateTimeLocalValue(date);
+}
+
+function inferEventType(text: string): ItineraryEventType {
+  const lower = text.toLocaleLowerCase();
+  if (/flight|航班|飞机|机场|arrival|departure/.test(lower)) return "flight";
+  if (/hotel|住宿|入住|check.?in|accommodation/.test(lower)) return "hotel";
+  if (/car|租车|取车|还车|rental|pickup/.test(lower)) return "car";
+  if (/晚饭|午饭|早餐|餐|dinner|lunch|meal|restaurant/.test(lower)) return "meal";
+  if (/bus|taxi|ferry|transfer|交通|渡轮|巴士|打车/.test(lower)) {
+    return "transport";
+  }
+  if (/购物|采购|超市|costco|bonus|shop|shopping/.test(lower)) return "activity";
+  return "activity";
+}
+
+function chineseNumberToInt(value: string) {
+  const digits: Record<string, number> = {
+    零: 0,
+    一: 1,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+  };
+
+  if (/^\d+$/.test(value)) return Number(value);
+  if (value === "十") return 10;
+  if (value.startsWith("十")) return 10 + (digits[value.slice(1)] ?? 0);
+  if (value.endsWith("十")) return (digits[value.slice(0, 1)] ?? 1) * 10;
+  if (value.includes("十")) {
+    const [ten, one] = value.split("十");
+    return (digits[ten] ?? 1) * 10 + (digits[one] ?? 0);
+  }
+
+  return digits[value] ?? Number.NaN;
+}
+
+function stripTimeWords(text: string) {
+  return text
+    .replace(/(今天|今晚|明早|明天|上午|中午|下午|傍晚|晚上|早上|夜里)?\s*(\d{1,2}|[零一二两三四五六七八九十]{1,3})\s*[点:：]\s*(半|一刻|三刻|\d{1,2}分?)?/g, "")
+    .replace(/\b([01]?\d|2[0-3])[:：]([0-5]\d)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function inferLocation(text: string) {
+  const meetingMatch = text.match(
+    /(?:在)?\s*([A-Za-z0-9\u4e00-\u9fff\s&.'-]{2,30}?(?:门口|入口|大厅|前台|停车场|机场|车站|码头))\s*(?:集合|见面|meet)/i,
+  );
+  if (meetingMatch) return meetingMatch[1].trim();
+
+  const atMatch = text.match(
+    /(?:在|到|抵达|from|at)\s*([A-Za-z0-9\u4e00-\u9fff\s&.'-]{2,40}?)(?:集合|见面|出发|吃|采购|购物|看|玩|$|[，。,.;；])/i,
+  );
+  if (atMatch) return atMatch[1].trim();
+
+  const destinationMatch = text.match(
+    /(?:去|前往|to)\s*([A-Za-z0-9\u4e00-\u9fff\s&.'-]{2,40}?)(?:$|[，。,.;；])/i,
+  );
+  return destinationMatch?.[1]?.trim() ?? "";
+}
+
+function inferStartTime(text: string, dayDate: string) {
+  const explicit = text.match(/(?:^|[^\d])([01]?\d|2[0-3])[:：]([0-5]\d)/);
+  if (explicit) {
+    return localDateTime(dayDate, Number(explicit[1]), Number(explicit[2]));
+  }
+
+  const chineseHour = text.match(
+    /(今天|今晚|明早|明天|上午|中午|下午|傍晚|晚上|早上|夜里)?\s*(\d{1,2}|[零一二两三四五六七八九十]{1,3})\s*点\s*(半|一刻|三刻|(\d{1,2})分?)?/,
+  );
+  if (chineseHour) {
+    const period = chineseHour[1] ?? "";
+    let hour = chineseNumberToInt(chineseHour[2]);
+    let minute = 0;
+    if (chineseHour[3] === "半") minute = 30;
+    if (chineseHour[3] === "一刻") minute = 15;
+    if (chineseHour[3] === "三刻") minute = 45;
+    if (chineseHour[4]) minute = Number(chineseHour[4]);
+
+    if (
+      (period === "下午" ||
+        period === "傍晚" ||
+        period === "晚上" ||
+        period === "今晚" ||
+        period === "夜里") &&
+      hour < 12
+    ) {
+      hour += 12;
+    }
+    if (period === "中午" && hour < 11) hour += 12;
+    return localDateTime(dayDate, hour, minute);
+  }
+
+  const lower = text.toLocaleLowerCase();
+  if (/morning|上午|早上/.test(lower)) return localDateTime(dayDate, 9);
+  if (/afternoon|下午/.test(lower)) return localDateTime(dayDate, 13);
+  if (/evening|晚上|傍晚/.test(lower)) return localDateTime(dayDate, 18);
+  if (/night|夜里/.test(lower)) return localDateTime(dayDate, 20);
+
+  return localDateTime(dayDate, 12);
+}
+
+function draftPlanFromText(text: string, dayDate: string): DraftPlanItem {
+  const plannedStart = inferStartTime(text, dayDate);
+  const eventType = inferEventType(text);
+  const locationName = inferLocation(text);
+  const withoutTime = stripTimeWords(text)
+    .replace(/^(大家|全员|所有人|我们)\s*/, "")
+    .replace(/[。.!！]$/, "")
+    .trim();
+  const actionMatch = withoutTime.match(/(.{2,30}?(?:门口|入口|大厅|前台|停车场))\s*集合\s*(?:去|前往)?\s*(.+)$/);
+  const title = (actionMatch
+    ? `${actionMatch[1].trim()}集合 · ${actionMatch[2].trim()}`
+    : withoutTime)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+
+  return {
+    title: title || "New plan item",
+    eventType,
+    locationName,
+    plannedStart: toDateTimeLocalValue(new Date(plannedStart)),
+    plannedEnd: addHours(plannedStart, eventType === "meal" ? 1.5 : 1),
+    description: text.trim(),
+  };
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function memberAliases(members: JourneyMember[]) {
+  const aliases = new Map<string, MemberAlias>();
+
+  members
+    .filter((member) => member.role === "owner" || member.role === "group_member")
+    .forEach((member) => {
+      const candidates = [
+        member.displayName,
+        ...(member.notes ?? "")
+          .split(/[,，、/|;\n]+/)
+          .map((value) => value.trim()),
+      ].filter((value) => value.length >= 2);
+
+      candidates.forEach((alias) => {
+        aliases.set(alias.toLocaleLowerCase(), { alias, member });
+      });
+    });
+
+  return [...aliases.values()].sort((a, b) => b.alias.length - a.alias.length);
+}
+
+function HighlightedText({
+  text,
+  aliases,
+}: {
+  text: string;
+  aliases: MemberAlias[];
+}) {
+  if (aliases.length === 0) return <>{text}</>;
+
+  const pattern = new RegExp(
+    `(${aliases.map((item) => escapeRegExp(item.alias)).join("|")})`,
+    "gi",
+  );
+  const parts = text.split(pattern).filter(Boolean);
+
+  return (
+    <>
+      {parts.map((part, index) => {
+        const match = aliases.find(
+          (item) => item.alias.toLocaleLowerCase() === part.toLocaleLowerCase(),
+        );
+
+        if (!match) return <span key={`${part}-${index}`}>{part}</span>;
+
+        return (
+          <span
+            key={`${part}-${index}`}
+            className="rounded-full bg-emerald-100 px-1.5 py-0.5 font-semibold text-emerald-800"
+            title={`Matched group member: ${match.member.displayName}`}
+          >
+            {part}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
+export function PlannerDayCard({
+  tripId,
+  plannerDay,
+  journeyMembers,
+  ledgerEntries = [],
+  ledgerBaseCurrency = "NZD",
+  nextDay,
+  onLedgerEntryCreated,
+  onPlannerChanged,
+}: {
+  tripId: string;
+  plannerDay: PlannerV2Day;
+  journeyMembers?: JourneyMember[];
+  ledgerEntries?: LedgerEntry[];
+  ledgerBaseCurrency?: string;
+  nextDay?: PlannerV2Day | null;
+  onLedgerEntryCreated?: () => void;
+  onPlannerChanged?: () => void;
+}) {
+  const { day, dayNumber, memories } = plannerDay;
+  const dayLabel =
+    day.dayDate === "unscheduled" ? "Unscheduled" : formatDayLabel(day.dayDate);
+  const stay = tonightStay(plannerDay);
+  const stayMapsHref = mapsHref(stay?.locationName ?? null);
+  const stayItem: StoryItem | null = stay
+    ? {
+        id: `reservation-${stay.id}`,
+        time: stay.startsAt,
+        title: stay.title,
+        detail: stay.provider || stay.confirmationCode || null,
+        location: stay.locationName,
+        kind: "Stay",
+        note: stay.sourceText,
+        itineraryEventId: null,
+        itineraryReservationId: stay.id,
+        itemType: "reservation",
+        status: stay.status,
+        typeValue: stay.reservationType,
+        startsAt: stay.startsAt,
+        endsAt: stay.endsAt,
+        secondary: stay.provider || stay.confirmationCode || "",
+        url: stay.url,
+        participantNames: stay.participants.map((participant) => participant.name),
+      }
+    : null;
+  const story = storyItems(plannerDay);
+  const bookings = groupedBookings(plannerDay);
+  const nextStory = nextDay ? storyItems(nextDay).slice(0, 2) : [];
+  const aliases = memberAliases(journeyMembers ?? []);
+  const ledgerCurrency = ledgerEntries[0]?.baseCurrency ?? "NZD";
+  const ledgerTotal = ledgerEntries.reduce(
+    (total, entry) => total + allocatedAmountForDay(entry, day.dayDate),
+    0,
+  );
+  const sharedTotal = ledgerEntries
+    .filter((entry) => entry.accountingMode === "shared")
+    .reduce(
+      (total, entry) => total + allocatedAmountForDay(entry, day.dayDate),
+      0,
+    );
+  const statsOnlyTotal = ledgerEntries
+    .filter((entry) => entry.accountingMode === "stats_only")
+    .reduce(
+      (total, entry) => total + allocatedAmountForDay(entry, day.dayDate),
+      0,
+    );
+  const reviewCount = ledgerEntries.filter(
+    (entry) => entry.status !== "complete",
+  ).length;
+  const [activeComposerId, setActiveComposerId] = useState<string | null>(null);
+  const [memoryTextByItem, setMemoryTextByItem] = useState<Record<string, string>>(
+    {},
+  );
+  const [inlineMemories, setInlineMemories] = useState<InlineMemoryState>({});
+  const [savingMemoryId, setSavingMemoryId] = useState<string | null>(null);
+  const [savingExpenseId, setSavingExpenseId] = useState<string | null>(null);
+  const [pendingExpense, setPendingExpense] = useState<PendingExpense | null>(
+    null,
+  );
+  const [memoryErrorByItem, setMemoryErrorByItem] = useState<Record<string, string>>(
+    {},
+  );
+  const [expenseError, setExpenseError] = useState<string | null>(null);
+  const [isLoadingRate, setIsLoadingRate] = useState(false);
+  const [canManagePlans, setCanManagePlans] = useState(false);
+  const [currentMember, setCurrentMember] = useState<JourneyMember | null>(null);
+  const [showMineOnly, setShowMineOnly] = useState(false);
+  const [editingItem, setEditingItem] = useState<EditingItem | null>(null);
+  const [isAddingPlan, setIsAddingPlan] = useState(false);
+  const [newPlanText, setNewPlanText] = useState("");
+  const [draftPlan, setDraftPlan] = useState<DraftPlanItem | null>(null);
+  const [isSavingPlan, setIsSavingPlan] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+
+  function activeMembers() {
+    return (journeyMembers ?? []).filter(
+      (member) => member.role === "owner" || member.role === "group_member",
+    );
+  }
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function checkMembership() {
+      const user = await getCurrentUser().catch(() => null);
+      const allowed = Boolean(
+        user &&
+          activeMembers().some((member) => member.userId === user.id),
+      );
+      const member =
+        activeMembers().find((journeyMember) => journeyMember.userId === user?.id) ??
+        null;
+      if (isMounted) {
+        setCanManagePlans(allowed);
+        setCurrentMember(member);
+      }
+    }
+
+    checkMembership();
+
+    return () => {
+      isMounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [journeyMembers]);
+
+  function ledgerTotalForItem(item: StoryItem) {
+    return ledgerEntries
+      .filter(
+        (entry) =>
+          (item.itineraryEventId &&
+            entry.itineraryEventId === item.itineraryEventId) ||
+          (item.itineraryReservationId &&
+            entry.itineraryReservationId === item.itineraryReservationId),
+      )
+      .reduce((total, entry) => total + entry.baseAmount, 0);
+  }
+
+  function persistedMemoriesForItem(item: StoryItem) {
+    return memories.filter(
+      (memory) => {
+        if (
+          (item.itineraryEventId &&
+            memory.itineraryEventId === item.itineraryEventId) ||
+          (item.itineraryReservationId &&
+            memory.itineraryReservationId === item.itineraryReservationId)
+        ) {
+          return true;
+        }
+
+        if (memory.itineraryEventId || memory.itineraryReservationId || !item.time) {
+          return false;
+        }
+
+        const memoryTime = new Date(memory.capturedAt).getTime();
+        const itemTime = new Date(item.time).getTime();
+        const sameMinute =
+          Number.isFinite(memoryTime) &&
+          Number.isFinite(itemTime) &&
+          Math.abs(memoryTime - itemTime) < 60 * 1000;
+        const sameLocation =
+          item.location &&
+          memory.locationName &&
+          item.location.trim().toLocaleLowerCase() ===
+            memory.locationName.trim().toLocaleLowerCase();
+
+        return Boolean(sameMinute && sameLocation);
+      },
+    );
+  }
+
+  function memoriesForItem(item: StoryItem) {
+    const byId = new Map<string, MemoryEntry>();
+
+    persistedMemoriesForItem(item).forEach((memory) => {
+      byId.set(memory.id, memory);
+    });
+
+    (inlineMemories[item.id] ?? []).forEach((memory) => {
+      byId.set(memory.id, memory);
+    });
+
+    return [...byId.values()].sort(
+      (first, second) =>
+        new Date(second.createdAt || second.capturedAt).getTime() -
+        new Date(first.createdAt || first.capturedAt).getTime(),
+    );
+  }
+
+  function currentMemberAliases() {
+    if (!currentMember) return [];
+
+    return [
+      currentMember.displayName,
+      ...(currentMember.notes ?? "")
+        .split(/[,，、/|;\n]+/)
+        .map((value) => value.trim()),
+    ]
+      .filter((value) => value.length >= 2)
+      .map((value) => value.toLocaleLowerCase());
+  }
+
+  function textMentionsMe(text: string | null | undefined) {
+    if (!text) return false;
+    const lower = text.toLocaleLowerCase();
+    return currentMemberAliases().some((alias) => lower.includes(alias));
+  }
+
+  function memoryTargetsMe(memory: MemoryEntry) {
+    const lower = memory.content.toLocaleLowerCase();
+    const hasMention = /@/.test(lower);
+    const mentionsAll = /@所有人|@all|@everyone/.test(lower);
+
+    if (mentionsAll) return true;
+    if (textMentionsMe(memory.content)) return true;
+
+    return !hasMention;
+  }
+
+  function itemRelatesToMe(item: StoryItem) {
+    if (!currentMember) return true;
+    if (
+      textMentionsMe(item.title) ||
+      textMentionsMe(item.detail) ||
+      textMentionsMe(item.note) ||
+      textMentionsMe(item.location) ||
+      textMentionsMe(item.participantNames.join(" "))
+    ) {
+      return true;
+    }
+
+    return memoriesForItem(item).some(memoryTargetsMe);
+  }
+
+  const visibleStory = showMineOnly
+    ? story.filter((item) => itemRelatesToMe(item))
+    : story;
+
+  function itemSubtitle(item: StoryItem) {
+    const total = ledgerTotalForItem(item);
+    const label = item.detail || item.location || item.kind;
+    return total > 0
+      ? `${label} · ${money(total, ledgerCurrency)}`
+      : label;
+  }
+
+  function startEditItem(item: StoryItem) {
+    setEditingItem({
+      id:
+        item.itemType === "event"
+          ? item.itineraryEventId!
+          : item.itineraryReservationId!,
+      itemType: item.itemType,
+      title: item.title,
+      typeValue: item.typeValue,
+      description: item.note ?? "",
+      locationName: item.location ?? "",
+      startsAt: toLocalInputValue(item.startsAt),
+      endsAt: toLocalInputValue(item.endsAt),
+      secondary: item.secondary ?? "",
+      url: item.url ?? "",
+      status: item.status,
+    });
+    setPlanError(null);
+  }
+
+  async function saveEditingItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingItem || isSavingPlan) return;
+
+    setIsSavingPlan(true);
+    setPlanError(null);
+
+    try {
+      if (editingItem.itemType === "event") {
+        await updateItineraryEvent({
+          id: editingItem.id,
+          tripId,
+          title: editingItem.title,
+          description: editingItem.description,
+          eventType: editingItem.typeValue as ItineraryEventType,
+          locationName: editingItem.locationName,
+          plannedStart: editingItem.startsAt,
+          plannedEnd: editingItem.endsAt,
+          bookingReference: editingItem.secondary,
+          url: editingItem.url,
+          status: editingItem.status,
+        });
+      } else {
+        await updateItineraryReservation({
+          id: editingItem.id,
+          tripId,
+          reservationType: editingItem.typeValue as ItineraryReservationType,
+          title: editingItem.title,
+          provider: editingItem.secondary,
+          locationName: editingItem.locationName,
+          startsAt: editingItem.startsAt,
+          endsAt: editingItem.endsAt,
+          confirmationCode: "",
+          url: editingItem.url,
+          status: editingItem.status,
+        });
+      }
+
+      setEditingItem(null);
+      await onPlannerChanged?.();
+    } catch (error) {
+      setPlanError(getErrorMessage(error, "Could not update plan item."));
+    } finally {
+      setIsSavingPlan(false);
+    }
+  }
+
+  async function deleteEditingItem() {
+    if (!editingItem) return;
+    const confirmed = globalThis.confirm(`Delete "${editingItem.title}" from planner?`);
+    if (!confirmed) return;
+
+    setIsSavingPlan(true);
+    setPlanError(null);
+
+    try {
+      if (editingItem.itemType === "event") {
+        await deleteItineraryEvent(editingItem.id);
+      } else {
+        await deleteItineraryReservation(editingItem.id);
+      }
+      setEditingItem(null);
+      await onPlannerChanged?.();
+    } catch (error) {
+      setPlanError(getErrorMessage(error, "Could not delete plan item."));
+    } finally {
+      setIsSavingPlan(false);
+    }
+  }
+
+  function mentionQuery(itemId: string) {
+    const text = memoryTextByItem[itemId] ?? "";
+    const match = text.match(/@([^\s@]*)$/);
+    return match ? match[1].toLocaleLowerCase() : null;
+  }
+
+  function mentionOptions(itemId: string) {
+    const query = mentionQuery(itemId);
+    if (query === null) return [];
+
+    return [
+      { id: "all", label: "所有人" },
+      ...activeMembers().map((member) => ({
+        id: member.id,
+        label: member.displayName,
+      })),
+    ].filter((option) => option.label.toLocaleLowerCase().includes(query));
+  }
+
+  function insertMention(itemId: string, label: string) {
+    setMemoryTextByItem((current) => {
+      const text = current[itemId] ?? "";
+      return {
+        ...current,
+        [itemId]: text.replace(/@([^\s@]*)$/, `@${label} `),
+      };
+    });
+  }
+
+  function prepareDraftPlan(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = newPlanText.trim();
+    if (!text || day.dayDate === "unscheduled") return;
+    setDraftPlan(draftPlanFromText(text, day.dayDate));
+    setPlanError(null);
+  }
+
+  async function saveDraftPlan() {
+    if (!draftPlan || isSavingPlan || day.dayDate === "unscheduled") return;
+
+    setIsSavingPlan(true);
+    setPlanError(null);
+
+    try {
+      await createItineraryEvent({
+        tripId,
+        tripDayId: day.id.startsWith("synthetic-") ? null : day.id,
+        title: draftPlan.title,
+        description: draftPlan.description,
+        eventType: draftPlan.eventType,
+        locationName: draftPlan.locationName,
+        plannedStart: draftPlan.plannedStart,
+        plannedEnd: draftPlan.plannedEnd,
+        bookingReference: "",
+        url: "",
+        sourceText: newPlanText.trim(),
+        needsReview: false,
+        isEstimatedTime: true,
+      });
+      setIsAddingPlan(false);
+      setNewPlanText("");
+      setDraftPlan(null);
+      await onPlannerChanged?.();
+    } catch (error) {
+      setPlanError(getErrorMessage(error, "Could not add plan item."));
+    } finally {
+      setIsSavingPlan(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!pendingExpense) return;
+
+    let isMounted = true;
+
+    async function loadRate() {
+      if (!pendingExpense) return;
+
+      setIsLoadingRate(true);
+      try {
+        const result = await getApproxExchangeRate(
+          pendingExpense.currency,
+          ledgerBaseCurrency,
+        );
+        if (isMounted) {
+          updatePendingExpense({
+            exchangeRate: result.rate.toFixed(4),
+          });
+        }
+      } catch {
+        if (isMounted && pendingExpense.currency === ledgerBaseCurrency) {
+          updatePendingExpense({ exchangeRate: "1" });
+        }
+      } finally {
+        if (isMounted) setIsLoadingRate(false);
+      }
+    }
+
+    loadRate();
+
+    return () => {
+      isMounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingExpense?.currency, ledgerBaseCurrency]);
+
+  async function addInlineMemory(
+    event: FormEvent<HTMLFormElement>,
+    item: StoryItem,
+  ) {
+    event.preventDefault();
+    const content = (memoryTextByItem[item.id] ?? "").trim();
+    if (!content || savingMemoryId) return;
+
+    setSavingMemoryId(item.id);
+    setMemoryErrorByItem((current) => ({ ...current, [item.id]: "" }));
+
+    try {
+      const saved = await createTextMemory(tripId, content, {
+        capturedAt: capturedAtForItem(item, day.dayDate),
+        locationName: item.location ?? "",
+        tripDayId: day.id.startsWith("synthetic-") ? null : day.id,
+        itineraryEventId: item.itineraryEventId,
+        itineraryReservationId: item.itineraryReservationId,
+      });
+      setInlineMemories((current) => ({
+        ...current,
+        [item.id]: [...(current[item.id] ?? []), saved],
+      }));
+      setMemoryTextByItem((current) => ({ ...current, [item.id]: "" }));
+      setActiveComposerId(null);
+
+      const detectedExpense = detectExpense(content, item, ledgerBaseCurrency);
+      if (detectedExpense) {
+        const user = await getCurrentUser().catch(() => null);
+        const defaultPayer =
+          activeMembers().find((member) => member.userId === user?.id)?.id ?? "";
+        const matchedParticipantIds = [
+          ...new Set(
+            aliases
+              .filter((alias) =>
+                item.title
+                  .toLocaleLowerCase()
+                  .includes(alias.alias.toLocaleLowerCase()),
+              )
+              .map((alias) => alias.member.id),
+          ),
+        ];
+        const defaultParticipantIds =
+          detectedExpense.category === "flight" && matchedParticipantIds.length > 0
+            ? matchedParticipantIds
+            : activeMembers().map((member) => member.id);
+        const perPerson = /每人|每位|each|per person/i.test(content);
+        const detectedAmount =
+          perPerson && defaultParticipantIds.length > 1
+            ? String(
+                Number(detectedExpense.amount) * defaultParticipantIds.length,
+              )
+            : detectedExpense.amount;
+
+        setPendingExpense({
+          itemId: item.id,
+          memoryEntryId: saved.id,
+          title: detectedExpense.title,
+          category: detectedExpense.category,
+          accountingMode:
+            detectedExpense.category === "flight" ? "stats_only" : "shared",
+          amount: detectedAmount,
+          currency: detectedExpense.currency,
+          exchangeRate:
+            detectedExpense.currency === ledgerBaseCurrency ? "1" : "",
+          payerMemberId: defaultPayer,
+          participantMemberIds: defaultParticipantIds,
+          addressText: item.location ?? "",
+          description: detectedExpense.description,
+          itineraryEventId: item.itineraryEventId,
+          itineraryReservationId: item.itineraryReservationId,
+        });
+      }
+    } catch (error) {
+      setMemoryErrorByItem((current) => ({
+        ...current,
+        [item.id]: getErrorMessage(error, "Could not save memory."),
+      }));
+    } finally {
+      setSavingMemoryId(null);
+    }
+  }
+
+  function updatePendingExpense(patch: Partial<PendingExpense>) {
+    setPendingExpense((current) => (current ? { ...current, ...patch } : current));
+  }
+
+  function toggleExpenseParticipant(memberId: string) {
+    if (!pendingExpense) return;
+    const selected = new Set(pendingExpense.participantMemberIds);
+    if (selected.has(memberId)) {
+      selected.delete(memberId);
+    } else {
+      selected.add(memberId);
+    }
+    updatePendingExpense({ participantMemberIds: [...selected] });
+  }
+
+  async function confirmPendingExpense() {
+    if (!pendingExpense || savingExpenseId) return;
+
+    setSavingExpenseId(pendingExpense.itemId);
+    setExpenseError(null);
+
+    try {
+      await createLedgerEntry({
+        journeyId: tripId,
+        itineraryEventId: pendingExpense.itineraryEventId,
+        itineraryReservationId: pendingExpense.itineraryReservationId,
+        memoryEntryId: pendingExpense.memoryEntryId,
+        title: pendingExpense.title,
+        description: pendingExpense.description,
+        category: pendingExpense.category,
+        accountingMode: pendingExpense.accountingMode,
+        expenseDate:
+          day.dayDate === "unscheduled" ? new Date().toISOString().slice(0, 10) : day.dayDate,
+        originalAmount: Number(pendingExpense.amount),
+        originalCurrency: pendingExpense.currency,
+        baseCurrency: ledgerBaseCurrency,
+        exchangeRate: Number(pendingExpense.exchangeRate || 1),
+        payerMemberId: pendingExpense.payerMemberId || null,
+        participantMemberIds:
+          pendingExpense.participantMemberIds,
+        addressText: pendingExpense.addressText,
+      });
+      setPendingExpense(null);
+      onLedgerEntryCreated?.();
+    } catch (error) {
+      setExpenseError(getErrorMessage(error, "Could not add expense."));
+    } finally {
+      setSavingExpenseId(null);
+    }
+  }
+
+  return (
+    <article className="overflow-hidden rounded-[28px] border border-stone-200 bg-white shadow-sm">
+      <header className="bg-[#fff8ec] p-4 sm:p-5">
+        <div className="grid grid-cols-[72px_1fr] gap-3">
+          <div className="grid h-[88px] place-items-center rounded-2xl bg-emerald-800 text-white shadow-sm">
+            <div className="text-center">
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em]">
+                Day
+              </p>
+              <p className="text-3xl font-semibold leading-none">{dayNumber}</p>
+            </div>
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-bold text-emerald-800">{dayLabel}</p>
+              {ledgerTotal > 0 ? (
+                <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-900">
+                  Day cost {money(ledgerTotal, ledgerCurrency)}
+                </span>
+              ) : null}
+            </div>
+            <h2 className="mt-1 text-xl font-semibold leading-tight text-stone-950">
+              {day.title || "Open travel day"}
+            </h2>
+            <p className="mt-2 truncate text-sm text-stone-600">
+              {dayLocation(plannerDay)}
+            </p>
+          </div>
+        </div>
+
+      </header>
+
+      <div className="space-y-5 p-4 sm:p-5">
+        {stay && stayItem ? (
+          <section className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+            <div className="grid grid-cols-[1fr_auto] gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-bold uppercase tracking-wide text-amber-800">
+                  Tonight
+                </p>
+                <h3 className="mt-1 truncate text-base font-semibold text-stone-950">
+                  {stay.title}
+                </h3>
+                {stay.locationName ? (
+                  <p className="mt-1 truncate text-sm text-stone-600">
+                    {itemSubtitle(stayItem)}
+                  </p>
+                ) : null}
+              </div>
+              <div className="flex items-start gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setActiveComposerId((current) =>
+                      current === stayItem.id ? null : stayItem.id,
+                    )
+                  }
+                  className="grid size-9 place-items-center rounded-full bg-white text-xs font-bold text-amber-700 shadow-sm"
+                  title="Add memory"
+                >
+                  M
+                </button>
+                {(stayMapsHref || mapsHref(stay.title)) ? (
+                  <a
+                    href={stayMapsHref || mapsHref(stay.title) || "#"}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="grid size-9 place-items-center rounded-full bg-white shadow-sm"
+                    title="Open location"
+                  >
+                    <Image
+                      src="/icons/location.png"
+                      alt=""
+                      width={16}
+                      height={16}
+                      className="object-contain opacity-70"
+                    />
+                  </a>
+                ) : (
+                  <span className="grid size-9 place-items-center rounded-full bg-white opacity-35 shadow-sm">
+                    <Image
+                      src="/icons/location.png"
+                      alt=""
+                      width={16}
+                      height={16}
+                      className="object-contain"
+                    />
+                  </span>
+                )}
+                {canManagePlans ? (
+                  <button
+                    type="button"
+                    onClick={() => startEditItem(stayItem)}
+                    className="grid size-9 place-items-center rounded-full bg-white shadow-sm"
+                    title="Modify booking"
+                  >
+                    <Image
+                      src="/icons/modify.png"
+                      alt=""
+                      width={16}
+                      height={16}
+                      className="object-contain opacity-75"
+                    />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            {activeComposerId === stayItem.id ? (
+              <form
+                onSubmit={(event) => addInlineMemory(event, stayItem)}
+                className="mt-3 rounded-2xl border border-amber-100 bg-white p-2 shadow-sm"
+              >
+                <div className="flex items-end gap-2">
+                  <button
+                    type="button"
+                    className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-lg font-semibold text-stone-500"
+                    title="Attach file"
+                  >
+                    +
+                  </button>
+                  <textarea
+                    value={memoryTextByItem[stayItem.id] ?? ""}
+                    onChange={(event) =>
+                      setMemoryTextByItem((current) => ({
+                        ...current,
+                        [stayItem.id]: event.target.value,
+                      }))
+                    }
+                    rows={1}
+                    placeholder="Add stay memory, @someone, or expense..."
+                    className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm leading-5 text-stone-950 outline-none focus:border-amber-300"
+                  />
+                  <button
+                    type="submit"
+                    disabled={
+                      savingMemoryId === stayItem.id ||
+                      !(memoryTextByItem[stayItem.id] ?? "").trim()
+                    }
+                    className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300"
+                    title="Save memory"
+                  >
+                    {savingMemoryId === stayItem.id ? "..." : "Go"}
+                  </button>
+                </div>
+                {memoryErrorByItem[stayItem.id] ? (
+                  <p className="mt-2 text-xs font-medium text-red-700">
+                    {memoryErrorByItem[stayItem.id]}
+                  </p>
+                ) : null}
+                {mentionOptions(stayItem.id).length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {mentionOptions(stayItem.id).map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => insertMention(stayItem.id, option.label)}
+                        className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-900"
+                      >
+                        @{option.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </form>
+            ) : null}
+            {activeComposerId === stayItem.id && memoriesForItem(stayItem).length > 0 ? (
+              <div className="mt-3 space-y-2 border-t border-amber-100 pt-3">
+                {memoriesForItem(stayItem).map((memory) => (
+                  <div
+                    key={memory.id}
+                    className="rounded-2xl bg-white px-3 py-2"
+                  >
+                    <p className="text-xs font-semibold text-emerald-800">
+                      {memory.contributorName || "Traveler"}
+                    </p>
+                    <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
+                      {memory.content}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {pendingExpense?.itemId === stayItem.id ? (
+              <section className="mt-3 rounded-3xl border border-amber-200 bg-white p-3 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.14em] text-amber-800">
+                      Expense detected
+                    </p>
+                    <h4 className="mt-1 font-semibold text-stone-950">
+                      Add stay cost to ledger?
+                    </h4>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPendingExpense(null)}
+                    className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-500"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+                <div className="mt-3 grid grid-cols-[1fr_96px_1fr] gap-2">
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-700">
+                      Amount
+                    </span>
+                    <input
+                      value={pendingExpense.amount}
+                      onChange={(event) =>
+                        updatePendingExpense({ amount: event.target.value })
+                      }
+                      min="0"
+                      step="0.01"
+                      type="number"
+                      className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-700">
+                      Currency
+                    </span>
+                    <select
+                      value={pendingExpense.currency}
+                      onChange={(event) =>
+                        updatePendingExpense({
+                          currency: event.target.value,
+                          exchangeRate:
+                            event.target.value === ledgerBaseCurrency ? "1" : "",
+                        })
+                      }
+                      className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                    >
+                      {expenseCurrencies.map((currency) => (
+                        <option key={currency} value={currency}>
+                          {currency}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-700">
+                      Rate to {ledgerBaseCurrency}
+                    </span>
+                    <input
+                      value={pendingExpense.exchangeRate}
+                      onChange={(event) =>
+                        updatePendingExpense({
+                          exchangeRate: event.target.value,
+                        })
+                      }
+                      min="0"
+                      step="0.0001"
+                      type="number"
+                      className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                    />
+                  </label>
+                </div>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-700">
+                      Paid by
+                    </span>
+                    <select
+                      value={pendingExpense.payerMemberId}
+                      onChange={(event) =>
+                        updatePendingExpense({
+                          payerMemberId: event.target.value,
+                        })
+                      }
+                      className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                    >
+                      <option value="">Choose payer</option>
+                      {activeMembers().map((member) => (
+                        <option key={member.id} value={member.id}>
+                          {member.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-700">
+                      Mode
+                    </span>
+                    <select
+                      value={pendingExpense.accountingMode}
+                      onChange={(event) =>
+                        updatePendingExpense({
+                          accountingMode: event.target
+                            .value as LedgerAccountingMode,
+                        })
+                      }
+                      className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                    >
+                      <option value="shared">Shared</option>
+                      <option value="stats_only">Stats only</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <p className="text-xs font-bold text-stone-700">
+                    {pendingExpense.accountingMode === "shared"
+                      ? "Split with"
+                      : "Count for"}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {activeMembers().map((member) => {
+                      const selected =
+                        pendingExpense.participantMemberIds.includes(member.id);
+                      return (
+                        <button
+                          key={member.id}
+                          type="button"
+                          onClick={() => toggleExpenseParticipant(member.id)}
+                          className={`rounded-full px-3 py-1.5 text-xs font-bold ${
+                            selected
+                              ? "bg-emerald-700 text-white"
+                              : "bg-stone-100 text-stone-600"
+                          }`}
+                        >
+                          {member.displayName}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="mt-3 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={confirmPendingExpense}
+                    disabled={
+                      savingExpenseId === pendingExpense.itemId ||
+                      !pendingExpense.amount ||
+                      !pendingExpense.exchangeRate
+                    }
+                    className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-bold text-white disabled:bg-stone-300"
+                  >
+                    {savingExpenseId === pendingExpense.itemId
+                      ? "Adding..."
+                      : "Add to ledger"}
+                  </button>
+                </div>
+                {expenseError ? (
+                  <p className="mt-2 rounded-2xl bg-red-50 p-2 text-xs font-medium text-red-700">
+                    {expenseError}
+                  </p>
+                ) : null}
+              </section>
+            ) : null}
+          </section>
+        ) : null}
+
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <SectionTitle title="Today" />
+            <div className="flex items-center gap-2">
+              {currentMember ? (
+                <button
+                  type="button"
+                  onClick={() => setShowMineOnly((current) => !current)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-bold shadow-sm ${
+                    showMineOnly
+                      ? "bg-emerald-700 text-white"
+                      : "bg-white text-emerald-800"
+                  }`}
+                >
+                  Mine
+                </button>
+              ) : null}
+              {canManagePlans && day.dayDate !== "unscheduled" ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAddingPlan(true);
+                    setDraftPlan(null);
+                    setPlanError(null);
+                  }}
+                  className="grid size-8 place-items-center rounded-full bg-emerald-700 text-lg font-bold leading-none text-white shadow-sm"
+                  title="Add schedule item"
+                >
+                  +
+                </button>
+              ) : null}
+            </div>
+          </div>
+          {story.length === 0 ? (
+            <p className="rounded-2xl bg-stone-50 p-4 text-sm text-stone-500">
+              No schedule added yet.
+            </p>
+          ) : visibleStory.length === 0 ? (
+            <p className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-900">
+              Nothing directly mentions you on this day yet.
+            </p>
+          ) : (
+            <div className="relative space-y-2 pl-5 before:absolute before:bottom-4 before:left-2 before:top-4 before:w-px before:bg-emerald-100">
+              {visibleStory.map((item) => {
+                const navHref = mapsHref(item.location);
+                return (
+                  <details
+                    key={item.id}
+                    className={`group relative rounded-2xl p-3 open:bg-[#fffaf1] ${
+                      item.status === "cancelled" || item.status === "skipped"
+                        ? "bg-stone-100 opacity-70"
+                        : "bg-stone-50"
+                    }`}
+                  >
+                    <summary className="grid cursor-pointer list-none grid-cols-[48px_1fr_auto] gap-3">
+                      <span className="absolute -left-[17px] top-5 size-3 rounded-full border-2 border-white bg-emerald-700 shadow-sm" />
+                      <span className="text-sm font-bold text-emerald-800">
+                        {item.time ? formatTime(item.time) : "Any"}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold text-stone-950">
+                          <HighlightedText text={item.title} aliases={aliases} />
+                          {item.status !== "planned" ? (
+                            <span className="ml-2 rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-bold uppercase text-stone-600">
+                              {item.status}
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="mt-1 block truncate text-xs text-stone-500">
+                          <HighlightedText
+                            text={itemSubtitle(item)}
+                            aliases={aliases}
+                          />
+                        </span>
+                      </span>
+                      <span className="flex items-start gap-1">
+                        {day.dayDate !== "unscheduled" ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              const row = event.currentTarget.closest("details");
+                              if (row) row.open = true;
+                              setActiveComposerId((current) =>
+                                current === item.id ? null : item.id,
+                              );
+                            }}
+                            className="grid size-8 place-items-center rounded-full bg-white text-xs font-bold text-amber-700 shadow-sm"
+                            title="Add memory"
+                          >
+                            M
+                          </button>
+                        ) : (
+                          <span className="grid size-8 place-items-center rounded-full bg-white text-xs font-bold text-stone-300 shadow-sm">
+                            M
+                          </span>
+                        )}
+                        {navHref ? (
+                          <a
+                            href={navHref}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(event) => event.stopPropagation()}
+                            className="grid size-8 place-items-center rounded-full bg-white shadow-sm"
+                            title="Open navigation"
+                          >
+                            <Image
+                              src="/icons/location.png"
+                              alt=""
+                              width={14}
+                              height={14}
+                              className="object-contain opacity-70"
+                            />
+                          </a>
+                        ) : (
+                          <span className="grid size-8 place-items-center rounded-full bg-white opacity-35 shadow-sm">
+                            <Image
+                              src="/icons/location.png"
+                              alt=""
+                              width={14}
+                              height={14}
+                              className="object-contain"
+                            />
+                          </span>
+                        )}
+                        {canManagePlans ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              startEditItem(item);
+                            }}
+                            className="grid size-8 place-items-center rounded-full bg-white shadow-sm"
+                            title="Modify schedule item"
+                          >
+                            <Image
+                              src="/icons/modify.png"
+                              alt=""
+                              width={14}
+                              height={14}
+                              className="object-contain opacity-75"
+                            />
+                          </button>
+                        ) : null}
+                      </span>
+                    </summary>
+                    <div className="mt-3 rounded-xl bg-white p-3 text-sm leading-6 text-stone-600">
+                      <HighlightedText
+                        text={
+                          item.note ||
+                          "No notes yet. Add memory to leave details for this stop."
+                        }
+                        aliases={aliases}
+                      />
+                      {memoriesForItem(item).length > 0 ? (
+                        <div className="mt-3 space-y-2 border-t border-stone-100 pt-3">
+                          {memoriesForItem(item).map((memory) => (
+                            <div
+                              key={memory.id}
+                              className="rounded-2xl bg-emerald-50 px-3 py-2"
+                            >
+                              <p className="text-xs font-semibold text-emerald-800">
+                                {memory.contributorName || "Traveler"}
+                              </p>
+                              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
+                                {memory.content}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {activeComposerId === item.id ? (
+                        <form
+                          onSubmit={(event) => addInlineMemory(event, item)}
+                          className="mt-3 rounded-2xl border border-emerald-100 bg-[#fffdf8] p-2 shadow-sm"
+                        >
+                          <div className="flex items-end gap-2">
+                            <button
+                              type="button"
+                              className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-lg font-semibold text-stone-500"
+                              title="Attach file"
+                            >
+                              +
+                            </button>
+                            <textarea
+                              value={memoryTextByItem[item.id] ?? ""}
+                              onChange={(event) =>
+                                setMemoryTextByItem((current) => ({
+                                  ...current,
+                                  [item.id]: event.target.value,
+                                }))
+                              }
+                              rows={1}
+                              placeholder="Add a memory, @someone, or expense..."
+                              className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm leading-5 text-stone-950 outline-none focus:border-emerald-300"
+                            />
+                            <button
+                              type="button"
+                              className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-xs font-bold text-stone-500"
+                              title="Voice input"
+                            >
+                              Mic
+                            </button>
+                            <button
+                              type="submit"
+                              disabled={
+                                savingMemoryId === item.id ||
+                                !(memoryTextByItem[item.id] ?? "").trim()
+                              }
+                              className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300"
+                              title="Save memory"
+                            >
+                              {savingMemoryId === item.id ? "..." : "Go"}
+                            </button>
+                          </div>
+                          {memoryErrorByItem[item.id] ? (
+                            <p className="mt-2 text-xs font-medium text-red-700">
+                              {memoryErrorByItem[item.id]}
+                            </p>
+                          ) : null}
+                          {mentionOptions(item.id).length > 0 ? (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {mentionOptions(item.id).map((option) => (
+                                <button
+                                  key={option.id}
+                                  type="button"
+                                  onClick={() => insertMention(item.id, option.label)}
+                                  className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-900"
+                                >
+                                  @{option.label}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </form>
+                      ) : null}
+                      {pendingExpense?.itemId === item.id ? (
+                        <section className="mt-3 rounded-3xl border border-amber-200 bg-amber-50 p-3 shadow-sm">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs font-bold uppercase tracking-[0.14em] text-amber-800">
+                                Expense detected
+                              </p>
+                              <h4 className="mt-1 font-semibold text-stone-950">
+                                Add this to ledger?
+                              </h4>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setPendingExpense(null)}
+                              className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-stone-500"
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+
+                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                            <label className="space-y-1">
+                              <span className="text-xs font-bold text-stone-700">
+                                Title
+                              </span>
+                              <input
+                                value={pendingExpense.title}
+                                onChange={(event) =>
+                                  updatePendingExpense({
+                                    title: event.target.value,
+                                  })
+                                }
+                                className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                              />
+                            </label>
+                            <label className="space-y-1">
+                              <span className="text-xs font-bold text-stone-700">
+                                Category
+                              </span>
+                              <select
+                                value={pendingExpense.category}
+                                onChange={(event) =>
+                                  updatePendingExpense({
+                                    category: event.target.value as LedgerCategory,
+                                  })
+                                }
+                                className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                              >
+                                {expenseCategories.map((category) => (
+                                  <option
+                                    key={category.value}
+                                    value={category.value}
+                                  >
+                                    {category.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+
+                          <div className="mt-2 grid grid-cols-[1fr_96px_1fr] gap-2">
+                            <label className="space-y-1">
+                              <span className="text-xs font-bold text-stone-700">
+                                Amount
+                              </span>
+                              <input
+                                value={pendingExpense.amount}
+                                onChange={(event) =>
+                                  updatePendingExpense({
+                                    amount: event.target.value,
+                                  })
+                                }
+                                min="0"
+                                step="0.01"
+                                type="number"
+                                className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                              />
+                            </label>
+                            <label className="space-y-1">
+                              <span className="text-xs font-bold text-stone-700">
+                                Currency
+                              </span>
+                              <select
+                                value={pendingExpense.currency}
+                                onChange={(event) =>
+                                  updatePendingExpense({
+                                    currency: event.target.value,
+                                    exchangeRate:
+                                      event.target.value === ledgerBaseCurrency
+                                        ? "1"
+                                        : "",
+                                  })
+                                }
+                                className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                              >
+                                {expenseCurrencies.map((currency) => (
+                                  <option key={currency} value={currency}>
+                                    {currency}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="space-y-1">
+                              <span className="text-xs font-bold text-stone-700">
+                                Rate to {ledgerBaseCurrency}
+                                {isLoadingRate ? " · loading" : ""}
+                              </span>
+                              <input
+                                value={pendingExpense.exchangeRate}
+                                onChange={(event) =>
+                                  updatePendingExpense({
+                                    exchangeRate: event.target.value,
+                                  })
+                                }
+                                min="0"
+                                step="0.0001"
+                                type="number"
+                                placeholder="1"
+                                className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                              />
+                            </label>
+                          </div>
+
+                          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                            <label className="space-y-1">
+                              <span className="text-xs font-bold text-stone-700">
+                                Paid by
+                              </span>
+                              <select
+                                value={pendingExpense.payerMemberId}
+                                onChange={(event) =>
+                                  updatePendingExpense({
+                                    payerMemberId: event.target.value,
+                                  })
+                                }
+                                className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                              >
+                                <option value="">Choose payer</option>
+                                {activeMembers().map((member) => (
+                                  <option key={member.id} value={member.id}>
+                                    {member.displayName}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="space-y-1">
+                              <span className="text-xs font-bold text-stone-700">
+                                Mode
+                              </span>
+                              <select
+                                value={pendingExpense.accountingMode}
+                                onChange={(event) =>
+                                  updatePendingExpense({
+                                    accountingMode: event.target
+                                      .value as LedgerAccountingMode,
+                                  })
+                                }
+                                className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                              >
+                                <option value="shared">Shared</option>
+                                <option value="stats_only">Stats only</option>
+                              </select>
+                            </label>
+                          </div>
+
+                          <div className="mt-3 space-y-2">
+                            <p className="text-xs font-bold text-stone-700">
+                              {pendingExpense.accountingMode === "shared"
+                                ? "Split with"
+                                : "Count for"}
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {activeMembers().map((member) => {
+                                const selected =
+                                  pendingExpense.participantMemberIds.includes(
+                                    member.id,
+                                  );
+                                return (
+                                  <button
+                                    key={member.id}
+                                    type="button"
+                                    onClick={() =>
+                                      toggleExpenseParticipant(member.id)
+                                    }
+                                    className={`rounded-full px-3 py-1.5 text-xs font-bold ${
+                                      selected
+                                        ? "bg-emerald-700 text-white"
+                                        : "bg-white text-stone-600"
+                                    }`}
+                                  >
+                                    {member.displayName}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {pendingExpense.accountingMode === "stats_only" ? (
+                              <p className="text-xs leading-5 text-stone-500">
+                                This will be used for personal trip cost stats,
+                                not final settlement.
+                              </p>
+                            ) : null}
+                          </div>
+
+                          <label className="mt-3 block space-y-1">
+                            <span className="text-xs font-bold text-stone-700">
+                              Location
+                            </span>
+                            <input
+                              value={pendingExpense.addressText}
+                              onChange={(event) =>
+                                updatePendingExpense({
+                                  addressText: event.target.value,
+                                })
+                              }
+                              className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                            />
+                          </label>
+
+                          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-xs font-semibold text-amber-900">
+                              Linked to this schedule item and memory.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={confirmPendingExpense}
+                              disabled={
+                                savingExpenseId === pendingExpense.itemId ||
+                                !pendingExpense.amount ||
+                                !pendingExpense.exchangeRate
+                              }
+                              className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-bold text-white disabled:bg-stone-300"
+                            >
+                              {savingExpenseId === pendingExpense.itemId
+                                ? "Adding..."
+                                : "Add to ledger"}
+                            </button>
+                          </div>
+                          {expenseError ? (
+                            <p className="mt-2 rounded-2xl bg-red-50 p-2 text-xs font-medium text-red-700">
+                              {expenseError}
+                            </p>
+                          ) : null}
+                        </section>
+                      ) : null}
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {bookings.length > 0 ? (
+          <section className="space-y-3">
+            <SectionTitle title="Key bookings" />
+            <div className="grid gap-2 sm:grid-cols-3">
+              {bookings.map(([type, items]) => {
+                const first = items[0];
+                const bookingTotal = items.reduce(
+                  (total, item) =>
+                    total +
+                    ledgerEntries
+                      .filter((entry) => entry.itineraryReservationId === item.id)
+                      .reduce((sum, entry) => sum + entry.baseAmount, 0),
+                  0,
+                );
+                return (
+                  <div
+                    key={type}
+                    className="rounded-2xl border border-stone-100 bg-white p-3 shadow-sm"
+                  >
+                    <p className="text-xs font-bold uppercase tracking-wide text-emerald-800">
+                      {bookingLabels[type] ?? type}
+                    </p>
+                    <h4 className="mt-1 truncate text-sm font-semibold text-stone-950">
+                      {items.length > 1
+                        ? `${items.length} items`
+                        : first.title}
+                    </h4>
+                    {first.locationName ? (
+                      <p className="mt-1 truncate text-xs text-stone-500">
+                        {first.locationName}
+                      </p>
+                    ) : null}
+                    {bookingTotal > 0 ? (
+                      <p className="mt-2 text-xs font-bold text-emerald-800">
+                        {money(bookingTotal, ledgerCurrency)}
+                      </p>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
+
+        {day.notes ? (
+          <section className="space-y-2 rounded-3xl bg-[#fff8ec] p-4">
+            <SectionTitle title="Day notes" />
+            <p className="text-sm leading-6 text-stone-700">{day.notes}</p>
+          </section>
+        ) : null}
+
+        <section className="space-y-3 rounded-3xl border border-stone-100 bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <SectionTitle title="Ledger" />
+            <Link
+              href={`/trips/${tripId}/ledger`}
+              className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-700"
+            >
+              Open
+            </Link>
+          </div>
+          {ledgerEntries.length === 0 ? (
+            <p className="rounded-2xl bg-stone-50 p-3 text-sm text-stone-500">
+              No expenses logged for this day.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="rounded-2xl bg-emerald-50 p-3">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-800">
+                  Total
+                </p>
+                <p className="mt-1 font-semibold text-emerald-950">
+                  {money(ledgerTotal, ledgerCurrency)}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-amber-50 p-3">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-amber-800">
+                  Shared
+                </p>
+                <p className="mt-1 font-semibold text-amber-950">
+                  {money(sharedTotal, ledgerCurrency)}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-stone-50 p-3">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-stone-500">
+                  Stats
+                </p>
+                <p className="mt-1 font-semibold text-stone-950">
+                  {money(statsOnlyTotal, ledgerCurrency)}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-stone-50 p-3">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-stone-500">
+                  Review
+                </p>
+                <p className="mt-1 font-semibold text-stone-950">
+                  {reviewCount}
+                </p>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="space-y-3 rounded-3xl bg-emerald-50/60 p-3">
+          <SectionTitle title="Memory preview" />
+          <DayMemoryPreview
+            tripId={tripId}
+            date={day.dayDate}
+            tripDayId={day.id}
+            memories={memories}
+          />
+        </section>
+
+        {nextDay ? (
+          <section className="rounded-3xl border border-stone-100 bg-stone-50 p-4">
+            <SectionTitle title="Tomorrow" />
+            <h3 className="mt-2 text-base font-semibold text-stone-950">
+              {nextDay.day.title || formatDayLabel(nextDay.day.dayDate)}
+            </h3>
+            {nextStory.length > 0 ? (
+              <p className="mt-1 line-clamp-2 text-sm text-stone-600">
+                {nextStory.map((item) => item.title).join(" / ")}
+              </p>
+            ) : (
+              <p className="mt-1 text-sm text-stone-500">
+                No major plans added yet.
+              </p>
+            )}
+          </section>
+        ) : null}
+      </div>
+      {isAddingPlan ? (
+        <div className="fixed inset-0 z-50 grid place-items-end bg-stone-950/30 p-3 sm:place-items-center">
+          <section className="max-h-[88vh] w-full max-w-xl overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-emerald-800">
+                  Add schedule
+                </p>
+                <h3 className="mt-1 text-xl font-semibold text-stone-950">
+                  Describe the plan
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAddingPlan(false);
+                  setDraftPlan(null);
+                  setNewPlanText("");
+                }}
+                className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
+              >
+                Close
+              </button>
+            </div>
+
+            <form onSubmit={prepareDraftPlan} className="mt-4 space-y-3">
+              <textarea
+                value={newPlanText}
+                onChange={(event) => {
+                  setNewPlanText(event.target.value);
+                  setDraftPlan(null);
+                }}
+                rows={3}
+                placeholder="Example: 17:00 go to Costco for group groceries"
+                className="w-full resize-none rounded-2xl border border-stone-200 px-4 py-3 text-sm leading-6 text-stone-950 outline-none focus:border-emerald-300"
+              />
+              <button
+                type="submit"
+                disabled={!newPlanText.trim()}
+                className="rounded-full bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-stone-300"
+              >
+                Parse plan
+              </button>
+            </form>
+
+            {draftPlan ? (
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1 sm:col-span-2">
+                  <span className="text-sm font-bold text-stone-800">Title</span>
+                  <input
+                    value={draftPlan.title}
+                    onChange={(event) =>
+                      setDraftPlan((current) =>
+                        current ? { ...current, title: event.target.value } : current,
+                      )
+                    }
+                    className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-sm font-bold text-stone-800">Type</span>
+                  <select
+                    value={draftPlan.eventType}
+                    onChange={(event) =>
+                      setDraftPlan((current) =>
+                        current
+                          ? {
+                              ...current,
+                              eventType: event.target.value as ItineraryEventType,
+                            }
+                          : current,
+                      )
+                    }
+                    className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                  >
+                    {eventTypes.map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-sm font-bold text-stone-800">
+                    Location
+                  </span>
+                  <input
+                    value={draftPlan.locationName}
+                    onChange={(event) =>
+                      setDraftPlan((current) =>
+                        current
+                          ? { ...current, locationName: event.target.value }
+                          : current,
+                      )
+                    }
+                    className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-sm font-bold text-stone-800">Start</span>
+                  <input
+                    value={draftPlan.plannedStart}
+                    onChange={(event) =>
+                      setDraftPlan((current) =>
+                        current
+                          ? { ...current, plannedStart: event.target.value }
+                          : current,
+                      )
+                    }
+                    type="datetime-local"
+                    className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-sm font-bold text-stone-800">End</span>
+                  <input
+                    value={draftPlan.plannedEnd}
+                    onChange={(event) =>
+                      setDraftPlan((current) =>
+                        current
+                          ? { ...current, plannedEnd: event.target.value }
+                          : current,
+                      )
+                    }
+                    type="datetime-local"
+                    className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                  />
+                </label>
+                <label className="space-y-1 sm:col-span-2">
+                  <span className="text-sm font-bold text-stone-800">Note</span>
+                  <textarea
+                    value={draftPlan.description}
+                    onChange={(event) =>
+                      setDraftPlan((current) =>
+                        current
+                          ? { ...current, description: event.target.value }
+                          : current,
+                      )
+                    }
+                    rows={2}
+                    className="w-full resize-none rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                  />
+                </label>
+                <div className="flex justify-end sm:col-span-2">
+                  <button
+                    type="button"
+                    onClick={saveDraftPlan}
+                    disabled={isSavingPlan || !draftPlan.title.trim()}
+                    className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-bold text-white disabled:bg-stone-300"
+                  >
+                    {isSavingPlan ? "Adding..." : "Add to today"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {planError ? (
+              <p className="mt-3 rounded-2xl bg-red-50 p-3 text-sm font-medium text-red-700">
+                {planError}
+              </p>
+            ) : null}
+          </section>
+        </div>
+      ) : null}
+      {editingItem ? (
+        <div className="fixed inset-0 z-50 grid place-items-end bg-stone-950/30 p-3 sm:place-items-center">
+          <form
+            onSubmit={saveEditingItem}
+            className="max-h-[88vh] w-full max-w-xl overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-emerald-800">
+                  {editingItem.itemType === "event"
+                    ? "Edit schedule item"
+                    : "Edit booking"}
+                </p>
+                <h3 className="mt-1 text-xl font-semibold text-stone-950">
+                  {editingItem.title || "Plan item"}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingItem(null)}
+                className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="space-y-1 sm:col-span-2">
+                <span className="text-sm font-bold text-stone-800">Title</span>
+                <input
+                  value={editingItem.title}
+                  onChange={(event) =>
+                    setEditingItem((current) =>
+                      current ? { ...current, title: event.target.value } : current,
+                    )
+                  }
+                  required
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">Type</span>
+                <select
+                  value={editingItem.typeValue}
+                  onChange={(event) =>
+                    setEditingItem((current) =>
+                      current
+                        ? { ...current, typeValue: event.target.value }
+                        : current,
+                    )
+                  }
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                >
+                  {(editingItem.itemType === "event"
+                    ? eventTypes
+                    : reservationTypes
+                  ).map((type) => (
+                    <option key={type} value={type}>
+                      {type}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">Status</span>
+                <select
+                  value={editingItem.status}
+                  onChange={(event) =>
+                    setEditingItem((current) =>
+                      current
+                        ? {
+                            ...current,
+                            status: event.target.value as ItineraryItemStatus,
+                          }
+                        : current,
+                    )
+                  }
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                >
+                  {itemStatuses.map((status) => (
+                    <option key={status} value={status}>
+                      {status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">
+                  {editingItem.itemType === "event"
+                    ? "Detail / note"
+                    : "Provider"}
+                </span>
+                <input
+                  value={
+                    editingItem.itemType === "event"
+                      ? editingItem.description
+                      : editingItem.secondary
+                  }
+                  onChange={(event) =>
+                    setEditingItem((current) =>
+                      current
+                        ? editingItem.itemType === "event"
+                          ? { ...current, description: event.target.value }
+                          : { ...current, secondary: event.target.value }
+                        : current,
+                    )
+                  }
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">Location</span>
+                <input
+                  value={editingItem.locationName}
+                  onChange={(event) =>
+                    setEditingItem((current) =>
+                      current
+                        ? { ...current, locationName: event.target.value }
+                        : current,
+                    )
+                  }
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">Start</span>
+                <input
+                  value={editingItem.startsAt}
+                  onChange={(event) =>
+                    setEditingItem((current) =>
+                      current
+                        ? { ...current, startsAt: event.target.value }
+                        : current,
+                    )
+                  }
+                  type="datetime-local"
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">End</span>
+                <input
+                  value={editingItem.endsAt}
+                  onChange={(event) =>
+                    setEditingItem((current) =>
+                      current ? { ...current, endsAt: event.target.value } : current,
+                    )
+                  }
+                  type="datetime-local"
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                />
+              </label>
+
+              <label className="space-y-1 sm:col-span-2">
+                <span className="text-sm font-bold text-stone-800">URL</span>
+                <input
+                  value={editingItem.url}
+                  onChange={(event) =>
+                    setEditingItem((current) =>
+                      current ? { ...current, url: event.target.value } : current,
+                    )
+                  }
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                />
+              </label>
+            </div>
+
+            {planError ? (
+              <p className="mt-3 rounded-2xl bg-red-50 p-3 text-sm font-medium text-red-700">
+                {planError}
+              </p>
+            ) : null}
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={deleteEditingItem}
+                className="rounded-full bg-red-50 px-4 py-2 text-sm font-bold text-red-700"
+              >
+                Delete
+              </button>
+              <button
+                type="submit"
+                disabled={isSavingPlan}
+                className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-bold text-white disabled:bg-stone-300"
+              >
+                {isSavingPlan ? "Saving..." : "Save changes"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+    </article>
+  );
+}

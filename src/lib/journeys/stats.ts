@@ -1,4 +1,4 @@
-import type { MemoryEntry, TripMember } from "@/types";
+import type { JourneyMember, MemoryEntry } from "@/types";
 
 export function getMemoryStats(memories: MemoryEntry[]) {
   return {
@@ -17,6 +17,12 @@ export function getTodayMemoryStats(memories: MemoryEntry[], now = new Date()) {
   );
 }
 
-export function getMemberCount(members: TripMember[]) {
-  return members.length;
+export function getActiveJourneyMembers(members: JourneyMember[]) {
+  return members.filter(
+    (member) => member.role === "owner" || member.role === "group_member",
+  );
+}
+
+export function getJourneyParticipantCount(members: JourneyMember[]) {
+  return getActiveJourneyMembers(members).length;
 }

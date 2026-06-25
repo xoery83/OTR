@@ -20,6 +20,7 @@ export function SidebarNav() {
     ? [
         { label: "Overview", href: `/trips/${tripId}` },
         { label: "Planner", href: `/trips/${tripId}/planner` },
+        { label: "Ledger", href: `/trips/${tripId}/ledger` },
         { label: "Timeline", href: `/trips/${tripId}/timeline` },
         { label: "Highlights", href: `/trips/${tripId}/highlights` },
       ]
@@ -32,7 +33,7 @@ export function SidebarNav() {
   }
 
   function itemClass(active: boolean) {
-    return `block rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+    return `grid size-11 place-items-center rounded-2xl text-sm font-bold transition ${
       active
         ? "bg-emerald-50 text-emerald-900"
         : "text-stone-600 hover:bg-stone-100 hover:text-stone-950"
@@ -40,42 +41,42 @@ export function SidebarNav() {
   }
 
   return (
-    <aside className="fixed left-0 top-0 z-40 hidden h-screen w-64 border-r border-emerald-100 bg-[#fffdf8] px-4 py-5 md:block">
-      <Link href="/" className="flex items-center gap-3 px-2">
+    <aside className="fixed left-0 top-0 z-40 hidden h-screen w-20 border-r border-emerald-100 bg-[#fffdf8] px-3 py-5 md:block">
+      <Link href="/" className="grid place-items-center" title="OTR">
         <span className="grid size-10 place-items-center rounded-xl bg-emerald-700 text-sm font-bold text-white">
           O
         </span>
-        <div>
-          <p className="text-xl font-semibold tracking-wide text-stone-950">OTR</p>
-          <p className="text-xs font-medium text-stone-500">journeys</p>
-        </div>
       </Link>
       <nav className="mt-8 space-y-7">
-        <div className="space-y-1">
-          <p className="px-3 text-xs font-bold uppercase tracking-[0.16em] text-stone-400">
-            Main
-          </p>
+        <div className="grid justify-items-center gap-2">
           {mainItems.map((item) => (
-            <Link key={item.label} href={item.href} className={itemClass(isActive(item.href))}>
-              {item.label}
+            <Link
+              key={item.label}
+              href={item.href}
+              className={itemClass(isActive(item.href))}
+              title={item.label}
+            >
+              {item.label.slice(0, 1)}
             </Link>
           ))}
         </div>
 
-        <div className="space-y-1">
-          <p className="px-3 text-xs font-bold uppercase tracking-[0.16em] text-stone-400">
-            Current Journey
-          </p>
+        <div className="grid justify-items-center gap-2 border-t border-stone-100 pt-4">
           {journeyItems.length > 0 ? (
             journeyItems.map((item) => (
-              <Link key={item.label} href={item.href} className={itemClass(isActive(item.href))}>
-                {item.label}
+              <Link
+                key={item.label}
+                href={item.href}
+                className={itemClass(isActive(item.href))}
+                title={item.label}
+              >
+                {item.label.slice(0, 1)}
               </Link>
             ))
           ) : (
-            <p className="px-3 py-2 text-sm leading-6 text-stone-500">
-              Open a journey to see planner, timeline, and highlights.
-            </p>
+            <span className="grid size-11 place-items-center rounded-2xl bg-stone-50 text-xs font-bold text-stone-300">
+              -
+            </span>
           )}
         </div>
       </nav>

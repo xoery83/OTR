@@ -11,6 +11,7 @@ export default async function JourneyLayout({
   const items = [
     ["Overview", `/trips/${tripId}`],
     ["Planner", `/trips/${tripId}/planner`],
+    ["Ledger", `/trips/${tripId}/ledger`],
     ["Timeline", `/trips/${tripId}/timeline`],
     ["People", `/trips/${tripId}/people`],
     ["Highlights", `/trips/${tripId}/highlights`],

@@ -1,64 +1,143 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
-import { ItineraryEventCard } from "@/components/ItineraryEventCard";
+import { PlannerDayCard } from "@/components/PlannerDayCard";
 import { getErrorMessage } from "@/lib/errors";
-import { formatDayLabel } from "@/lib/format";
-import {
-  createItineraryEvent,
-  getItineraryEvents,
-} from "@/lib/supabase/itinerary";
+import { getActiveJourneyMembers } from "@/lib/journeys/stats";
+import { getJourneyMembers } from "@/lib/supabase/journey-members";
+import { getLedgerData } from "@/lib/supabase/ledger";
+import { getPlannerV2, type PlannerV2Data } from "@/lib/supabase/planner-v2";
 import { getTrip } from "@/lib/supabase/trips";
-import type { ItineraryEvent, ItineraryEventType, Trip } from "@/types";
+import type { JourneyMember, LedgerEntry, Trip } from "@/types";
 
-const eventTypes: ItineraryEventType[] = [
-  "flight",
-  "hotel",
-  "car",
-  "activity",
-  "meal",
-  "transport",
-  "note",
-  "other",
-];
+async function loadPlannerData(tripId: string) {
+  const [tripData, members] = await Promise.all([
+    getTrip(tripId),
+    getJourneyMembers(tripId),
+  ]);
+  const [plannerData, ledgerData] = await Promise.all([
+    getPlannerV2(tripData),
+    getLedgerData(tripId).catch(() => null),
+  ]);
+  return {
+    tripData,
+    plannerData,
+    members,
+    ledgerEntries: ledgerData?.entries ?? [],
+    ledgerBaseCurrency: ledgerData?.ledger.baseCurrency ?? "NZD",
+  };
+}
 
-function dateKey(value: string | null) {
-  if (!value) {
-    return "unscheduled";
+function compactDate(value: string) {
+  if (value === "unscheduled") return "Any";
+  const date = new Date(`${value}T00:00:00`);
+  return `${date.getMonth() + 1}.${date.getDate()}`;
+}
+
+function isOfficialTripDay(value: string, trip: Trip | null) {
+  if (value === "unscheduled" || !trip?.startDate || !trip.endDate) {
+    return false;
   }
-  return value.slice(0, 10);
+  return value >= trip.startDate && value <= trip.endDate;
+}
+
+function memberInitial(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.slice(0, 1).toUpperCase())
+    .join("");
+}
+
+function todayKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
+    2,
+    "0",
+  )}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function getDefaultDayId(days: PlannerV2Data["days"]) {
+  if (days.length === 0) return null;
+
+  const today = todayKey();
+  const exact = days.find((day) => day.day.dayDate === today);
+  if (exact) return exact.day.id;
+
+  const datedDays = days.filter((day) => day.day.dayDate !== "unscheduled");
+  if (datedDays.length === 0) return days[0]?.day.id ?? null;
+
+  const todayTime = new Date(`${today}T00:00:00`).getTime();
+  const closest = datedDays.reduce((best, day) => {
+    const bestDistance = Math.abs(
+      new Date(`${best.day.dayDate}T00:00:00`).getTime() - todayTime,
+    );
+    const dayDistance = Math.abs(
+      new Date(`${day.day.dayDate}T00:00:00`).getTime() - todayTime,
+    );
+
+    return dayDistance < bestDistance ? day : best;
+  });
+
+  return closest.day.id;
+}
+
+function getStoredDayId(tripId: string, days: PlannerV2Data["days"]) {
+  const storedDate = window.localStorage.getItem(`otr:planner-day:${tripId}`);
+  if (!storedDate) return null;
+  return days.find((day) => day.day.dayDate === storedDate)?.day.id ?? null;
+}
+
+function entriesForDay(entries: LedgerEntry[], dayDate: string) {
+  if (dayDate === "unscheduled") return [];
+  return entries.filter((entry) => {
+    const coversDay =
+      entry.startDate && entry.endDate
+        ? entry.startDate <= dayDate && entry.endDate >= dayDate
+        : false;
+    return entry.expenseDate === dayDate || coversDay;
+  });
 }
 
 function PlannerContent() {
   const params = useParams<{ tripId: string }>();
   const tripId = params.tripId;
   const [trip, setTrip] = useState<Trip | null>(null);
-  const [events, setEvents] = useState<ItineraryEvent[]>([]);
-  const [title, setTitle] = useState("");
-  const [eventType, setEventType] = useState<ItineraryEventType>("activity");
-  const [plannedStart, setPlannedStart] = useState("");
-  const [plannedEnd, setPlannedEnd] = useState("");
-  const [locationName, setLocationName] = useState("");
-  const [description, setDescription] = useState("");
-  const [bookingReference, setBookingReference] = useState("");
-  const [url, setUrl] = useState("");
+  const [members, setMembers] = useState<JourneyMember[]>([]);
+  const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
+  const [ledgerBaseCurrency, setLedgerBaseCurrency] = useState("NZD");
+  const [planner, setPlanner] = useState<PlannerV2Data>({ days: [] });
+  const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dateStripRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let isMounted = true;
     async function loadPlanner() {
       try {
-        const [tripData, eventData] = await Promise.all([
-          getTrip(tripId),
-          getItineraryEvents(tripId),
-        ]);
+        const {
+          tripData,
+          plannerData,
+          members: memberData,
+          ledgerEntries: entryData,
+          ledgerBaseCurrency: baseCurrency,
+        } =
+          await loadPlannerData(tripId);
         if (isMounted) {
           setTrip(tripData);
-          setEvents(eventData);
+          setPlanner(plannerData);
+          setMembers(memberData);
+          setLedgerEntries(entryData);
+          setLedgerBaseCurrency(baseCurrency);
+          setSelectedDayId(
+            getStoredDayId(tripId, plannerData.days) ??
+              getDefaultDayId(plannerData.days),
+          );
         }
       } catch (plannerError) {
         if (isMounted) {
@@ -68,163 +147,197 @@ function PlannerContent() {
         if (isMounted) setIsLoading(false);
       }
     }
+
     loadPlanner();
     return () => {
       isMounted = false;
     };
   }, [tripId]);
 
-  const groups = useMemo(() => {
-    return events.reduce<Record<string, ItineraryEvent[]>>((acc, event) => {
-      const key = dateKey(event.plannedStart);
-      acc[key] = [...(acc[key] ?? []), event];
-      return acc;
-    }, {});
-  }, [events]);
+  const selectedIndex = useMemo(() => {
+    const index = planner.days.findIndex((day) => day.day.id === selectedDayId);
+    return index >= 0 ? index : 0;
+  }, [planner.days, selectedDayId]);
+  const selectedDay = planner.days[selectedIndex] ?? null;
+  const nextDay = planner.days[selectedIndex + 1] ?? null;
+  const activeMembers = getActiveJourneyMembers(members);
 
-  async function addEvent(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
-    setIsSubmitting(true);
-    try {
-      const created = await createItineraryEvent({
-        tripId,
-        title,
-        eventType,
-        plannedStart,
-        plannedEnd,
-        locationName,
-        description,
-        bookingReference,
-        url,
-      });
-      setEvents((current) => [...current, created]);
-      setTitle("");
-      setDescription("");
-      setLocationName("");
-      setBookingReference("");
-      setUrl("");
-      setPlannedStart("");
-      setPlannedEnd("");
-    } catch (eventError) {
-      setError(getErrorMessage(eventError, "Could not add plan item."));
-    } finally {
-      setIsSubmitting(false);
+  function chooseDay(dayId: string) {
+    setSelectedDayId(dayId);
+    const day = planner.days.find((plannerDay) => plannerDay.day.id === dayId);
+    if (day) {
+      window.localStorage.setItem(`otr:planner-day:${tripId}`, day.day.dayDate);
     }
   }
+
+  async function refreshPlanner() {
+    const {
+      tripData,
+      plannerData,
+      members: memberData,
+      ledgerEntries: entryData,
+      ledgerBaseCurrency: baseCurrency,
+    } = await loadPlannerData(tripId);
+    setTrip(tripData);
+    setPlanner(plannerData);
+    setMembers(memberData);
+    setLedgerEntries(entryData);
+    setLedgerBaseCurrency(baseCurrency);
+  }
+
+  useEffect(() => {
+    if (!selectedDayId) return;
+    const selectedButton = dateStripRef.current?.querySelector(
+      `[data-day-id="${selectedDayId}"]`,
+    );
+    selectedButton?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+  }, [selectedDayId]);
 
   if (isLoading) {
     return <div className="rounded-2xl bg-white p-5">Loading planner...</div>;
   }
 
   return (
-    <div className="space-y-6">
-      <section>
-        <p className="text-sm font-semibold text-emerald-700">
-          {trip?.name || "Journey"}
-        </p>
-        <h1 className="mt-1 text-3xl font-semibold text-stone-950">
-          Journey Planner
-        </h1>
-        <p className="mt-3 text-base leading-7 text-stone-600">
-          Planned route, bookings, and scheduled activities.
-        </p>
-      </section>
-
-      <form
-        onSubmit={addEvent}
-        className="space-y-4 rounded-3xl border border-stone-200 bg-white p-5 shadow-sm"
-      >
-        <h2 className="text-xl font-semibold text-stone-950">Add Plan Item</h2>
-        <input
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          required
-          placeholder="Dinner in Reykjavik"
-          className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-stone-950"
-        />
-        <div className="grid gap-3 sm:grid-cols-2">
-          <select
-            value={eventType}
-            onChange={(event) => setEventType(event.target.value as ItineraryEventType)}
-            className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
-          >
-            {eventTypes.map((type) => (
-              <option key={type} value={type}>
-                {type}
-              </option>
-            ))}
-          </select>
-          <input
-            value={locationName}
-            onChange={(event) => setLocationName(event.target.value)}
-            placeholder="Location"
-            className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
-          />
-          <input
-            type="datetime-local"
-            value={plannedStart}
-            onChange={(event) => setPlannedStart(event.target.value)}
-            className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
-          />
-          <input
-            type="datetime-local"
-            value={plannedEnd}
-            onChange={(event) => setPlannedEnd(event.target.value)}
-            className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
-          />
-        </div>
-        <textarea
-          value={description}
-          onChange={(event) => setDescription(event.target.value)}
-          placeholder="Notes"
-          rows={3}
-          className="w-full resize-none rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
-        />
-        <div className="grid gap-3 sm:grid-cols-2">
-          <input
-            value={bookingReference}
-            onChange={(event) => setBookingReference(event.target.value)}
-            placeholder="Booking reference"
-            className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
-          />
-          <input
-            value={url}
-            onChange={(event) => setUrl(event.target.value)}
-            placeholder="URL"
-            className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={isSubmitting || !title.trim()}
-          className="w-full rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:bg-stone-300"
-        >
-          Add Plan Item
-        </button>
-        {error ? <p className="text-sm font-medium text-red-700">{error}</p> : null}
-      </form>
-
-      <section className="space-y-5">
-        {events.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-5 text-sm text-stone-600">
-            No planned events yet.
+    <div className="space-y-4">
+      <section className="rounded-3xl border border-stone-200 bg-white px-4 py-3 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-3">
+              <Link
+                href={`/trips/${tripId}`}
+                className="text-sm font-bold text-stone-500"
+              >
+                Back
+              </Link>
+              <h1 className="truncate text-lg font-semibold text-stone-950">
+                {trip?.name || "Journey"}
+              </h1>
+            </div>
           </div>
-        ) : (
-          Object.keys(groups)
-            .sort()
-            .map((date) => (
-              <div key={date} className="space-y-3">
-                <h2 className="text-lg font-semibold text-stone-950">
-                  {date === "unscheduled" ? "Unscheduled" : formatDayLabel(date)}
-                </h2>
-                {groups[date].map((event) => (
-                  <ItineraryEventCard key={event.id} event={event} />
-                ))}
-              </div>
-            ))
-        )}
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="flex max-w-36 items-center -space-x-2 overflow-hidden sm:max-w-56">
+              {activeMembers.slice(0, 6).map((member) => (
+                <Link
+                  key={member.id}
+                  href={
+                    member.userId
+                      ? `/people/${member.userId}`
+                      : `/trips/${tripId}/people`
+                  }
+                  className={`grid size-8 shrink-0 place-items-center overflow-hidden rounded-full text-[10px] font-bold ring-2 ring-white ${
+                    member.userId
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-stone-200 text-stone-500"
+                  }`}
+                  title={
+                    member.userId
+                      ? member.displayName
+                      : `${member.displayName} · not linked`
+                  }
+                >
+                  {member.avatarUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={member.avatarUrl}
+                      alt=""
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    memberInitial(member.displayName)
+                  )}
+                </Link>
+              ))}
+              {activeMembers.length > 6 ? (
+                <span className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-100 text-xs font-bold text-stone-500 ring-2 ring-white">
+                  +{activeMembers.length - 6}
+                </span>
+              ) : null}
+            </div>
+            <Link
+              href={`/trips/${tripId}/planner/import`}
+              className="rounded-full bg-emerald-700 px-3 py-2 text-xs font-bold text-white shadow-sm sm:px-4"
+              title="Import planner"
+            >
+              Import
+            </Link>
+          </div>
+        </div>
       </section>
+
+      {planner.days.length > 0 ? (
+        <section className="sticky top-16 z-10 -mx-5 border-y border-stone-200 bg-[#f7f3ea]/95 px-5 py-1.5 backdrop-blur md:top-0">
+          <div ref={dateStripRef} className="flex gap-2 overflow-x-auto">
+            {planner.days.map((plannerDay) => {
+              const selected = plannerDay.day.id === selectedDay?.day.id;
+              const official = isOfficialTripDay(
+                plannerDay.day.dayDate,
+                trip,
+              );
+              return (
+                <button
+                  key={plannerDay.day.id}
+                  data-day-id={plannerDay.day.id}
+                  type="button"
+                  onClick={() => chooseDay(plannerDay.day.id)}
+                  className={`min-w-12 rounded-xl border px-2 py-1 text-center transition ${
+                    selected
+                      ? official
+                        ? "border-emerald-700 bg-emerald-700 text-white shadow-sm"
+                        : "border-stone-500 bg-stone-700 text-white shadow-sm"
+                      : official
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                        : "border-dashed border-stone-200 bg-white/70 text-stone-400"
+                  }`}
+                  title={
+                    official ? "Journey day" : "Preparation or return buffer"
+                  }
+                >
+                  <p className="text-xs font-bold">D{plannerDay.dayNumber}</p>
+                  <p className="text-[11px] leading-tight opacity-80">
+                    {compactDate(plannerDay.day.dayDate)}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
+      {error ? (
+        <p className="rounded-2xl bg-red-50 p-4 text-sm font-medium text-red-700">
+          {error}
+        </p>
+      ) : null}
+
+      {selectedDay ? (
+        <section>
+          <PlannerDayCard
+            tripId={tripId}
+            plannerDay={selectedDay}
+            journeyMembers={activeMembers}
+            ledgerEntries={entriesForDay(
+              ledgerEntries,
+              selectedDay.day.dayDate,
+            )}
+            ledgerBaseCurrency={ledgerBaseCurrency}
+            onLedgerEntryCreated={async () => {
+              const data = await getLedgerData(tripId);
+              setLedgerEntries(data.entries);
+              setLedgerBaseCurrency(data.ledger.baseCurrency);
+            }}
+            onPlannerChanged={refreshPlanner}
+            nextDay={nextDay}
+          />
+        </section>
+      ) : (
+        <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-5 text-sm text-stone-600">
+          No planned days yet.
+        </div>
+      )}
     </div>
   );
 }

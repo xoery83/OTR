@@ -4,11 +4,15 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { TripCard } from "@/components/TripCard";
 import { getJourneyDayNumber, getJourneyStatus } from "@/lib/journeys/status";
-import { getMemoryStats, getTodayMemoryStats } from "@/lib/journeys/stats";
+import {
+  getJourneyParticipantCount,
+  getMemoryStats,
+  getTodayMemoryStats,
+} from "@/lib/journeys/stats";
 import { signInWithGoogle } from "@/lib/supabase/auth";
 import { supabase } from "@/lib/supabase/client";
 import { getItineraryEvents } from "@/lib/supabase/itinerary";
-import { getTripMembers } from "@/lib/supabase/members";
+import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import { getTripMemories } from "@/lib/supabase/memories";
 import { getTripsForCurrentUser } from "@/lib/supabase/trips";
 import type { ItineraryEvent, MemoryEntry, Trip } from "@/types";
@@ -81,10 +85,15 @@ function HomeDashboard() {
           trips.map(async (trip) => {
             const [memories, members, events] = await Promise.all([
               getTripMemories(trip.id),
-              getTripMembers(trip.id),
+              getJourneyMembers(trip.id),
               getItineraryEvents(trip.id),
             ]);
-            return { trip, memories, memberCount: members.length, events };
+            return {
+              trip,
+              memories,
+              memberCount: getJourneyParticipantCount(members),
+              events,
+            };
           }),
         );
 

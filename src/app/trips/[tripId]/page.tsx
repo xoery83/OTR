@@ -7,23 +7,37 @@ import { AuthGate } from "@/components/AuthGate";
 import { MemoryCard } from "@/components/MemoryCard";
 import { formatDateRange } from "@/lib/format";
 import { getJourneyDayNumber, getJourneyStatus, getDaysUntilJourney } from "@/lib/journeys/status";
-import { getMemoryStats, getTodayMemoryStats } from "@/lib/journeys/stats";
+import {
+  getActiveJourneyMembers,
+  getJourneyParticipantCount,
+  getMemoryStats,
+  getTodayMemoryStats,
+} from "@/lib/journeys/stats";
 import { getCurrentUser } from "@/lib/supabase/auth";
 import { getItineraryEvents } from "@/lib/supabase/itinerary";
-import { getTripMembers } from "@/lib/supabase/members";
+import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import {
   getSignedMemoryImageUrls,
   getTripMemories,
 } from "@/lib/supabase/memories";
 import { deleteTrip, getTrip } from "@/lib/supabase/trips";
-import type { ItineraryEvent, MemoryEntry, Trip, TripMember } from "@/types";
+import type { ItineraryEvent, JourneyMember, MemoryEntry, Trip } from "@/types";
+
+function memberInitial(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.slice(0, 1).toUpperCase())
+    .join("");
+}
 
 function TripDashboardContent() {
   const params = useParams<{ tripId: string }>();
   const router = useRouter();
   const tripId = params.tripId;
   const [trip, setTrip] = useState<Trip | null>(null);
-  const [members, setMembers] = useState<TripMember[]>([]);
+  const [members, setMembers] = useState<JourneyMember[]>([]);
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [events, setEvents] = useState<ItineraryEvent[]>([]);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
@@ -40,7 +54,7 @@ function TripDashboardContent() {
       try {
         const [tripData, memberData, memoryData, user] = await Promise.all([
           getTrip(tripId),
-          getTripMembers(tripId),
+          getJourneyMembers(tripId),
           getTripMemories(tripId),
           getCurrentUser(),
         ]);
@@ -104,10 +118,10 @@ function TripDashboardContent() {
   const totalStats = getMemoryStats(memories);
   const todayStats = getTodayMemoryStats(memories);
   const currentMember = members.find((member) => member.userId === currentUserId);
+  const activeMembers = getActiveJourneyMembers(members);
+  const participantCount = getJourneyParticipantCount(members);
   const canManageJourney =
-    currentMember?.role === "owner" ||
-    currentMember?.role === "admin" ||
-    trip.createdBy === currentUserId;
+    currentMember?.role === "owner" || trip.createdBy === currentUserId;
 
   async function handleDeleteJourney() {
     if (!trip) {
@@ -173,9 +187,9 @@ function TripDashboardContent() {
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-2xl bg-stone-50 p-4">
               <p className="text-2xl font-semibold text-stone-950">
-                {members.length}
+                {participantCount}
               </p>
-              <p className="mt-1 text-sm text-stone-500">members</p>
+              <p className="mt-1 text-sm text-stone-500">travelers</p>
             </div>
             <div className="rounded-2xl bg-stone-50 p-4">
               <p className="text-2xl font-semibold text-stone-950">
@@ -186,6 +200,47 @@ function TripDashboardContent() {
               </p>
             </div>
           </div>
+
+          {activeMembers.length > 0 ? (
+            <div className="rounded-2xl bg-stone-50 p-4">
+              <p className="text-xs font-bold uppercase tracking-[0.14em] text-stone-500">
+                Traveling with
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {activeMembers.map((member) => (
+                  <Link
+                    key={member.id}
+                    href={
+                      member.userId
+                        ? `/people/${member.userId}`
+                        : `/trips/${trip.id}/people`
+                    }
+                    title={
+                      member.userId
+                        ? member.displayName
+                        : `${member.displayName} · not linked`
+                    }
+                    className={`grid size-9 place-items-center overflow-hidden rounded-full text-[10px] font-bold ring-2 ring-white ${
+                      member.userId
+                        ? "bg-emerald-100 text-emerald-800"
+                        : "bg-stone-200 text-stone-500"
+                    }`}
+                  >
+                    {member.avatarUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={member.avatarUrl}
+                        alt=""
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      memberInitial(member.displayName)
+                    )}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="grid gap-3 sm:grid-cols-2">
             <Link
@@ -253,7 +308,7 @@ function TripDashboardContent() {
         {[
           ["Planner", "Your planned route, bookings, and scheduled activities.", `/trips/${trip.id}/planner`],
           ["Timeline", "What actually happened, day by day.", `/trips/${trip.id}/timeline`],
-          ["People", "Everyone who contributed to this journey.", "/people"],
+          ["People", "Everyone in this journey.", `/trips/${trip.id}/people`],
           ["Highlights", "Best moments and summaries. Coming soon.", `/trips/${trip.id}/highlights`],
         ].map(([title, copy, href]) => (
           <Link key={title} href={href} className="rounded-2xl bg-white p-5 shadow-sm">

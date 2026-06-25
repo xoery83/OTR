@@ -15,6 +15,7 @@ const statusCopy: Record<InviteAcceptStatus, string> = {
   expired: "This invite has expired.",
   invalid: "This invite is invalid.",
   full: "This invite has reached its use limit.",
+  removed: "Your access to this journey was removed.",
 };
 
 export default function InviteAcceptPage() {

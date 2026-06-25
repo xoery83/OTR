@@ -41,14 +41,28 @@ function PeopleContent() {
         </section>
       ) : null}
       <section className="grid gap-4 sm:grid-cols-2">
-        {companions.map((companion) => (
-          <Link
+        {companions.map((companion) => {
+          const Card = companion.isLinked ? Link : "div";
+          return (
+          <Card
             key={companion.profile.id}
-            href={`/people/${companion.profile.id}`}
-            className="rounded-2xl bg-white p-5 shadow-sm"
+            href={
+              companion.isLinked
+                ? `/people/${companion.profile.id}`
+                : `/trips/${companion.latestJourneyId}/people`
+            }
+            className={`rounded-2xl bg-white p-5 shadow-sm ${
+              companion.isLinked ? "" : "border border-dashed border-stone-300"
+            }`}
           >
             <div className="flex items-center gap-3">
-              <div className="grid size-11 place-items-center overflow-hidden rounded-full bg-emerald-100 font-bold text-emerald-800">
+              <div
+                className={`grid size-11 place-items-center overflow-hidden rounded-full font-bold ${
+                  companion.isLinked
+                    ? "bg-emerald-100 text-emerald-800"
+                    : "bg-stone-100 text-stone-500"
+                }`}
+              >
                 {companion.profile.avatarUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={companion.profile.avatarUrl} alt="" className="h-full w-full object-cover" />
@@ -63,12 +77,18 @@ function PeopleContent() {
                 </p>
               </div>
             </div>
+            {!companion.isLinked ? (
+              <span className="mt-3 inline-flex rounded-full bg-stone-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-stone-500">
+                {companion.status.replace("_", " ")}
+              </span>
+            ) : null}
             <p className="mt-3 text-sm text-stone-600">
               {companion.memoriesContributed} memories · Latest:{" "}
               {companion.latestJourney ?? "No journey yet"}
             </p>
-          </Link>
-        ))}
+          </Card>
+          );
+        })}
       </section>
       {companions.length === 0 ? (
         <p className="rounded-2xl border border-dashed border-stone-300 bg-white p-5 text-sm text-stone-600">

@@ -5,8 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { TripCard } from "@/components/TripCard";
 import { getJourneyStatus } from "@/lib/journeys/status";
-import { getMemoryStats } from "@/lib/journeys/stats";
-import { getTripMembers } from "@/lib/supabase/members";
+import { getJourneyParticipantCount, getMemoryStats } from "@/lib/journeys/stats";
+import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import { getTripMemories } from "@/lib/supabase/memories";
 import { getTripsForCurrentUser } from "@/lib/supabase/trips";
 import type { MemoryEntry, Trip } from "@/types";
@@ -32,9 +32,13 @@ function TripsContent() {
           trips.map(async (trip) => {
             const [memories, members] = await Promise.all([
               getTripMemories(trip.id),
-              getTripMembers(trip.id),
+              getJourneyMembers(trip.id),
             ]);
-            return { trip, memories, memberCount: members.length };
+            return {
+              trip,
+              memories,
+              memberCount: getJourneyParticipantCount(members),
+            };
           }),
         );
 

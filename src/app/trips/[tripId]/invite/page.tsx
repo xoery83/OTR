@@ -8,6 +8,7 @@ import { getAppOrigin } from "@/lib/app-url";
 import {
   createJourneyInvite,
   getJourneyInvites,
+  revokeJourneyInvite,
 } from "@/lib/supabase/invites";
 import { getTrip } from "@/lib/supabase/trips";
 import type { JourneyInvite, JourneyInviteRole, Trip } from "@/types";
@@ -23,6 +24,7 @@ function InvitePageContent() {
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [workingInviteId, setWorkingInviteId] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -86,6 +88,21 @@ function InvitePageContent() {
     }
   }
 
+  async function revokeInvite(invite: JourneyInvite) {
+    setWorkingInviteId(invite.id);
+    setError(null);
+    try {
+      const updated = await revokeJourneyInvite(invite.id);
+      setInvites((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+    } catch (inviteError) {
+      setError(getErrorMessage(inviteError, "Could not revoke invite."));
+    } finally {
+      setWorkingInviteId(null);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <section>
@@ -134,9 +151,13 @@ function InvitePageContent() {
         <input
           value={invitedEmail}
           onChange={(event) => setInvitedEmail(event.target.value)}
-          placeholder="Optional email note"
+          placeholder="Invitee email, optional"
           className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
         />
+        <p className="text-xs leading-5 text-stone-500">
+          Add an email when re-inviting someone whose access was removed. A
+          generic invite link will not restore removed access.
+        </p>
         <button
           type="submit"
           disabled={isSubmitting}
@@ -157,6 +178,15 @@ function InvitePageContent() {
               <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-600">
                 {invite.usedCount}/{invite.maxUses} used
               </span>
+              <span
+                className={`rounded-full px-3 py-1 text-xs font-bold ${
+                  invite.isActive
+                    ? "bg-emerald-50 text-emerald-800"
+                    : "bg-red-50 text-red-700"
+                }`}
+              >
+                {invite.isActive ? "active" : "revoked"}
+              </span>
               <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-600">
                 {invite.expiresAt
                   ? `expires ${new Date(invite.expiresAt).toLocaleDateString()}`
@@ -169,10 +199,21 @@ function InvitePageContent() {
             <button
               type="button"
               onClick={() => copyInvite(invite)}
+              disabled={!invite.isActive}
               className="mt-3 rounded-2xl bg-emerald-100 px-4 py-2 text-sm font-bold text-emerald-900"
             >
               {copiedToken === invite.token ? "Copied" : "Copy link"}
             </button>
+            {invite.isActive ? (
+              <button
+                type="button"
+                onClick={() => revokeInvite(invite)}
+                disabled={workingInviteId === invite.id}
+                className="ml-2 mt-3 rounded-2xl bg-red-50 px-4 py-2 text-sm font-bold text-red-700 disabled:opacity-60"
+              >
+                {workingInviteId === invite.id ? "Revoking..." : "Revoke"}
+              </button>
+            ) : null}
           </article>
         ))}
       </section>
