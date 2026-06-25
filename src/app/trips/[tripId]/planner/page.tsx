@@ -315,6 +315,7 @@ function PlannerContent() {
             journeyMembers={activeMembers}
             ledgerEntries={ledgerEntries}
             ledgerBaseCurrency={ledgerBaseCurrency}
+            preserveOriginalPhotos={trip?.photoStorageStatus === "connected"}
             onLedgerEntryCreated={async () => {
               const data = await getLedgerData(tripId);
               setLedgerEntries(data.entries);

@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { Suspense } from "react";
 import { AppHeader } from "@/components/AppHeader";
 import { BottomNav } from "@/components/BottomNav";
+import { I18nProvider } from "@/components/I18nProvider";
 import { SidebarNav } from "@/components/SidebarNav";
 import { WorkspaceManager } from "@/components/WorkspaceManager";
 import "./globals.css";
@@ -33,15 +34,17 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full bg-[#f7f3ea] text-stone-950">
-        <Suspense fallback={null}>
-          <WorkspaceManager />
-        </Suspense>
-        <SidebarNav />
-        <AppHeader />
-        <main className="mx-auto w-full max-w-3xl px-5 pb-28 pt-6 md:ml-20 md:pb-10 lg:max-w-5xl">
-          {children}
-        </main>
-        <BottomNav />
+        <I18nProvider>
+          <Suspense fallback={null}>
+            <WorkspaceManager />
+          </Suspense>
+          <SidebarNav />
+          <AppHeader />
+          <main className="mx-auto w-full max-w-3xl px-5 pb-28 pt-6 md:ml-20 md:pb-10 lg:max-w-5xl">
+            {children}
+          </main>
+          <BottomNav />
+        </I18nProvider>
       </body>
     </html>
   );

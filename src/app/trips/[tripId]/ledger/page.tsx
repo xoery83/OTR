@@ -54,7 +54,7 @@ type LedgerFormState = {
   addressText: string;
 };
 
-type LedgerView = "expenses" | "people" | "settlement";
+type LedgerView = "days" | "expenses" | "people" | "settlement";
 
 type MemberLedgerReport = {
   member: JourneyMember;
@@ -65,6 +65,21 @@ type MemberLedgerReport = {
   settlementBalance: number;
   entryCount: number;
   categories: Record<LedgerCategory, number>;
+};
+
+type DailyLedgerEntry = {
+  entry: LedgerEntry;
+  allocatedAmount: number;
+  allocationNote: string | null;
+};
+
+type DailyLedgerReport = {
+  date: string;
+  total: number;
+  shared: number;
+  statsOnly: number;
+  categories: Record<LedgerCategory, number>;
+  entries: DailyLedgerEntry[];
 };
 
 function todayKey() {
@@ -106,6 +121,124 @@ function groupedByDate(entries: LedgerEntry[]) {
 
 function categoryLabel(value: LedgerCategory) {
   return categories.find((category) => category.value === value)?.label ?? value;
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function dateKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
+    2,
+    "0",
+  )}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function getEntryAllocationDates(entry: LedgerEntry) {
+  const start = entry.startDate || entry.expenseDate;
+  const end = entry.endDate || start;
+  const startDate = new Date(`${start}T00:00:00`);
+  const endDate = new Date(`${end}T00:00:00`);
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return [entry.expenseDate];
+  }
+
+  if (endDate < startDate) {
+    return [entry.expenseDate];
+  }
+
+  const dates: string[] = [];
+  let cursor = startDate;
+
+  while (cursor <= endDate && dates.length < 90) {
+    dates.push(dateKey(cursor));
+    cursor = addDays(cursor, 1);
+  }
+
+  return dates.length > 0 ? dates : [entry.expenseDate];
+}
+
+function buildDailyLedgerReports(entries: LedgerEntry[]) {
+  const reports = new Map<string, DailyLedgerReport>();
+
+  entries.forEach((entry) => {
+    const dates = getEntryAllocationDates(entry);
+    const allocatedAmount = Number((entry.baseAmount / dates.length).toFixed(2));
+    const allocationNote =
+      dates.length > 1
+        ? `${money(entry.baseAmount, entry.baseCurrency)} split across ${
+            dates.length
+          } days`
+        : null;
+
+    dates.forEach((date) => {
+      const report =
+        reports.get(date) ??
+        ({
+          date,
+          total: 0,
+          shared: 0,
+          statsOnly: 0,
+          categories: categories.reduce(
+            (totals, category) => ({ ...totals, [category.value]: 0 }),
+            {} as Record<LedgerCategory, number>,
+          ),
+          entries: [],
+        } satisfies DailyLedgerReport);
+
+      report.total += allocatedAmount;
+      report.categories[entry.category] += allocatedAmount;
+      if (entry.accountingMode === "shared") {
+        report.shared += allocatedAmount;
+      } else {
+        report.statsOnly += allocatedAmount;
+      }
+      report.entries.push({ entry, allocatedAmount, allocationNote });
+      reports.set(date, report);
+    });
+  });
+
+  return [...reports.values()]
+    .map((report) => ({
+      ...report,
+      total: Number(report.total.toFixed(2)),
+      shared: Number(report.shared.toFixed(2)),
+      statsOnly: Number(report.statsOnly.toFixed(2)),
+    }))
+    .sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function nearestReportDate(reports: DailyLedgerReport[]) {
+  if (reports.length === 0) return null;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  return [...reports].sort((left, right) => {
+    const leftDistance = Math.abs(
+      new Date(`${left.date}T00:00:00`).getTime() - today.getTime(),
+    );
+    const rightDistance = Math.abs(
+      new Date(`${right.date}T00:00:00`).getTime() - today.getTime(),
+    );
+    return leftDistance - rightDistance;
+  })[0].date;
+}
+
+function categoryColor(index: number) {
+  return [
+    "bg-emerald-600",
+    "bg-amber-500",
+    "bg-sky-500",
+    "bg-rose-500",
+    "bg-violet-500",
+    "bg-lime-600",
+    "bg-orange-500",
+    "bg-stone-500",
+  ][index % 8];
 }
 
 function buildMemberReports(
@@ -310,6 +443,251 @@ function PersonReportCard({
   );
 }
 
+function DailyLedgerAnalysis({
+  reports,
+  currency,
+  onEditEntry,
+  onDeleteEntry,
+  deletingEntryId,
+}: {
+  reports: DailyLedgerReport[];
+  currency: string;
+  onEditEntry: (entry: LedgerEntry) => void;
+  onDeleteEntry: (entry: LedgerEntry) => void;
+  deletingEntryId: string | null;
+}) {
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const activeDate =
+    selectedDate && reports.some((report) => report.date === selectedDate)
+      ? selectedDate
+      : nearestReportDate(reports);
+  const activeReport = reports.find((report) => report.date === activeDate) ?? null;
+  const categoryBreakdown = activeReport
+    ? (Object.entries(activeReport.categories) as [LedgerCategory, number][])
+        .filter(([, amount]) => amount > 0)
+        .sort((first, second) => second[1] - first[1])
+    : [];
+
+  if (reports.length === 0 || !activeReport) {
+    return (
+      <div className="rounded-3xl border border-dashed border-stone-200 bg-white p-5 text-stone-500">
+        No expenses yet. Daily analysis will appear after costs are recorded.
+      </div>
+    );
+  }
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-lg font-semibold text-stone-950">
+          Daily expense analysis
+        </h2>
+        <p className="mt-1 text-sm text-stone-500">
+          Costs are allocated by travel day. Multi-day expenses are averaged
+          across their date range.
+        </p>
+      </div>
+
+      <div className="sticky top-0 z-20 -mx-4 overflow-x-auto border-y border-emerald-100 bg-stone-50/95 px-4 py-3 backdrop-blur">
+        <div className="flex gap-2">
+          {reports.map((report) => {
+            const active = report.date === activeReport.date;
+
+            return (
+              <button
+                type="button"
+                key={report.date}
+                onClick={() => setSelectedDate(report.date)}
+                className={`shrink-0 rounded-2xl px-4 py-2 text-left shadow-sm ${
+                  active
+                    ? "bg-emerald-700 text-white"
+                    : "bg-white text-stone-700"
+                }`}
+              >
+                <p className="text-xs font-black uppercase tracking-wide">
+                  {new Date(`${report.date}T00:00:00`).toLocaleDateString(
+                    undefined,
+                    {
+                      month: "short",
+                      day: "numeric",
+                    },
+                  )}
+                </p>
+                <p className="mt-1 text-sm font-black">
+                  {money(report.total, currency)}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <section className="grid gap-3 sm:grid-cols-3">
+        <StatCard
+          label="Day total"
+          value={money(activeReport.total, currency)}
+        />
+        <StatCard
+          label="Shared"
+          value={money(activeReport.shared, currency)}
+          tone="amber"
+        />
+        <StatCard
+          label="Stats only"
+          value={money(activeReport.statsOnly, currency)}
+          tone="stone"
+        />
+      </section>
+
+      <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold text-stone-950">
+              {dateLabel(activeReport.date)}
+            </h3>
+            <p className="mt-1 text-sm text-stone-500">
+              {activeReport.entries.length} expense details
+            </p>
+          </div>
+          <p className="text-right text-xl font-semibold text-emerald-900">
+            {money(activeReport.total, currency)}
+          </p>
+        </div>
+
+        {categoryBreakdown.length > 0 ? (
+          <div className="mt-4 space-y-3">
+            <div className="flex h-4 overflow-hidden rounded-full bg-stone-100">
+              {categoryBreakdown.map(([category, amount], index) => (
+                <div
+                  key={category}
+                  className={categoryColor(index)}
+                  style={{
+                    width: `${Math.max(
+                      3,
+                      (amount / activeReport.total) * 100,
+                    )}%`,
+                  }}
+                  title={`${categoryLabel(category)} ${money(amount, currency)}`}
+                />
+              ))}
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {categoryBreakdown.map(([category, amount], index) => {
+                const percent =
+                  activeReport.total > 0
+                    ? Math.round((amount / activeReport.total) * 100)
+                    : 0;
+
+                return (
+                  <div
+                    key={category}
+                    className="flex items-center justify-between gap-3 rounded-2xl bg-stone-50 px-3 py-2 text-sm"
+                  >
+                    <span className="flex items-center gap-2 font-semibold text-stone-700">
+                      <span
+                        className={`size-2.5 rounded-full ${categoryColor(index)}`}
+                      />
+                      {categoryLabel(category)}
+                    </span>
+                    <span className="text-right font-bold text-stone-950">
+                      {money(amount, currency)} · {percent}%
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="space-y-3">
+        <h3 className="text-sm font-bold uppercase tracking-[0.14em] text-stone-500">
+          Details
+        </h3>
+        {activeReport.entries.map(({ entry, allocatedAmount, allocationNote }) => (
+          <article
+            key={`${activeReport.date}-${entry.id}`}
+            className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h4 className="font-semibold text-stone-950">{entry.title}</h4>
+                  <span className="rounded-full bg-stone-100 px-2 py-1 text-[11px] font-bold text-stone-600">
+                    {categoryLabel(entry.category)}
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-1 text-[11px] font-bold ${
+                      entry.accountingMode === "shared"
+                        ? "bg-amber-50 text-amber-800"
+                        : "bg-stone-100 text-stone-600"
+                    }`}
+                  >
+                    {entry.accountingMode === "shared" ? "Shared" : "Stats only"}
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-stone-500">
+                  {entry.payer ? `Paid by ${entry.payer.displayName}` : "No payer"}
+                  {entry.addressText ? ` · ${entry.addressText}` : ""}
+                </p>
+                {allocationNote ? (
+                  <p className="mt-2 rounded-2xl bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-900">
+                    {allocationNote}
+                  </p>
+                ) : null}
+                {entry.description ? (
+                  <p className="mt-2 text-sm leading-6 text-stone-600">
+                    {entry.description}
+                  </p>
+                ) : null}
+                {entry.participants.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {entry.participants.map((participant) =>
+                      participant.member ? (
+                        <MemberPill
+                          key={participant.id}
+                          member={participant.member}
+                        />
+                      ) : null,
+                    )}
+                  </div>
+                ) : null}
+              </div>
+              <div className="shrink-0 text-right">
+                <p className="font-semibold text-stone-950">
+                  {money(allocatedAmount, currency)}
+                </p>
+                {allocatedAmount !== entry.baseAmount ? (
+                  <p className="mt-1 text-xs text-stone-500">
+                    of {money(entry.baseAmount, currency)}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => onEditEntry(entry)}
+                className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-700"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => onDeleteEntry(entry)}
+                disabled={deletingEntryId === entry.id}
+                className="rounded-full bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 disabled:text-red-300"
+              >
+                {deletingEntryId === entry.id ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </article>
+        ))}
+      </section>
+    </section>
+  );
+}
+
 function LedgerContent() {
   const params = useParams<{ tripId: string }>();
   const tripId = params.tripId;
@@ -322,7 +700,7 @@ function LedgerContent() {
   const [isSavingCurrency, setIsSavingCurrency] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<LedgerView>("expenses");
+  const [activeView, setActiveView] = useState<LedgerView>("days");
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [currencyError, setCurrencyError] = useState<string | null>(null);
@@ -399,6 +777,10 @@ function LedgerContent() {
           )
         : [],
     [ledgerData, members],
+  );
+  const dailyReports = useMemo(
+    () => buildDailyLedgerReports(ledgerData?.entries ?? []),
+    [ledgerData?.entries],
   );
 
   function updateForm(patch: Partial<LedgerFormState>) {
@@ -931,8 +1313,9 @@ function LedgerContent() {
       ) : null}
 
       <section className="rounded-3xl border border-stone-200 bg-white p-2 shadow-sm">
-        <div className="grid grid-cols-3 gap-1">
+        <div className="grid grid-cols-4 gap-1">
           {[
+            ["days", "Days"],
             ["expenses", "Expenses"],
             ["people", "People"],
             ["settlement", "Settlement"],
@@ -952,6 +1335,16 @@ function LedgerContent() {
           ))}
         </div>
       </section>
+
+      {activeView === "days" ? (
+        <DailyLedgerAnalysis
+          reports={dailyReports}
+          currency={displayCurrency}
+          onEditEntry={startEditExpense}
+          onDeleteEntry={removeExpense}
+          deletingEntryId={deletingEntryId}
+        />
+      ) : null}
 
       {activeView === "expenses" ? (
         <section className="space-y-3">

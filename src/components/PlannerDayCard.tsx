@@ -2,11 +2,19 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { type FormEvent, useEffect, useState } from "react";
+import {
+  type ChangeEvent,
+  type FormEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { useI18n } from "@/components/I18nProvider";
 import type { PlannerV2Day } from "@/lib/supabase/planner-v2";
 import { getApproxExchangeRate } from "@/lib/exchange-rates";
 import { formatDayLabel, formatTime, toDateTimeLocalValue } from "@/lib/format";
 import { getErrorMessage } from "@/lib/errors";
+import { compressImageFile, type CompressedImage } from "@/lib/images";
 import { getCurrentUser } from "@/lib/supabase/auth";
 import {
   createItineraryEvent,
@@ -16,7 +24,15 @@ import {
   updateItineraryReservation,
 } from "@/lib/supabase/itinerary";
 import { createLedgerEntry } from "@/lib/supabase/ledger";
-import { createTextMemory } from "@/lib/supabase/memories";
+import {
+  createPhotoMemory,
+  createTextMemory,
+  getSignedMemoryImageUrls,
+} from "@/lib/supabase/memories";
+import {
+  requestFaceDetection,
+  requestPhotoIndexing,
+} from "@/lib/supabase/media-assets";
 import type {
   JourneyMember,
   ItineraryEventType,
@@ -51,6 +67,12 @@ type StoryItem = {
 
 type InlineMemoryState = Record<string, MemoryEntry[]>;
 
+type InlineAttachmentState = {
+  file: File;
+  compressedImage: CompressedImage;
+  fileName: string;
+};
+
 type PendingExpense = {
   itemId: string;
   memoryEntryId: string;
@@ -66,6 +88,8 @@ type PendingExpense = {
   description: string;
   itineraryEventId: string | null;
   itineraryReservationId: string | null;
+  startDate: string | null;
+  endDate: string | null;
 };
 
 type MemberAlias = {
@@ -643,6 +667,7 @@ export function PlannerDayCard({
   journeyMembers,
   ledgerEntries = [],
   ledgerBaseCurrency = "NZD",
+  preserveOriginalPhotos = false,
   nextDay,
   onLedgerEntryCreated,
   onPlannerChanged,
@@ -652,10 +677,12 @@ export function PlannerDayCard({
   journeyMembers?: JourneyMember[];
   ledgerEntries?: LedgerEntry[];
   ledgerBaseCurrency?: string;
+  preserveOriginalPhotos?: boolean;
   nextDay?: PlannerV2Day | null;
   onLedgerEntryCreated?: () => void;
   onPlannerChanged?: () => void;
 }) {
+  const { t } = useI18n();
   const { day, dayNumber, memories } = plannerDay;
   const dayLabel =
     day.dayDate === "unscheduled" ? "Unscheduled" : formatDayLabel(day.dayDate);
@@ -722,6 +749,14 @@ export function PlannerDayCard({
     return allocatedAmountForDay(entry, day.dayDate, linkedLedgerRange(entry));
   }
 
+  function rangeForStoryItem(item: StoryItem) {
+    const startDate = dateOnly(item.startsAt) ?? dateOnly(item.endsAt);
+    return {
+      startDate,
+      endDate: dateOnly(item.endsAt) ?? startDate,
+    };
+  }
+
   const ledgerTotal = ledgerEntries.reduce(
     (total, entry) => total + allocatedLedgerAmount(entry),
     0,
@@ -744,6 +779,20 @@ export function PlannerDayCard({
   const [memoryTextByItem, setMemoryTextByItem] = useState<Record<string, string>>(
     {},
   );
+  const [attachmentByItem, setAttachmentByItem] = useState<
+    Record<string, InlineAttachmentState | undefined>
+  >({});
+  const [imageUrlByMemoryPath, setImageUrlByMemoryPath] = useState<
+    Record<string, string>
+  >({});
+  const [preparingAttachmentId, setPreparingAttachmentId] = useState<
+    string | null
+  >(null);
+  const [indexingStatusByItem, setIndexingStatusByItem] = useState<
+    Record<string, string>
+  >({});
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const attachmentByItemRef = useRef(attachmentByItem);
   const [inlineMemories, setInlineMemories] = useState<InlineMemoryState>({});
   const [savingMemoryId, setSavingMemoryId] = useState<string | null>(null);
   const [savingExpenseId, setSavingExpenseId] = useState<string | null>(null);
@@ -796,6 +845,20 @@ export function PlannerDayCard({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [journeyMembers]);
+
+  useEffect(() => {
+    attachmentByItemRef.current = attachmentByItem;
+  }, [attachmentByItem]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(attachmentByItemRef.current).forEach((attachment) => {
+        if (attachment?.compressedImage.previewUrl) {
+          URL.revokeObjectURL(attachment.compressedImage.previewUrl);
+        }
+      });
+    };
+  }, []);
 
   function ledgerTotalForItem(item: StoryItem) {
     return ledgerEntries
@@ -1049,6 +1112,82 @@ export function PlannerDayCard({
     });
   }
 
+  async function handleInlineAttachmentChange(
+    event: ChangeEvent<HTMLInputElement>,
+    itemId: string,
+  ) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) return;
+
+    setPreparingAttachmentId(itemId);
+    setMemoryErrorByItem((current) => ({ ...current, [itemId]: "" }));
+
+    try {
+      const compressedImage = await compressImageFile(file);
+
+      setAttachmentByItem((current) => {
+        const previous = current[itemId];
+        if (previous?.compressedImage.previewUrl) {
+          URL.revokeObjectURL(previous.compressedImage.previewUrl);
+        }
+
+        return {
+          ...current,
+          [itemId]: {
+            file,
+            compressedImage,
+            fileName: file.name,
+          },
+        };
+      });
+    } catch (error) {
+      setMemoryErrorByItem((current) => ({
+        ...current,
+        [itemId]: getErrorMessage(error, "Could not prepare this image."),
+      }));
+    } finally {
+      setPreparingAttachmentId(null);
+    }
+  }
+
+  function removeInlineAttachment(itemId: string) {
+    setAttachmentByItem((current) => {
+      const next = { ...current };
+      const previous = next[itemId];
+
+      if (previous?.compressedImage.previewUrl) {
+        URL.revokeObjectURL(previous.compressedImage.previewUrl);
+      }
+
+      delete next[itemId];
+      return next;
+    });
+  }
+
+  async function runPhotoProcessing(memory: MemoryEntry, itemId: string) {
+    if (!memory.mediaAssetId) return;
+
+    setIndexingStatusByItem((current) => ({
+      ...current,
+      [itemId]: t("memory.indexingStarted"),
+    }));
+
+    const [indexResult, faceResult] = await Promise.allSettled([
+      requestPhotoIndexing(memory.mediaAssetId, tripId),
+      requestFaceDetection(memory.mediaAssetId, tripId),
+    ]);
+
+    setIndexingStatusByItem((current) => ({
+      ...current,
+      [itemId]:
+        indexResult.status === "fulfilled" && faceResult.status === "fulfilled"
+          ? t("memory.indexingDone")
+          : t("memory.indexingFailed"),
+    }));
+  }
+
   function prepareDraftPlan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = newPlanText.trim();
@@ -1132,24 +1271,46 @@ export function PlannerDayCard({
   ) {
     event.preventDefault();
     const content = (memoryTextByItem[item.id] ?? "").trim();
-    if (!content || savingMemoryId) return;
+    const attachment = attachmentByItem[item.id];
+    if ((!content && !attachment) || savingMemoryId) return;
 
     setSavingMemoryId(item.id);
     setMemoryErrorByItem((current) => ({ ...current, [item.id]: "" }));
+    setIndexingStatusByItem((current) => ({ ...current, [item.id]: "" }));
 
     try {
-      const saved = await createTextMemory(tripId, content, {
+      const memoryInput = {
         capturedAt: capturedAtForItem(item, day.dayDate),
         locationName: item.location ?? "",
         tripDayId: day.id.startsWith("synthetic-") ? null : day.id,
         itineraryEventId: item.itineraryEventId,
         itineraryReservationId: item.itineraryReservationId,
-      });
+      };
+      const saved = attachment
+        ? await createPhotoMemory(
+            tripId,
+            attachment.compressedImage,
+            attachment.fileName,
+            content,
+            memoryInput,
+            preserveOriginalPhotos ? attachment.file : null,
+          )
+        : await createTextMemory(tripId, content, memoryInput);
+
+      if (saved.mediaUrl) {
+        const signedUrls = await getSignedMemoryImageUrls([saved]);
+        setImageUrlByMemoryPath((current) => ({ ...current, ...signedUrls }));
+      }
+
       setInlineMemories((current) => ({
         ...current,
         [item.id]: [...(current[item.id] ?? []), saved],
       }));
       setMemoryTextByItem((current) => ({ ...current, [item.id]: "" }));
+      if (attachment) {
+        removeInlineAttachment(item.id);
+        void runPhotoProcessing(saved, item.id);
+      }
 
       const detectedExpense = detectExpense(content, item, ledgerBaseCurrency);
       if (detectedExpense) {
@@ -1196,6 +1357,7 @@ export function PlannerDayCard({
           description: detectedExpense.description,
           itineraryEventId: item.itineraryEventId,
           itineraryReservationId: item.itineraryReservationId,
+          ...rangeForStoryItem(item),
         });
       }
     } catch (error) {
@@ -1241,6 +1403,8 @@ export function PlannerDayCard({
         accountingMode: pendingExpense.accountingMode,
         expenseDate:
           day.dayDate === "unscheduled" ? new Date().toISOString().slice(0, 10) : day.dayDate,
+        startDate: pendingExpense.startDate ?? "",
+        endDate: pendingExpense.endDate ?? "",
         originalAmount: Number(pendingExpense.amount),
         originalCurrency: pendingExpense.currency,
         baseCurrency: ledgerBaseCurrency,
@@ -1351,12 +1515,25 @@ export function PlannerDayCard({
                 className="mt-3 rounded-2xl border border-amber-100 bg-white p-2 shadow-sm"
               >
                 <div className="flex items-end gap-2">
+                  <input
+                    ref={(node) => {
+                      fileInputRefs.current[stayItem.id] = node;
+                    }}
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    onChange={(event) =>
+                      handleInlineAttachmentChange(event, stayItem.id)
+                    }
+                  />
                   <button
                     type="button"
+                    onClick={() => fileInputRefs.current[stayItem.id]?.click()}
+                    disabled={preparingAttachmentId === stayItem.id}
                     className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-lg font-semibold text-stone-500"
-                    title="Attach file"
+                    title={t("memory.attachImage")}
                   >
-                    +
+                    {preparingAttachmentId === stayItem.id ? "..." : "+"}
                   </button>
                   <textarea
                     value={memoryTextByItem[stayItem.id] ?? ""}
@@ -1374,7 +1551,8 @@ export function PlannerDayCard({
                     type="submit"
                     disabled={
                       savingMemoryId === stayItem.id ||
-                      !(memoryTextByItem[stayItem.id] ?? "").trim()
+                      (!attachmentByItem[stayItem.id] &&
+                        !(memoryTextByItem[stayItem.id] ?? "").trim())
                     }
                     className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300"
                     title="Save memory"
@@ -1382,9 +1560,47 @@ export function PlannerDayCard({
                     {savingMemoryId === stayItem.id ? "..." : "Go"}
                   </button>
                 </div>
+                {attachmentByItem[stayItem.id] ? (
+                  <div className="mt-2 flex items-center gap-3 rounded-2xl bg-amber-50 p-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={
+                        attachmentByItem[stayItem.id]?.compressedImage
+                          .previewUrl
+                      }
+                      alt=""
+                      className="size-12 rounded-xl object-cover"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-xs font-bold text-stone-800">
+                        {t("memory.attachmentReady")}
+                      </p>
+                      <p className="truncate text-xs text-stone-500">
+                        {attachmentByItem[stayItem.id]?.fileName}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeInlineAttachment(stayItem.id)}
+                      className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-stone-500"
+                    >
+                      {t("memory.removeAttachment")}
+                    </button>
+                  </div>
+                ) : null}
+                {preparingAttachmentId === stayItem.id ? (
+                  <p className="mt-2 text-xs font-medium text-amber-800">
+                    {t("memory.compressingImage")}
+                  </p>
+                ) : null}
                 {memoryErrorByItem[stayItem.id] ? (
                   <p className="mt-2 text-xs font-medium text-red-700">
                     {memoryErrorByItem[stayItem.id]}
+                  </p>
+                ) : null}
+                {indexingStatusByItem[stayItem.id] ? (
+                  <p className="mt-2 text-xs font-medium text-emerald-800">
+                    {indexingStatusByItem[stayItem.id]}
                   </p>
                 ) : null}
                 {mentionOptions(stayItem.id).length > 0 ? (
@@ -1412,9 +1628,21 @@ export function PlannerDayCard({
                     <p className="text-xs font-semibold text-emerald-800">
                       {memory.contributorName || "Traveler"}
                     </p>
-                    <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
-                      {memory.content}
-                    </p>
+                    {memory.type === "photo" &&
+                    memory.mediaUrl &&
+                    imageUrlByMemoryPath[memory.mediaUrl] ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={imageUrlByMemoryPath[memory.mediaUrl]}
+                        alt=""
+                        className="mt-2 max-h-56 w-full rounded-xl object-cover"
+                      />
+                    ) : null}
+                    {memory.content ? (
+                      <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
+                        {memory.content}
+                      </p>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -1715,9 +1943,21 @@ export function PlannerDayCard({
                               <p className="text-xs font-semibold text-emerald-800">
                                 {memory.contributorName || "Traveler"}
                               </p>
-                              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
-                                {memory.content}
-                              </p>
+                              {memory.type === "photo" &&
+                              memory.mediaUrl &&
+                              imageUrlByMemoryPath[memory.mediaUrl] ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={imageUrlByMemoryPath[memory.mediaUrl]}
+                                  alt=""
+                                  className="mt-2 max-h-56 w-full rounded-xl object-cover"
+                                />
+                              ) : null}
+                              {memory.content ? (
+                                <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
+                                  {memory.content}
+                                </p>
+                              ) : null}
                             </div>
                           ))}
                         </div>
@@ -1728,12 +1968,27 @@ export function PlannerDayCard({
                           className="mt-3 rounded-2xl border border-emerald-100 bg-[#fffdf8] p-2 shadow-sm"
                         >
                           <div className="flex items-end gap-2">
+                            <input
+                              ref={(node) => {
+                                fileInputRefs.current[item.id] = node;
+                              }}
+                              type="file"
+                              accept="image/*"
+                              className="sr-only"
+                              onChange={(event) =>
+                                handleInlineAttachmentChange(event, item.id)
+                              }
+                            />
                             <button
                               type="button"
+                              onClick={() =>
+                                fileInputRefs.current[item.id]?.click()
+                              }
+                              disabled={preparingAttachmentId === item.id}
                               className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-lg font-semibold text-stone-500"
-                              title="Attach file"
+                              title={t("memory.attachImage")}
                             >
-                              +
+                              {preparingAttachmentId === item.id ? "..." : "+"}
                             </button>
                             <textarea
                               value={memoryTextByItem[item.id] ?? ""}
@@ -1758,7 +2013,8 @@ export function PlannerDayCard({
                               type="submit"
                               disabled={
                                 savingMemoryId === item.id ||
-                                !(memoryTextByItem[item.id] ?? "").trim()
+                                (!attachmentByItem[item.id] &&
+                                  !(memoryTextByItem[item.id] ?? "").trim())
                               }
                               className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300"
                               title="Save memory"
@@ -1766,9 +2022,47 @@ export function PlannerDayCard({
                               {savingMemoryId === item.id ? "..." : "Go"}
                             </button>
                           </div>
+                          {attachmentByItem[item.id] ? (
+                            <div className="mt-2 flex items-center gap-3 rounded-2xl bg-emerald-50 p-2">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={
+                                  attachmentByItem[item.id]?.compressedImage
+                                    .previewUrl
+                                }
+                                alt=""
+                                className="size-12 rounded-xl object-cover"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs font-bold text-stone-800">
+                                  {t("memory.attachmentReady")}
+                                </p>
+                                <p className="truncate text-xs text-stone-500">
+                                  {attachmentByItem[item.id]?.fileName}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => removeInlineAttachment(item.id)}
+                                className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-stone-500"
+                              >
+                                {t("memory.removeAttachment")}
+                              </button>
+                            </div>
+                          ) : null}
+                          {preparingAttachmentId === item.id ? (
+                            <p className="mt-2 text-xs font-medium text-emerald-800">
+                              {t("memory.compressingImage")}
+                            </p>
+                          ) : null}
                           {memoryErrorByItem[item.id] ? (
                             <p className="mt-2 text-xs font-medium text-red-700">
                               {memoryErrorByItem[item.id]}
+                            </p>
+                          ) : null}
+                          {indexingStatusByItem[item.id] ? (
+                            <p className="mt-2 text-xs font-medium text-emerald-800">
+                              {indexingStatusByItem[item.id]}
                             </p>
                           ) : null}
                           {mentionOptions(item.id).length > 0 ? (

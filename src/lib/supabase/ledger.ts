@@ -67,6 +67,18 @@ type LedgerParticipantRow = {
   updated_at: string;
 };
 
+type LinkedReservationRangeRow = {
+  id: string;
+  starts_at: string | null;
+  ends_at: string | null;
+};
+
+type LinkedEventRangeRow = {
+  id: string;
+  planned_start: string | null;
+  planned_end: string | null;
+};
+
 export type LedgerSummary = {
   totalBase: number;
   sharedBase: number;
@@ -176,6 +188,93 @@ function activeLedgerMembers(members: JourneyMember[]) {
   return members.filter(
     (member) => member.role === "owner" || member.role === "group_member",
   );
+}
+
+function dateOnly(value: string | null | undefined) {
+  return value ? value.slice(0, 10) : null;
+}
+
+async function applyLinkedDateRanges(entries: LedgerEntry[]) {
+  const reservationIds = [
+    ...new Set(
+      entries
+        .map((entry) => entry.itineraryReservationId)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  const eventIds = [
+    ...new Set(
+      entries
+        .map((entry) => entry.itineraryEventId)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+
+  const [{ data: reservationRows, error: reservationError }, { data: eventRows, error: eventError }] =
+    await Promise.all([
+      reservationIds.length > 0
+        ? supabase
+            .from("itinerary_reservations")
+            .select("id, starts_at, ends_at")
+            .in("id", reservationIds)
+        : Promise.resolve({ data: [], error: null }),
+      eventIds.length > 0
+        ? supabase
+            .from("itinerary_events")
+            .select("id, planned_start, planned_end")
+            .in("id", eventIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+
+  if (reservationError) throw reservationError;
+  if (eventError) throw eventError;
+
+  const reservationRanges = new Map(
+    ((reservationRows ?? []) as LinkedReservationRangeRow[]).map((row) => {
+      const startDate = dateOnly(row.starts_at) ?? dateOnly(row.ends_at);
+      return [
+        row.id,
+        {
+          startDate,
+          endDate: dateOnly(row.ends_at) ?? startDate,
+        },
+      ];
+    }),
+  );
+  const eventRanges = new Map(
+    ((eventRows ?? []) as LinkedEventRangeRow[]).map((row) => {
+      const startDate = dateOnly(row.planned_start) ?? dateOnly(row.planned_end);
+      return [
+        row.id,
+        {
+          startDate,
+          endDate: dateOnly(row.planned_end) ?? startDate,
+        },
+      ];
+    }),
+  );
+
+  return entries.map((entry) => {
+    if (entry.startDate && entry.endDate) {
+      return entry;
+    }
+
+    const range =
+      (entry.itineraryReservationId
+        ? reservationRanges.get(entry.itineraryReservationId)
+        : null) ??
+      (entry.itineraryEventId ? eventRanges.get(entry.itineraryEventId) : null);
+
+    if (!range?.startDate) {
+      return entry;
+    }
+
+    return {
+      ...entry,
+      startDate: entry.startDate ?? range.startDate,
+      endDate: entry.endDate ?? range.endDate ?? range.startDate,
+    };
+  });
 }
 
 function currentUserMember(members: JourneyMember[], userId: string) {
@@ -428,9 +527,10 @@ export async function getLedgerData(journeyId: string): Promise<LedgerData> {
   const mappedEntries = entries.map((entry) =>
     mapEntry(entry, participantsByEntry.get(entry.id) ?? [], membersById),
   );
+  const rangeAwareEntries = await applyLinkedDateRanges(mappedEntries);
   const displayCurrency = ledger.displayCurrency || ledger.baseCurrency;
   const displayEntries = await rebaseEntriesForDisplayCurrency(
-    mappedEntries,
+    rangeAwareEntries,
     displayCurrency,
   );
 

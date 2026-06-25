@@ -65,6 +65,7 @@ export type MemoryEntry = {
   type: MemoryEntryType;
   content: string;
   mediaUrl: string | null;
+  mediaAssetId?: string | null;
   locationName: string | null;
   capturedAt: string;
   createdAt: string;
@@ -158,6 +159,54 @@ export type JourneyStorageConnection = {
   connectedBy: string | null;
   connectedAt: string;
   createdAt: string;
+  updatedAt: string;
+};
+
+export type JourneyMapObjectType =
+  | "live_location"
+  | "memory"
+  | "booking"
+  | "plan_item"
+  | "hotel"
+  | "restaurant"
+  | "parking"
+  | "fuel"
+  | "toilet"
+  | "airport"
+  | "trailhead"
+  | "poi"
+  | "route_point"
+  | "emergency";
+
+export type JourneyMapObjectVisibility = "private" | "journey" | "public";
+
+export type JourneyMapObject = {
+  id: string;
+  journeyId: string;
+  type: JourneyMapObjectType;
+  sourceType: string | null;
+  sourceId: string | null;
+  title: string;
+  description: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  accuracy: number | null;
+  timestamp: string | null;
+  ownerUserId: string | null;
+  visibility: JourneyMapObjectVisibility;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type JourneyLiveLocation = {
+  journeyId: string;
+  userId: string;
+  latitude: number | null;
+  longitude: number | null;
+  accuracy: number | null;
+  recordedAt: string | null;
+  isLiveEnabled: boolean;
   updatedAt: string;
 };
 

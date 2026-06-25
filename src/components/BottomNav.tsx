@@ -3,16 +3,18 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { useI18n } from "@/components/I18nProvider";
+import type { TranslationKey } from "@/lib/i18n/dictionaries";
 
 const moreItems = [
-  { label: "Timeline", href: "timeline" },
-  { label: "Ledger", href: "ledger" },
-  { label: "People", href: "people" },
-  { label: "Highlights", href: "highlights" },
-  { label: "Media", href: null },
-  { label: "Documents", href: null },
-  { label: "Export", href: null },
-  { label: "Journey Settings", href: "settings" },
+  { labelKey: "nav.timeline", href: "timeline" },
+  { labelKey: "nav.ledger", href: "ledger" },
+  { labelKey: "nav.people", href: "people" },
+  { labelKey: "nav.highlights", href: "highlights" },
+  { labelKey: "nav.media", href: null },
+  { labelKey: "nav.documents", href: null },
+  { labelKey: "nav.export", href: null },
+  { labelKey: "nav.journeySettings", href: "settings" },
 ] as const;
 
 function getActiveTripId(pathname: string) {
@@ -47,6 +49,7 @@ function captureItemClass(active: boolean) {
 
 export function BottomNav() {
   const pathname = usePathname();
+  const { t } = useI18n();
   const activeTripId = getActiveTripId(pathname);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
 
@@ -56,32 +59,32 @@ export function BottomNav() {
         <div className="mx-auto grid h-20 max-w-3xl grid-cols-5 items-end gap-1 px-2 pb-2 pt-2">
           <Link href="/?home=1" className={baseItemClass(pathname === "/")}>
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            Home
+            {t("nav.home")}
           </Link>
           <Link
             href="/trips"
             className={baseItemClass(pathname.startsWith("/trips"))}
           >
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            Journeys
+            {t("nav.journeys")}
           </Link>
           <Link href="/trips" className={captureItemClass(false)}>
             <span className="text-2xl leading-none">+</span>
-            Capture
+            {t("nav.capture")}
           </Link>
           <Link
             href="/people"
             className={baseItemClass(pathname.startsWith("/people"))}
           >
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            People
+            {t("nav.people")}
           </Link>
           <Link
             href="/profile"
             className={baseItemClass(pathname.startsWith("/profile"))}
           >
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            Profile
+            {t("nav.profile")}
           </Link>
         </div>
       </nav>
@@ -105,25 +108,25 @@ export function BottomNav() {
             className={baseItemClass(pathname === overviewHref)}
           >
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            Overview
+            {t("nav.overview")}
           </Link>
           <Link
             href={plannerHref}
             className={baseItemClass(pathname === plannerHref)}
           >
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            Planner
+            {t("nav.planner")}
           </Link>
           <Link
             href={captureHref}
             className={captureItemClass(pathname === captureHref)}
           >
             <span className="text-2xl leading-none">+</span>
-            Capture
+            {t("nav.capture")}
           </Link>
           <Link href={mapHref} className={baseItemClass(pathname === mapHref)}>
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            Map
+            {t("nav.map")}
           </Link>
           <button
             type="button"
@@ -131,7 +134,7 @@ export function BottomNav() {
             className={baseItemClass(moreActive)}
           >
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            More
+            {t("nav.more")}
           </button>
         </div>
       </nav>
@@ -140,7 +143,7 @@ export function BottomNav() {
         <div className="fixed inset-0 z-50 md:hidden">
           <button
             type="button"
-            aria-label="Close more menu"
+            aria-label={t("app.menu.close")}
             className="absolute inset-0 bg-stone-950/30"
             onClick={() => setIsMoreOpen(false)}
           />
@@ -149,10 +152,10 @@ export function BottomNav() {
             <div className="mt-5 flex items-center justify-between">
               <div>
                 <p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-800">
-                  More
+                  {t("nav.more")}
                 </p>
                 <h2 className="text-xl font-semibold text-stone-950">
-                  Journey tools
+                  {t("nav.journeyTools")}
                 </h2>
               </div>
               <button
@@ -160,26 +163,26 @@ export function BottomNav() {
                 onClick={() => setIsMoreOpen(false)}
                 className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
               >
-                Close
+                {t("common.close")}
               </button>
             </div>
             <div className="mt-4 grid grid-cols-2 gap-2">
               {moreItems.map((item) =>
                 item.href ? (
                   <Link
-                    key={item.label}
+                    key={item.labelKey}
                     href={`/trips/${activeTripId}/${item.href}`}
                     onClick={() => setIsMoreOpen(false)}
                     className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-stone-800 shadow-sm"
                   >
-                    {item.label}
+                    {t(item.labelKey as TranslationKey)}
                   </Link>
                 ) : (
                   <span
-                    key={item.label}
+                    key={item.labelKey}
                     className="rounded-2xl bg-stone-100 px-4 py-3 text-sm font-bold text-stone-400"
                   >
-                    {item.label}
+                    {t(item.labelKey as TranslationKey)}
                   </span>
                 ),
               )}

@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useI18n } from "@/components/I18nProvider";
+import type { TranslationKey } from "@/lib/i18n/dictionaries";
 
 type NavIcon =
   | "home"
@@ -18,7 +20,7 @@ type NavIcon =
   | "settings";
 
 type NavItem = {
-  label: string;
+  labelKey: TranslationKey;
   href: string;
   icon: NavIcon;
 };
@@ -147,32 +149,33 @@ function Icon({ name }: { name: NavIcon }) {
 
 export function SidebarNav() {
   const pathname = usePathname();
+  const { t } = useI18n();
   const tripId = getActiveTripId(pathname);
   const mainItems: NavItem[] = [
-    { label: "Home", href: "/?home=1", icon: "home" },
-    { label: "Journeys", href: "/trips", icon: "journeys" },
-    { label: "People", href: "/people", icon: "people" },
-    { label: "Profile", href: "/profile", icon: "profile" },
+    { labelKey: "nav.home", href: "/?home=1", icon: "home" },
+    { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
+    { labelKey: "nav.people", href: "/people", icon: "people" },
+    { labelKey: "nav.profile", href: "/profile", icon: "profile" },
   ];
   const journeyItems: NavItem[] = tripId
     ? [
-        { label: "Overview", href: `/trips/${tripId}`, icon: "overview" },
-        { label: "Planner", href: `/trips/${tripId}/planner`, icon: "planner" },
-        { label: "Capture", href: `/trips/${tripId}/capture`, icon: "capture" },
-        { label: "Map", href: `/trips/${tripId}/map`, icon: "map" },
-        { label: "Ledger", href: `/trips/${tripId}/ledger`, icon: "ledger" },
+        { labelKey: "nav.overview", href: `/trips/${tripId}`, icon: "overview" },
+        { labelKey: "nav.planner", href: `/trips/${tripId}/planner`, icon: "planner" },
+        { labelKey: "nav.capture", href: `/trips/${tripId}/capture`, icon: "capture" },
+        { labelKey: "nav.map", href: `/trips/${tripId}/map`, icon: "map" },
+        { labelKey: "nav.ledger", href: `/trips/${tripId}/ledger`, icon: "ledger" },
         {
-          label: "Timeline",
+          labelKey: "nav.timeline",
           href: `/trips/${tripId}/timeline`,
           icon: "timeline",
         },
         {
-          label: "Highlights",
+          labelKey: "nav.highlights",
           href: `/trips/${tripId}/highlights`,
           icon: "highlights",
         },
         {
-          label: "Settings",
+          labelKey: "nav.settings",
           href: `/trips/${tripId}/settings`,
           icon: "settings",
         },
@@ -194,17 +197,19 @@ export function SidebarNav() {
   }
 
   function renderItem(item: NavItem) {
+    const label = t(item.labelKey);
+
     return (
       <Link
-        key={item.label}
+        key={item.labelKey}
         href={item.href}
         className={itemClass(isActive(item.href))}
-        title={item.label}
-        aria-label={item.label}
+        title={label}
+        aria-label={label}
       >
         <Icon name={item.icon} />
         <span className="pointer-events-none absolute left-14 top-1/2 z-50 hidden -translate-y-1/2 whitespace-nowrap rounded-xl bg-stone-950 px-3 py-2 text-xs font-bold text-white shadow-lg group-hover:block group-focus-visible:block">
-          {item.label}
+          {label}
         </span>
       </Link>
     );
