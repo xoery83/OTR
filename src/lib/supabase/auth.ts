@@ -26,6 +26,34 @@ export async function signInWithGoogle(nextPath?: string | null) {
   }
 }
 
+export async function connectGoogleDriveStorage(nextPath: string) {
+  const redirectTo = `${getAppOrigin()}/auth/callback?next=${encodeURIComponent(
+    nextPath,
+  )}`;
+
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo,
+      scopes: [
+        "openid",
+        "email",
+        "profile",
+        "https://www.googleapis.com/auth/drive.file",
+      ].join(" "),
+      queryParams: {
+        access_type: "offline",
+        prompt: "consent",
+        include_granted_scopes: "true",
+      },
+    },
+  });
+
+  if (error) {
+    throw error;
+  }
+}
+
 export async function signInWithEmailOtp(email: string, nextPath?: string | null) {
   const next = nextPath ? `?next=${encodeURIComponent(nextPath)}` : "";
   const redirectTo = `${getAppOrigin()}/auth/callback${next}`;

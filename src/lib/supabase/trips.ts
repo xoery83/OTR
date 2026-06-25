@@ -1,4 +1,4 @@
-import type { CreateTripInput, Trip } from "@/types";
+import type { CreateTripInput, PhotoStorageProvider, Trip } from "@/types";
 import { getCurrentUser } from "./auth";
 import { supabase } from "./client";
 import { upsertProfileForUser } from "./profiles";
@@ -10,6 +10,9 @@ type TripRow = {
   start_date: string | null;
   end_date: string | null;
   cover_image_url: string | null;
+  photo_storage_provider?: PhotoStorageProvider | null;
+  photo_storage_status?: Trip["photoStorageStatus"];
+  photo_storage_root_folder_id?: string | null;
   created_by: string | null;
   created_at: string;
 };
@@ -22,6 +25,9 @@ function mapTrip(row: TripRow): Trip {
     startDate: row.start_date,
     endDate: row.end_date,
     coverImageUrl: row.cover_image_url,
+    photoStorageProvider: row.photo_storage_provider ?? null,
+    photoStorageStatus: row.photo_storage_status ?? "not_connected",
+    photoStorageRootFolderId: row.photo_storage_root_folder_id ?? null,
     createdBy: row.created_by,
     createdAt: row.created_at,
   };
@@ -105,4 +111,36 @@ export async function deleteTrip(tripId: string) {
   if (error) {
     throw error;
   }
+}
+
+export type UpdateTripSettingsInput = {
+  tripId: string;
+  coverImageUrl?: string | null;
+  photoStorageProvider?: PhotoStorageProvider | null;
+};
+
+export async function updateTripSettings(input: UpdateTripSettingsInput) {
+  const updates: Record<string, string | null> = {};
+
+  if ("coverImageUrl" in input) {
+    updates.cover_image_url = input.coverImageUrl || null;
+  }
+
+  if ("photoStorageProvider" in input) {
+    updates.photo_storage_provider = input.photoStorageProvider ?? null;
+    updates.photo_storage_status = "not_connected";
+  }
+
+  const { data, error } = await supabase
+    .from("trips")
+    .update(updates)
+    .eq("id", input.tripId)
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return mapTrip(data);
 }

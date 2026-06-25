@@ -36,6 +36,9 @@ function CaptureContent() {
   const [photoCapturedAt, setPhotoCapturedAt] = useState(getInitialCapturedAt);
   const [photoLocationName, setPhotoLocationName] = useState("");
   const [selectedFileName, setSelectedFileName] = useState("");
+  const [selectedOriginalFile, setSelectedOriginalFile] = useState<File | null>(
+    null,
+  );
   const [compressedImage, setCompressedImage] = useState<CompressedImage | null>(
     null,
   );
@@ -137,9 +140,11 @@ function CaptureContent() {
       }
 
       setSelectedFileName(file.name);
+      setSelectedOriginalFile(file);
       setCompressedImage(compressed);
     } catch (photoError) {
       setSelectedFileName("");
+      setSelectedOriginalFile(null);
       setCompressedImage(null);
       setError(getErrorMessage(photoError, "Could not prepare this photo."));
     } finally {
@@ -169,6 +174,7 @@ function CaptureContent() {
           capturedAt: photoCapturedAt,
           locationName: photoLocationName,
         },
+        trip?.photoStorageStatus === "connected" ? selectedOriginalFile : null,
       );
       const signedUrls = await getSignedMemoryImageUrls([memory]);
       setEntries((current) => [memory, ...current]);
@@ -179,6 +185,7 @@ function CaptureContent() {
       setPhotoCaption("");
       setPhotoLocationName("");
       setSelectedFileName("");
+      setSelectedOriginalFile(null);
       setCompressedImage(null);
     } catch (photoError) {
       setError(getErrorMessage(photoError, "Could not upload photo."));
@@ -205,7 +212,8 @@ function CaptureContent() {
           Add memory
         </h1>
         <p className="mt-3 text-base leading-7 text-stone-600">
-          Add a text note or upload one compressed photo. Originals are not saved.
+          Add a text note or photo. Compressed images power the timeline; if
+          Google Drive is connected, originals are saved there.
         </p>
       </section>
 
@@ -307,7 +315,8 @@ function CaptureContent() {
               Photo memory
             </h2>
             <p className="mt-2 text-sm leading-6 text-stone-600">
-              Images are compressed to JPEG before upload, max 1920px.
+              Images are compressed to JPEG for fast display. Connected journeys
+              also preserve the original in Google Drive.
             </p>
           </div>
           <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold uppercase tracking-wide text-emerald-800">
@@ -351,7 +360,11 @@ function CaptureContent() {
             <div className="grid gap-2 border-t border-stone-200 bg-white p-4 text-sm text-stone-600 sm:grid-cols-3">
               <span>{compressedImage.width} x {compressedImage.height}</span>
               <span>{Math.round(compressedImage.blob.size / 1024)} KB</span>
-              <span>JPEG compressed</span>
+              <span>
+                {trip?.photoStorageStatus === "connected"
+                  ? "Original goes to Drive"
+                  : "JPEG compressed"}
+              </span>
             </div>
           </div>
         ) : null}
@@ -410,7 +423,7 @@ function CaptureContent() {
           disabled={!compressedImage || isPhotoPreparing || isPhotoUploading}
           className="mt-4 w-full rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
         >
-          {isPhotoUploading ? "Uploading compressed photo..." : "Upload photo"}
+          {isPhotoUploading ? "Uploading photo..." : "Upload photo"}
         </button>
       </form>
 

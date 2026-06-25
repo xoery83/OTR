@@ -208,6 +208,7 @@ export async function createPhotoMemory(
   originalFileName: string,
   caption: string,
   input: CreateMemoryBaseInput,
+  originalFile?: File | null,
 ) {
   const user = await getCurrentUser();
 
@@ -252,9 +253,11 @@ export async function createPhotoMemory(
     throw new Error(`Memory row failed: ${memoryError.message}`);
   }
 
+  const mediaAssetId = crypto.randomUUID();
+
   try {
     await createImageMediaAsset({
-      id: crypto.randomUUID(),
+      id: mediaAssetId,
       tripId,
       userId: user.id,
       memoryEntryId: memoryId,
@@ -269,6 +272,45 @@ export async function createPhotoMemory(
         assetError instanceof Error ? assetError.message : "Unknown error"
       }`,
     );
+  }
+
+  if (originalFile) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const accessToken = data.session?.access_token;
+
+      if (!accessToken) {
+        throw new Error("No active session was found for original upload.");
+      }
+
+      const form = new FormData();
+      form.append("tripId", tripId);
+      form.append("memoryEntryId", memoryId);
+      form.append("mediaAssetId", mediaAssetId);
+      form.append("capturedDate", input.capturedAt.slice(0, 10));
+      form.append("file", originalFile, originalFile.name);
+
+      const response = await fetch("/api/google-drive/upload-photo", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: form,
+      });
+      const payload = (await response.json()) as { error?: string };
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Original upload failed.");
+      }
+    } catch (originalUploadError) {
+      throw new Error(
+        `Compressed photo saved, but original Google Drive upload failed: ${
+          originalUploadError instanceof Error
+            ? originalUploadError.message
+            : "Unknown error"
+        }`,
+      );
+    }
   }
 
   return {

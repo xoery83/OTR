@@ -12,7 +12,7 @@ const moreItems = [
   { label: "Media", href: null },
   { label: "Documents", href: null },
   { label: "Export", href: null },
-  { label: "Journey Settings", href: null },
+  { label: "Journey Settings", href: "settings" },
 ] as const;
 
 function getActiveTripId(pathname: string) {
@@ -54,7 +54,7 @@ export function BottomNav() {
     return (
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-stone-200 bg-white/95 shadow-[0_-10px_30px_rgba(28,25,23,0.08)] backdrop-blur md:hidden">
         <div className="mx-auto grid h-20 max-w-3xl grid-cols-5 items-end gap-1 px-2 pb-2 pt-2">
-          <Link href="/" className={baseItemClass(pathname === "/")}>
+          <Link href="/?home=1" className={baseItemClass(pathname === "/")}>
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
             Home
           </Link>

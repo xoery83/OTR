@@ -42,6 +42,7 @@ export function WorkspaceManager() {
 
   const currentSearch = searchParams.toString();
   const currentSearchWithPrefix = currentSearch ? `?${currentSearch}` : "";
+  const shouldSkipHomeRestore = searchParams.get("home") === "1";
 
   const createWorkspace = useCallback((): SavedWorkspace | null => {
     if (!shouldSaveWorkspacePath(pathname)) return null;
@@ -81,6 +82,7 @@ export function WorkspaceManager() {
 
   useEffect(() => {
     if (pathname !== "/") return;
+    if (shouldSkipHomeRestore) return;
 
     let isMounted = true;
 
@@ -111,7 +113,7 @@ export function WorkspaceManager() {
     return () => {
       isMounted = false;
     };
-  }, [pathname, router]);
+  }, [pathname, router, shouldSkipHomeRestore]);
 
   useEffect(() => {
     if (restoreScrollYRef.current === null) return;

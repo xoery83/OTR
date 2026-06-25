@@ -7,6 +7,9 @@ export type Trip = {
   startDate: string | null;
   endDate: string | null;
   coverImageUrl: string | null;
+  photoStorageProvider?: PhotoStorageProvider | null;
+  photoStorageStatus?: PhotoStorageStatus;
+  photoStorageRootFolderId?: string | null;
   createdAt: string;
   createdBy?: string | null;
 };
@@ -85,10 +88,16 @@ export type MediaAsset = {
   userId: string;
   memoryEntryId: string;
   assetType: "image" | "video" | "audio";
+  storageProvider?: PhotoStorageProvider;
   storageBucket: string;
   originalFilePath: string | null;
   compressedFilePath: string | null;
   thumbnailFilePath: string | null;
+  providerFileId?: string | null;
+  providerDriveId?: string | null;
+  providerWebUrl?: string | null;
+  providerThumbnailUrl?: string | null;
+  providerOriginalReference?: string | null;
   originalFileSize: number | null;
   compressedFileSize: number | null;
   mimeType: string | null;
@@ -97,6 +106,94 @@ export type MediaAsset = {
   storageTier: "standard" | "pro_original";
   isOriginalPreserved: boolean;
   retentionUntil: string | null;
+  takenAt?: string | null;
+  gpsLatitude?: number | null;
+  gpsLongitude?: number | null;
+  cameraModel?: string | null;
+  orientation?: string | null;
+  exifJson?: Record<string, unknown>;
+  aiStatus?: PhotoAiStatus;
+  aiMetadata?: Record<string, unknown>;
+  ocrText?: string | null;
+  duplicateScore?: number | null;
+  blurScore?: number | null;
+  sceneTags?: string[];
+  indexedAt?: string | null;
+  createdAt: string;
+};
+
+export type PhotoAssetWithMemory = MediaAsset & {
+  memory: MemoryEntry | null;
+  displayUrl?: string;
+};
+
+export type PhotoStorageProvider =
+  | "supabase_legacy"
+  | "google_drive"
+  | "onedrive";
+
+export type PhotoStorageStatus =
+  | "not_connected"
+  | "connected"
+  | "disconnected"
+  | "error";
+
+export type PhotoAiStatus =
+  | "pending"
+  | "processing"
+  | "indexed"
+  | "failed"
+  | "skipped";
+
+export type JourneyStorageConnection = {
+  id: string;
+  tripId: string;
+  provider: Exclude<PhotoStorageProvider, "supabase_legacy">;
+  accountLabel: string | null;
+  providerAccountId: string | null;
+  providerRootFolderId: string | null;
+  journeyFolderId: string | null;
+  status: Exclude<PhotoStorageStatus, "not_connected">;
+  metadata: Record<string, unknown>;
+  connectedBy: string | null;
+  connectedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PhotoFaceRecognitionStatus =
+  | "unknown"
+  | "recognized"
+  | "confirmed"
+  | "rejected";
+
+export type PhotoFace = {
+  id: string;
+  mediaAssetId: string;
+  tripId: string;
+  journeyMemberId: string | null;
+  boundingBox: Record<string, unknown>;
+  embedding: number[] | null;
+  confidence: number | null;
+  qualityScore: number | null;
+  recognitionStatus: PhotoFaceRecognitionStatus;
+  recognizedName: string | null;
+  modelName?: string | null;
+  embeddingVersion?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type JourneyMemberFaceEmbedding = {
+  id: string;
+  tripId: string;
+  journeyMemberId: string;
+  mediaAssetId: string | null;
+  faceId: string | null;
+  embedding: number[];
+  qualityScore: number | null;
+  source: "manual_seed" | "photo" | "confirmed_match";
+  createdBy: string | null;
   createdAt: string;
 };
 
