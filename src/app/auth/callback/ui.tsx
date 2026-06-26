@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { exchangeCodeForSession, getCurrentUser } from "@/lib/supabase/auth";
 import { supabase } from "@/lib/supabase/client";
 import { upsertProfileForUser } from "@/lib/supabase/profiles";
+import { persistAuthSession } from "@/lib/supabase/session-fallback";
 
 export function AuthCallback() {
   const router = useRouter();
@@ -43,14 +44,16 @@ export function AuthCallback() {
           }
 
           if (accessToken && refreshToken) {
-            const { error: sessionError } = await supabase.auth.setSession({
-              access_token: accessToken,
-              refresh_token: refreshToken,
-            });
-
+            const { data: sessionData, error: sessionError } =
+              await supabase.auth.setSession({
+                access_token: accessToken,
+                refresh_token: refreshToken,
+              });
             if (sessionError) {
               throw sessionError;
             }
+
+            persistAuthSession(sessionData.session);
           }
         }
 

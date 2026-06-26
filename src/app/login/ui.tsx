@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { signInWithEmailOtp, signInWithGoogle } from "@/lib/supabase/auth";
 import { supabase } from "@/lib/supabase/client";
+import { ensureRestoredSession } from "@/lib/supabase/session-fallback";
 
 export function LoginForm() {
   const router = useRouter();
@@ -15,11 +16,18 @@ export function LoginForm() {
 
   useEffect(() => {
     const next = searchParams.get("next") || "/trips";
-    supabase.auth.getSession().then(({ data }) => {
+
+    async function maybeRestoreSession() {
+      const restored = await ensureRestoredSession();
+      const { data } = restored
+        ? { data: { session: restored } }
+        : await supabase.auth.getSession();
       if (data.session?.user) {
         router.replace(next);
       }
-    });
+    }
+
+    maybeRestoreSession();
   }, [router, searchParams]);
 
   async function handleGoogleLogin() {

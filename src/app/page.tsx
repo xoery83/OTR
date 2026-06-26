@@ -15,6 +15,7 @@ import { getItineraryEvents } from "@/lib/supabase/itinerary";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import { getTripMemories } from "@/lib/supabase/memories";
 import { getTripsForCurrentUser } from "@/lib/supabase/trips";
+import { ensureRestoredSession } from "@/lib/supabase/session-fallback";
 import type { ItineraryEvent, MemoryEntry, Trip } from "@/types";
 
 type JourneyItem = {
@@ -276,9 +277,31 @@ export default function Home() {
   const [isAuthed, setIsAuthed] = useState<boolean | null>(null);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
+    let isMounted = true;
+
+    async function hydrate() {
+      const restored = await ensureRestoredSession();
+      if (!isMounted) {
+        return;
+      }
+
+      if (restored?.user) {
+        setIsAuthed(true);
+        return;
+      }
+
+      const { data } = await supabase.auth.getSession();
+      if (!isMounted) {
+        return;
+      }
       setIsAuthed(Boolean(data.session?.user));
-    });
+    }
+
+    hydrate();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   if (isAuthed === null) {

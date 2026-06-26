@@ -1,8 +1,14 @@
 import type { User } from "@supabase/supabase-js";
 import { getAppOrigin } from "@/lib/app-url";
 import { supabase } from "./client";
+import {
+  ensureRestoredSession,
+  clearAuthSessionPersistence,
+  persistAuthSession,
+} from "@/lib/supabase/session-fallback";
 
 export async function getCurrentUser() {
+  await ensureRestoredSession();
   const { data, error } = await supabase.auth.getUser();
 
   if (error) {
@@ -77,11 +83,13 @@ export async function exchangeCodeForSession(code: string) {
     throw error;
   }
 
+  persistAuthSession(data.session);
   return data.session;
 }
 
 export async function logout() {
   const { error } = await supabase.auth.signOut();
+  clearAuthSessionPersistence();
 
   if (error) {
     throw error;

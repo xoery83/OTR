@@ -6,6 +6,11 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { upsertProfileForUser } from "@/lib/supabase/profiles";
+import {
+  clearAuthSessionPersistence,
+  ensureRestoredSession,
+  persistAuthSession,
+} from "@/lib/supabase/session-fallback";
 
 type AuthGateProps = {
   children: (user: User) => ReactNode;
@@ -22,7 +27,10 @@ export function AuthGate({ children }: AuthGateProps) {
     let isMounted = true;
 
     async function loadSession() {
-      const { data, error: sessionError } = await supabase.auth.getSession();
+      const restoredSession = await ensureRestoredSession();
+      const { error: sessionError, data } = restoredSession
+        ? { error: null, data: { session: restoredSession } }
+        : await supabase.auth.getSession();
 
       if (!isMounted) {
         return;
@@ -57,6 +65,11 @@ export function AuthGate({ children }: AuthGateProps) {
 
     const { data: listener } = supabase.auth.onAuthStateChange(
       (_event, session) => {
+        if (session) {
+          persistAuthSession(session);
+        } else {
+          clearAuthSessionPersistence();
+        }
         if (!session?.user) {
           router.replace("/login");
           return;
