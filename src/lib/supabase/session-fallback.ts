@@ -6,7 +6,11 @@ const SESSION_STORAGE_KEY = "otr_auth_session_v1";
 const SESSION_COOKIE_NAME = "otr_auth_session_v1";
 const SESSION_PERSIST_DAYS = 30;
 
-type PersistedSession = Pick<Session, "access_token" | "refresh_token" | "expires_at">;
+type PersistedSession = {
+  access_token: string;
+  refresh_token: string;
+  expires_at?: number;
+};
 
 function isClient() {
   return typeof window !== "undefined" && typeof document !== "undefined";
@@ -108,14 +112,9 @@ export function clearAuthSessionPersistence() {
   removeStorage();
 }
 
-type PersistableSession = Pick<Session, "access_token" | "refresh_token"> & {
-  expires_at?: number | null;
-};
+type PersistableSession = Pick<Session, "access_token" | "refresh_token" | "expires_at">;
 
-export function persistAuthSession(session: (Session | PersistableSession | null) & {
-  access_token?: string | null;
-  refresh_token?: string | null;
-}) {
+export function persistAuthSession(session: Session | PersistableSession | null | undefined) {
   if (!session?.access_token || !session?.refresh_token) {
     return;
   }
@@ -123,7 +122,7 @@ export function persistAuthSession(session: (Session | PersistableSession | null
   writeStorage({
     access_token: session.access_token,
     refresh_token: session.refresh_token,
-    expires_at: session.expires_at ?? null,
+    expires_at: session.expires_at ?? undefined,
   });
 }
 
