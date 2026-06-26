@@ -30,7 +30,15 @@ function getActiveTripId(pathname: string) {
   return null;
 }
 
-function baseItemClass(active: boolean) {
+function baseItemClass(active: boolean, compact = false) {
+  if (compact) {
+    return `flex flex-col items-center justify-center rounded-2xl px-1 text-[11px] font-bold transition ${
+      active
+        ? "bg-emerald-50/80 text-emerald-800 backdrop-blur"
+        : "text-stone-600 drop-shadow-sm hover:bg-white/40 hover:text-stone-900"
+    }`;
+  }
+
   return `flex flex-col items-center justify-center rounded-2xl px-1 text-[11px] font-bold transition ${
     active
       ? "bg-emerald-50 text-emerald-800"
@@ -38,8 +46,8 @@ function baseItemClass(active: boolean) {
   }`;
 }
 
-function captureItemClass(active: boolean) {
-  return `-mt-6 flex h-[76px] flex-col items-center justify-center rounded-3xl bg-emerald-700 px-1 text-xs font-black text-white shadow-lg shadow-emerald-900/20 transition ${
+function captureItemClass(active: boolean, compact = false) {
+  return `${compact ? "-mt-5 h-[70px]" : "-mt-6 h-[76px]"} flex flex-col items-center justify-center rounded-3xl bg-emerald-700 px-1 text-xs font-black text-white shadow-lg shadow-emerald-900/20 transition ${
     active ? "ring-4 ring-emerald-100" : ""
   }`;
 }
@@ -48,6 +56,7 @@ export function BottomNav() {
   const pathname = usePathname();
   const { t } = useI18n();
   const activeTripId = getActiveTripId(pathname);
+  const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
   const [isMoreOpen, setIsMoreOpen] = useState(false);
 
   if (!activeTripId) {
@@ -104,37 +113,47 @@ export function BottomNav() {
 
   return (
     <>
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-stone-200 bg-white/95 shadow-[0_-10px_30px_rgba(28,25,23,0.08)] backdrop-blur md:hidden">
-        <div className="mx-auto grid h-20 max-w-3xl grid-cols-5 items-end gap-1 px-2 pb-2 pt-2">
+      <nav
+        className={`fixed inset-x-0 bottom-0 z-30 backdrop-blur md:hidden ${
+          isMapPage
+            ? "border-t border-transparent bg-transparent shadow-none"
+            : "border-t border-stone-200 bg-white/95 shadow-[0_-10px_30px_rgba(28,25,23,0.08)]"
+        }`}
+      >
+        <div
+          className={`mx-auto grid max-w-3xl grid-cols-5 items-end gap-1 px-2 ${
+            isMapPage ? "h-16 pb-1 pt-0" : "h-20 pb-2 pt-2"
+          }`}
+        >
           <Link
             href={overviewHref}
-            className={baseItemClass(pathname === overviewHref)}
+            className={baseItemClass(pathname === overviewHref, isMapPage)}
           >
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
             {t("nav.overview")}
           </Link>
           <Link
             href={plannerHref}
-            className={baseItemClass(pathname === plannerHref)}
+            className={baseItemClass(pathname === plannerHref, isMapPage)}
           >
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
             {t("nav.planner")}
           </Link>
           <Link
             href={captureHref}
-            className={captureItemClass(pathname === captureHref)}
+            className={captureItemClass(pathname === captureHref, isMapPage)}
           >
             <span className="text-2xl leading-none">+</span>
             {t("nav.capture")}
           </Link>
-          <Link href={mapHref} className={baseItemClass(pathname === mapHref)}>
+          <Link href={mapHref} className={baseItemClass(pathname === mapHref, isMapPage)}>
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
             {t("nav.map")}
           </Link>
           <button
             type="button"
             onClick={() => setIsMoreOpen(true)}
-            className={baseItemClass(moreActive)}
+            className={baseItemClass(moreActive, isMapPage)}
           >
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
             {t("nav.more")}

@@ -125,3 +125,193 @@ input[type="date"] {
   padding: 3px 5px;
   text-align: center;
 }
+
+/* Mobile density pass for shared Tailwind UI primitives. */
+@media (max-width: 767px) {
+  :root {
+    --otr-mobile-radius-3xl: 18px;
+    --otr-mobile-radius-2xl: 12px;
+    --otr-mobile-radius-xl: 10px;
+    --otr-mobile-space-8: 1.25rem;
+    --otr-mobile-space-6: 1rem;
+    --otr-mobile-space-5: 0.875rem;
+    --otr-mobile-space-4: 0.75rem;
+    --otr-mobile-space-3: 0.625rem;
+  }
+
+  .rounded-\[32px\],
+  .rounded-\[28px\],
+  .rounded-3xl {
+    border-radius: var(--otr-mobile-radius-3xl) !important;
+  }
+
+  .rounded-\[24px\],
+  .rounded-2xl {
+    border-radius: var(--otr-mobile-radius-2xl) !important;
+  }
+
+  .rounded-xl {
+    border-radius: var(--otr-mobile-radius-xl) !important;
+  }
+
+  .p-8 {
+    padding: var(--otr-mobile-space-8) !important;
+  }
+
+  .p-6 {
+    padding: 1.125rem !important;
+  }
+
+  .p-5 {
+    padding: 1rem !important;
+  }
+
+  .p-4 {
+    padding: 0.875rem !important;
+  }
+
+  .p-3 {
+    padding: var(--otr-mobile-space-3) !important;
+  }
+
+  .px-6 {
+    padding-left: 1.125rem !important;
+    padding-right: 1.125rem !important;
+  }
+
+  .px-5 {
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+  }
+
+  .px-4 {
+    padding-left: 0.875rem !important;
+    padding-right: 0.875rem !important;
+  }
+
+  .py-6 {
+    padding-bottom: 1.125rem !important;
+    padding-top: 1.125rem !important;
+  }
+
+  .py-5 {
+    padding-bottom: 1rem !important;
+    padding-top: 1rem !important;
+  }
+
+  .py-4 {
+    padding-bottom: 0.875rem !important;
+    padding-top: 0.875rem !important;
+  }
+
+  .py-3 {
+    padding-bottom: var(--otr-mobile-space-3) !important;
+    padding-top: var(--otr-mobile-space-3) !important;
+  }
+
+  .pt-6 {
+    padding-top: var(--otr-mobile-space-6) !important;
+  }
+
+  .pt-5 {
+    padding-top: var(--otr-mobile-space-5) !important;
+  }
+
+  .pt-4 {
+    padding-top: var(--otr-mobile-space-4) !important;
+  }
+
+  .gap-8 {
+    gap: var(--otr-mobile-space-8) !important;
+  }
+
+  .gap-6 {
+    gap: var(--otr-mobile-space-6) !important;
+  }
+
+  .gap-5 {
+    gap: var(--otr-mobile-space-5) !important;
+  }
+
+  .gap-4 {
+    gap: var(--otr-mobile-space-4) !important;
+  }
+
+  .gap-3 {
+    gap: var(--otr-mobile-space-3) !important;
+  }
+
+  .space-y-8 > :not(:last-child) {
+    --tw-space-y-reverse: 0 !important;
+    margin-block-end: calc(var(--otr-mobile-space-8) * calc(1 - var(--tw-space-y-reverse))) !important;
+    margin-block-start: calc(var(--otr-mobile-space-8) * var(--tw-space-y-reverse)) !important;
+  }
+
+  .space-y-6 > :not(:last-child) {
+    --tw-space-y-reverse: 0 !important;
+    margin-block-end: calc(var(--otr-mobile-space-6) * calc(1 - var(--tw-space-y-reverse))) !important;
+    margin-block-start: calc(var(--otr-mobile-space-6) * var(--tw-space-y-reverse)) !important;
+  }
+
+  .space-y-5 > :not(:last-child) {
+    --tw-space-y-reverse: 0 !important;
+    margin-block-end: calc(var(--otr-mobile-space-5) * calc(1 - var(--tw-space-y-reverse))) !important;
+    margin-block-start: calc(var(--otr-mobile-space-5) * var(--tw-space-y-reverse)) !important;
+  }
+
+  .space-y-4 > :not(:last-child) {
+    --tw-space-y-reverse: 0 !important;
+    margin-block-end: calc(var(--otr-mobile-space-4) * calc(1 - var(--tw-space-y-reverse))) !important;
+    margin-block-start: calc(var(--otr-mobile-space-4) * var(--tw-space-y-reverse)) !important;
+  }
+
+  .space-y-3 > :not(:last-child) {
+    --tw-space-y-reverse: 0 !important;
+    margin-block-end: calc(var(--otr-mobile-space-3) * calc(1 - var(--tw-space-y-reverse))) !important;
+    margin-block-start: calc(var(--otr-mobile-space-3) * var(--tw-space-y-reverse)) !important;
+  }
+
+  .mt-8 {
+    margin-top: var(--otr-mobile-space-8) !important;
+  }
+
+  .mt-6 {
+    margin-top: var(--otr-mobile-space-6) !important;
+  }
+
+  .mt-5 {
+    margin-top: var(--otr-mobile-space-5) !important;
+  }
+
+  .mt-4 {
+    margin-top: var(--otr-mobile-space-4) !important;
+  }
+
+  .mt-3 {
+    margin-top: var(--otr-mobile-space-3) !important;
+  }
+
+  nav.fixed.inset-x-0.bottom-0 .h-20 {
+    height: 4.5rem !important;
+  }
+
+  nav.fixed.inset-x-0.bottom-0 .h-\[76px\] {
+    height: 4rem !important;
+  }
+
+  nav.fixed.inset-x-0.bottom-0 .pt-2 {
+    padding-top: 0.25rem !important;
+  }
+
+  nav.fixed.inset-x-0.bottom-0 .pb-2 {
+    padding-bottom: 0.375rem !important;
+  }
+
+  nav.fixed.inset-x-0.bottom-0 .-mt-6 {
+    margin-top: -1rem !important;
+  }
+
+  main.pb-28 {
+    padding-bottom: 5.75rem !important;
+  }
+}

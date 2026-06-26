@@ -112,6 +112,15 @@ function statusLabel(
   return t("map.memberStatusOffline");
 }
 
+function memberInitial(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.slice(0, 1).toUpperCase())
+    .join("");
+}
+
 function dateKey(value: string | null | undefined) {
   return value?.slice(0, 10) ?? null;
 }
@@ -1019,6 +1028,29 @@ function JourneyMapContent() {
     setSelectedMarker(marker);
   }
 
+  function handleOutsideMemberClick(memberLocation: MemberLocation) {
+    const coordinates = getCoordinates(memberLocation.location);
+    if (!coordinates || !memberLocation.member.userId) return;
+
+    const distanceLabel =
+      memberLocation.distance === null
+        ? t("map.distanceUnavailable")
+        : formatDistance(memberLocation.distance);
+
+    setSelectedMarker({
+      id: `outside-live-${memberLocation.member.userId}`,
+      label: memberLocation.member.displayName,
+      subtitle: `${statusLabel(memberLocation.status, t)} · ${t("map.liveOutside", {
+        name: memberLocation.member.displayName,
+        distance: distanceLabel,
+      })}`,
+      coordinates,
+      status: memberLocation.status,
+      kind: "live",
+      icon: "live",
+    });
+  }
+
   function selectMapView(dayId: string) {
     setSelectedDayId(dayId);
     setSelectedMarker(null);
@@ -1041,7 +1073,7 @@ function JourneyMapContent() {
   }
 
   return (
-    <section className="fixed inset-x-0 bottom-20 top-16 z-10 bg-stone-100 md:bottom-0 md:left-20 md:top-0">
+    <section className="fixed inset-0 z-10 bg-stone-100 md:left-20">
       <LeafletMapCanvas
         markers={mapMarkers}
         routes={mapRoutes}
@@ -1051,20 +1083,20 @@ function JourneyMapContent() {
         onMarkerClick={handleMarkerClick}
       />
 
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-[500] p-3 md:p-5">
-        <div className="pointer-events-auto rounded-[28px] border border-white/80 bg-white/92 p-3 shadow-xl backdrop-blur">
-          <div className="flex items-center justify-between gap-3">
+      <div className="pointer-events-none absolute left-16 right-2 top-2 z-[500] md:inset-x-0 md:top-0 md:p-5">
+        <div className="pointer-events-auto rounded-2xl border border-white/60 bg-white/[0.62] p-2 shadow-lg backdrop-blur-md md:rounded-[28px] md:bg-white/[0.88] md:p-3">
+          <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-800">
+              <p className="truncate text-xs font-black uppercase tracking-[0.12em] text-emerald-900 md:tracking-[0.16em]">
                 {trip?.name || t("map.title")}
               </p>
-              <h1 className="truncate text-xl font-black text-stone-950">
+              <p className="truncate text-[11px] font-bold text-stone-600">
                 {selectedDay
-                  ? `${selectedDay.dayTag ?? `D${selectedDay.dayNumber}`} · ${selectedDay.day.dayDate}`
+                  ? `${selectedDay.dayTag ?? `D${selectedDay.dayNumber}`} · ${compactDate(selectedDay.day.dayDate, t)}`
                   : t("map.fullJourney")}
-              </h1>
+              </p>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1.5">
               <LiveLocationToggle
                 tripId={tripId}
                 compact
@@ -1073,7 +1105,7 @@ function JourneyMapContent() {
               <button
                 type="button"
                 onClick={() => selectMapView("journey")}
-                className={`rounded-full px-3 py-2 text-xs font-black shadow-sm ${
+                className={`rounded-full px-2.5 py-2 text-xs font-black shadow-sm ${
                   selectedDayId === "journey"
                     ? "bg-emerald-700 text-white"
                     : "bg-stone-100 text-stone-700"
@@ -1084,7 +1116,7 @@ function JourneyMapContent() {
               <button
                 type="button"
                 onClick={() => setShowMemories((value) => !value)}
-                className={`rounded-full px-3 py-2 text-xs font-black shadow-sm ${
+                className={`rounded-full px-2.5 py-2 text-xs font-black shadow-sm ${
                   showMemories
                     ? "bg-violet-700 text-white"
                     : "bg-stone-100 text-stone-700"
@@ -1095,7 +1127,7 @@ function JourneyMapContent() {
             </div>
           </div>
 
-          <div ref={dateStripRef} className="mt-3 flex gap-2 overflow-x-auto pb-1">
+          <div ref={dateStripRef} className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5 md:gap-2">
             {days.map((day) => (
               (() => {
                 const selected = selectedDayId === day.day.id;
@@ -1106,7 +1138,7 @@ function JourneyMapContent() {
                     data-map-day-id={day.day.id}
                     type="button"
                     onClick={() => selectMapView(day.day.id)}
-                    className={`min-w-12 shrink-0 rounded-xl border px-2 py-1 text-center transition ${
+                    className={`min-w-11 shrink-0 rounded-xl border px-2 py-1 text-center transition ${
                       selected
                         ? official
                           ? "border-emerald-700 bg-emerald-700 text-white shadow-sm"
@@ -1121,11 +1153,11 @@ function JourneyMapContent() {
                         : t("planner.day.buffer")
                     }
                   >
-                    <p className="text-xs font-bold">
+                    <p className="text-[11px] font-bold leading-tight">
                       {day.dayTag ??
                         t("planner.day.short", { number: day.dayNumber })}
                     </p>
-                    <p className="text-[11px] leading-tight opacity-80">
+                    <p className="text-[10px] leading-tight opacity-80">
                       {compactDate(day.day.dayDate, t)}
                     </p>
                   </button>
@@ -1142,7 +1174,7 @@ function JourneyMapContent() {
         ) : null}
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-3 z-[500] px-3 md:bottom-5 md:px-5">
+      <div className="pointer-events-none absolute inset-x-0 bottom-20 z-[500] px-3 md:bottom-5 md:px-5">
         {isLoading ? (
           <p className="pointer-events-auto mb-3 inline-flex rounded-full bg-white px-4 py-2 text-sm font-black text-stone-600 shadow-lg">
             {t("map.loading")}
@@ -1156,27 +1188,21 @@ function JourneyMapContent() {
         ) : null}
 
         {outsideLiveMembers.length ? (
-          <div className="pointer-events-auto mb-3 grid gap-2">
+          <div className="mb-3 flex justify-end gap-2">
             {outsideLiveMembers.slice(0, 3).map((memberLocation) => {
               const coordinates = getCoordinates(memberLocation.location);
-              const distanceLabel =
-                memberLocation.distance === null
-                  ? t("map.distanceUnavailable")
-                  : formatDistance(memberLocation.distance);
+              if (!coordinates) return null;
 
               return (
-                <a
+                <button
                   key={memberLocation.member.id}
-                  href={coordinates ? navigationHref(coordinates, memberLocation.member.displayName) : "#"}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-2xl bg-white/95 px-4 py-3 text-sm font-bold text-stone-700 shadow-lg backdrop-blur"
+                  type="button"
+                  onClick={() => handleOutsideMemberClick(memberLocation)}
+                  className="pointer-events-auto grid size-10 place-items-center rounded-2xl bg-white/[0.85] text-xs font-black text-emerald-800 shadow-lg backdrop-blur"
+                  aria-label={memberLocation.member.displayName}
                 >
-                  {t("map.liveOutside", {
-                    name: memberLocation.member.displayName,
-                    distance: distanceLabel,
-                  })}
-                </a>
+                  {memberInitial(memberLocation.member.displayName)}
+                </button>
               );
             })}
           </div>
@@ -1233,10 +1259,6 @@ function JourneyMapContent() {
           </div>
         ) : null}
 
-        <div className="pointer-events-auto mt-3 inline-flex rounded-full bg-white/90 px-4 py-2 text-xs font-black text-stone-600 shadow-lg backdrop-blur">
-          {selectedDay ? t("map.dayRoute") : t("map.hotelRoute")} ·{" "}
-          {mapMarkers.length}
-        </div>
       </div>
     </section>
   );

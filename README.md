@@ -1,5 +1,14 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Product Architecture
+
+OTR Journey is an Event Operating System for travel. Capture is the primary
+entry point; Planner, Ledger, Memories, Photos, Hotels, Reviews, and future
+modules are structured outputs generated from captured events.
+
+Read the Capture Engine V2 design in
+[doc/journey-capture-engine-v2.md](doc/journey-capture-engine-v2.md).
+
 ## Getting Started
 
 First, run the development server:

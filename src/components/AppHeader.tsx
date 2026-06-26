@@ -16,6 +16,7 @@ export function AppHeader() {
   const router = useRouter();
   const { locale, setLocale, t } = useI18n();
   const tripId = getActiveTripId(pathname);
+  const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [journeyName, setJourneyName] = useState<string | null>(null);
 
@@ -50,18 +51,34 @@ export function AppHeader() {
 
   return (
     <>
-      <header className="sticky top-0 z-20 border-b border-emerald-100 bg-[#fffdf8]/95 backdrop-blur md:hidden">
-        <div className="relative mx-auto flex h-16 w-full max-w-3xl items-center justify-between px-5">
+      <header
+        className={
+          isMapPage
+            ? "fixed left-3 top-3 z-[650] md:hidden"
+            : "sticky top-0 z-20 border-b border-emerald-100 bg-[#fffdf8]/95 backdrop-blur md:hidden"
+        }
+      >
+        <div
+          className={
+            isMapPage
+              ? "flex items-center"
+              : "relative mx-auto flex h-16 w-full max-w-3xl items-center justify-between px-5"
+          }
+        >
           <button
             type="button"
             onClick={() => setIsMenuOpen(true)}
-            className="flex min-w-0 items-center gap-3 text-left"
+            className={
+              isMapPage
+                ? "grid size-11 place-items-center rounded-2xl bg-white/[0.78] text-left shadow-lg backdrop-blur"
+                : "flex min-w-0 items-center gap-3 text-left"
+            }
             aria-label={t("app.menu.open")}
           >
             <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-emerald-700 text-sm font-bold text-white">
               O
             </span>
-            <div className="hidden min-w-0 min-[380px]:block">
+            <div className={`${isMapPage ? "hidden" : "hidden min-w-0 min-[380px]:block"}`}>
               <p className="text-lg font-semibold tracking-wide text-stone-950">
                 OTR
               </p>
@@ -70,20 +87,24 @@ export function AppHeader() {
               </p>
             </div>
           </button>
-          <p className="pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-sm font-black text-stone-900">
-            {tripId ? journeyName || t("common.journey") : "OTR"}
-          </p>
-          <Link
-            href="/trips"
-            className="shrink-0 rounded-full bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm"
-          >
-            {t("nav.journeys")}
-          </Link>
+          {!isMapPage ? (
+            <>
+              <p className="pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-sm font-black text-stone-900">
+                {tripId ? journeyName || t("common.journey") : "OTR"}
+              </p>
+              <Link
+                href="/trips"
+                className="shrink-0 rounded-full bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm"
+              >
+                {t("nav.journeys")}
+              </Link>
+            </>
+          ) : null}
         </div>
       </header>
 
       {isMenuOpen ? (
-        <div className="fixed inset-0 z-50 md:hidden">
+        <div className="fixed inset-0 z-[700] md:hidden">
           <button
             type="button"
             aria-label={t("app.menu.close")}

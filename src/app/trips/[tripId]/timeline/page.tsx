@@ -66,9 +66,61 @@ function getAiError(asset: PhotoAssetWithMemory) {
   return typeof error === "string" && error.trim() ? error : null;
 }
 
+function stringifyAiMetadataValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => stringifyAiMetadataValue(item)).filter(Boolean).join(", ");
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["text", "name", "description", "label", "value", "title", "content"]) {
+      const nested = stringifyAiMetadataValue(record[key]);
+      if (nested) return nested;
+    }
+    return JSON.stringify(record);
+  }
+  return String(value).trim();
+}
+
 function getLocationHints(asset: PhotoAssetWithMemory) {
   const hints = asset.aiMetadata?.locationHints;
-  return Array.isArray(hints) ? hints.filter((hint) => typeof hint === "string") : [];
+  return Array.isArray(hints)
+    ? hints.map((hint) => stringifyAiMetadataValue(hint)).filter(Boolean)
+    : [];
+}
+
+function getAiModelInfo(asset: PhotoAssetWithMemory) {
+  const metadata = asset.aiMetadata ?? {};
+  const provider =
+    typeof metadata.provider === "string" && metadata.provider.trim()
+      ? metadata.provider
+      : null;
+  const modelUsed =
+    typeof metadata.modelUsed === "string" && metadata.modelUsed.trim()
+      ? metadata.modelUsed
+      : typeof metadata.model_used === "string" && metadata.model_used.trim()
+        ? metadata.model_used
+        : null;
+  const model =
+    typeof metadata.model === "string" && metadata.model.trim()
+      ? metadata.model
+      : typeof metadata.modelVersion === "string" && metadata.modelVersion.trim()
+        ? metadata.modelVersion
+        : typeof metadata.model_version === "string" && metadata.model_version.trim()
+          ? metadata.model_version
+          : null;
+  const confidence =
+    typeof metadata.confidence === "number"
+      ? metadata.confidence
+      : typeof metadata.qualityScore === "number"
+        ? metadata.qualityScore
+        : null;
+
+  if (!provider && !modelUsed && !model && confidence === null) return null;
+
+  return { provider, modelUsed, model, confidence };
 }
 
 function normalizeSearch(value: string) {
@@ -591,10 +643,11 @@ function PhotoGalleryView({
 
       <div className="grid gap-4 md:grid-cols-2">
         {photos.map((photo) => {
-          const summary = getAiSummary(photo);
-          const aiError = getAiError(photo);
-          const locationHints = getLocationHints(photo);
-          const faces = facesByAssetId[photo.id] ?? [];
+            const summary = getAiSummary(photo);
+            const aiError = getAiError(photo);
+            const locationHints = getLocationHints(photo);
+            const modelInfo = getAiModelInfo(photo);
+            const faces = facesByAssetId[photo.id] ?? [];
           const capturedAt = photo.memory?.capturedAt
             ? new Date(photo.memory.capturedAt)
             : new Date(photo.createdAt);
@@ -834,6 +887,35 @@ function PhotoGalleryView({
                   <p className="text-sm text-stone-600">
                     Location hints: {locationHints.join(", ")}
                   </p>
+                ) : null}
+
+                {modelInfo ? (
+                  <div className="grid gap-2 rounded-2xl bg-stone-50 p-3 text-xs font-semibold text-stone-700 sm:grid-cols-2">
+                    {modelInfo.provider ? (
+                      <p>
+                        <span className="text-stone-500">Provider:</span>{" "}
+                        {modelInfo.provider}
+                      </p>
+                    ) : null}
+                    {modelInfo.modelUsed ? (
+                      <p>
+                        <span className="text-stone-500">Model used:</span>{" "}
+                        {modelInfo.modelUsed}
+                      </p>
+                    ) : null}
+                    {modelInfo.model ? (
+                      <p className="sm:col-span-2">
+                        <span className="text-stone-500">Model:</span>{" "}
+                        {modelInfo.model}
+                      </p>
+                    ) : null}
+                    {modelInfo.confidence !== null ? (
+                      <p>
+                        <span className="text-stone-500">Confidence:</span>{" "}
+                        {Math.round(modelInfo.confidence * 100)}%
+                      </p>
+                    ) : null}
+                  </div>
                 ) : null}
 
                 {photo.ocrText ? (

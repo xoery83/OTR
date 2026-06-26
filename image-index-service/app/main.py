@@ -290,48 +290,63 @@ def should_escalate_to_vision(objects: list[str], scene: str | None, quality: fl
 def vision_index(image_url: str) -> dict[str, Any] | None:
     if not VISION_ESCALATION_ENABLED:
         return None
-    if VISION_PROVIDER != "openai":
+
+    provider = VISION_PROVIDER
+    if provider == "qwen":
+        api_key = os.getenv("DASHSCOPE_API_KEY")
+        base_url = os.getenv("DASHSCOPE_BASE_URL")
+        model = os.getenv("DASHSCOPE_VISION_MODEL") or "qwen3-vl-plus"
+        response_format: dict[str, Any] = {"type": "json_object"}
+    elif provider == "openai":
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_URL") or "https://api.openai.com/v1"
+        model = os.getenv("OPENAI_VISION_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4.1-mini"
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "otr_image_index",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "caption": {"type": "string"},
+                        "scene": {"type": "string"},
+                        "activity": {"type": ["string", "null"]},
+                        "objects": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": 16,
+                        },
+                        "ocr_text": {"type": ["string", "null"]},
+                        "location_hint": {"type": ["string", "null"]},
+                        "quality_notes": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": 8,
+                        },
+                    },
+                    "required": [
+                        "caption",
+                        "scene",
+                        "activity",
+                        "objects",
+                        "ocr_text",
+                        "location_hint",
+                        "quality_notes",
+                    ],
+                },
+            },
+        }
+    else:
         return None
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    if not api_key or not base_url:
         return None
-
-    model = os.getenv("OPENAI_VISION_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4.1-mini"
-    schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "caption": {"type": "string"},
-            "scene": {"type": "string"},
-            "activity": {"type": ["string", "null"]},
-            "objects": {
-                "type": "array",
-                "items": {"type": "string"},
-                "maxItems": 16,
-            },
-            "ocr_text": {"type": ["string", "null"]},
-            "location_hint": {"type": ["string", "null"]},
-            "quality_notes": {
-                "type": "array",
-                "items": {"type": "string"},
-                "maxItems": 8,
-            },
-        },
-        "required": [
-            "caption",
-            "scene",
-            "activity",
-            "objects",
-            "ocr_text",
-            "location_hint",
-            "quality_notes",
-        ],
-    }
 
     try:
         response = requests.post(
-            openai_endpoint(os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_URL") or "https://api.openai.com/v1"),
+            openai_endpoint(base_url),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -356,7 +371,9 @@ def vision_index(image_url: str) -> dict[str, Any] | None:
                                 "text": (
                                     "Index this photo. Avoid generic phrases like 'travel photo'. "
                                     "If there is food, restaurant context, documents, transport, scenery, "
-                                    "shopping, hotel, airport, hiking, or group activity, include that explicitly."
+                                    "shopping, hotel, airport, hiking, or group activity, include that explicitly. "
+                                    "Return valid JSON with caption, scene, activity, objects, ocr_text, "
+                                    "location_hint, and quality_notes."
                                 ),
                             },
                             {
@@ -366,14 +383,7 @@ def vision_index(image_url: str) -> dict[str, Any] | None:
                         ],
                     },
                 ],
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "otr_image_index",
-                        "strict": True,
-                        "schema": schema,
-                    },
-                },
+                "response_format": response_format,
             },
             timeout=45,
         )
@@ -384,7 +394,7 @@ def vision_index(image_url: str) -> dict[str, Any] | None:
             return None
         result = json.loads(content)
         result["model"] = model
-        result["provider"] = "openai"
+        result["provider"] = provider
         return result
     except (requests.RequestException, ValueError, KeyError, IndexError, TypeError):
         return None
@@ -395,12 +405,32 @@ def clean_tags(items: Any, limit: int = 18) -> list[str]:
         return []
     cleaned: list[str] = []
     for item in items:
-        tag = str(item).strip().lower()
+        tag = stringify_model_value(item).strip().lower()
         if tag and tag not in cleaned:
             cleaned.append(tag)
         if len(cleaned) >= limit:
             break
     return cleaned
+
+
+def stringify_model_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        return ", ".join(
+            item for item in (stringify_model_value(item) for item in value) if item
+        )
+    if isinstance(value, dict):
+        for key in ("text", "name", "description", "label", "value", "title", "content"):
+            nested = stringify_model_value(value.get(key))
+            if nested:
+                return nested
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value).strip()
 
 
 def deepseek_text_rewrite(
@@ -640,10 +670,10 @@ def index_image(
             vision = vision_index(payload.image_url)
             if vision:
                 vision_objects = clean_tags(vision.get("objects", []))
-                caption = str(vision.get("caption") or caption)
-                scene = str(vision.get("scene") or scene)
+                caption = stringify_model_value(vision.get("caption")) or caption
+                scene = stringify_model_value(vision.get("scene")) or scene
                 objects = sorted(set([*objects, *vision_objects]))
-                ocr_text = vision.get("ocr_text")
+                ocr_text = stringify_model_value(vision.get("ocr_text")) or None
                 needs_review = False
                 review_reason = None
                 model_used = f"{vision.get('provider', VISION_PROVIDER)}_vision"
@@ -664,12 +694,12 @@ def index_image(
             metadata=payload.metadata,
         )
         if rewrite:
-            caption = str(rewrite.get("caption") or caption)
-            scene = str(rewrite.get("scene") or scene)
+            caption = stringify_model_value(rewrite.get("caption")) or caption
+            scene = stringify_model_value(rewrite.get("scene")) or scene
             rewrite_objects = clean_tags(rewrite.get("objects", []))
             search_tags = clean_tags(rewrite.get("search_tags", []))
             objects = sorted(set([*objects, *rewrite_objects, *search_tags]))
-            ocr_text = rewrite.get("ocr_text") or ocr_text
+            ocr_text = stringify_model_value(rewrite.get("ocr_text")) or ocr_text
             text_model_used = f"{rewrite.get('provider', TEXT_PROVIDER)}_text"
             model_used = f"{model_used}+{text_model_used}" if model_used != "local" else text_model_used
             model_version = f"{model_version}+{rewrite.get('model')}" if rewrite.get("model") else model_version

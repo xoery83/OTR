@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { analyzeImageForDebug } from "@/lib/ai/vision/router";
 import type { MediaAsset } from "@/types";
 
 type IndexPhotoRequest = {
@@ -49,7 +50,7 @@ type MediaAssetRow = {
 
 type PhotoIndexResult = {
   media_asset_id: string;
-  status: "indexed_local" | "needs_llm" | "failed";
+  status: "indexed_local" | "indexed_llm" | "needs_llm" | "failed";
   caption: string;
   scene: string | null;
   objects: string[];
@@ -210,6 +211,75 @@ async function callImageIndexService(input: {
   return payload;
 }
 
+async function indexWithVisionFallback(input: {
+  supabase: ReturnType<typeof getSupabaseForRequest>;
+  asset: MediaAssetRow;
+  imageUrl: string;
+}) {
+  const analysis = await analyzeImageForDebug({
+    imageUrl: input.imageUrl,
+    mode: "vision",
+    prompt:
+      "Analyze this travel photo for OTR image indexing. Prefer concrete visible details for search and album grouping.",
+  });
+  const sceneTags = [
+    ...analysis.tags,
+    ...analysis.activities,
+    ...analysis.objects,
+    ...analysis.food,
+  ].filter(Boolean);
+  const uniqueSceneTags = [...new Set(sceneTags)];
+
+  const aiMetadata = {
+    ...(input.asset.ai_metadata ?? {}),
+    summary: analysis.summary,
+    locationHints: analysis.locationHints,
+    peopleDescription:
+      analysis.people.length > 0 ? analysis.people.join(", ") : null,
+    objects: analysis.objects,
+    food: analysis.food,
+    activities: analysis.activities,
+    provider: analysis.provider,
+    model: analysis.model,
+    modelUsed: `${analysis.provider}_vision`,
+    confidence: analysis.confidence,
+    rawModelResponse: analysis.rawResponse,
+  };
+
+  await input.supabase
+    .from("media_assets")
+    .update({
+      ai_status: "indexed",
+      ai_metadata: aiMetadata,
+      ocr_text: analysis.ocrText || null,
+      scene_tags: uniqueSceneTags,
+      indexed_at: new Date().toISOString(),
+    })
+    .eq("id", input.asset.id)
+    .eq("trip_id", input.asset.trip_id);
+
+  return {
+    media_asset_id: input.asset.id,
+    status: "indexed_llm",
+    caption: analysis.summary,
+    scene: analysis.tags[0] ?? null,
+    objects: uniqueSceneTags,
+    ocr_text: analysis.ocrText || null,
+    people: analysis.people.map((person) => ({ description: person })),
+    image_hash: "",
+    duplicate_hash: "",
+    blur_score: 0,
+    brightness_score: 0,
+    dominant_colors: [],
+    quality_score: analysis.confidence,
+    needs_llm_review: analysis.confidence < 0.7,
+    llm_review_reason:
+      analysis.confidence < 0.7 ? "low_vision_confidence" : null,
+    model_used: `${analysis.provider}_vision`,
+    model_version: analysis.model,
+  } satisfies PhotoIndexResult;
+}
+
 export async function POST(request: Request) {
   let assetId: string | null = null;
   let tripId: string | null = null;
@@ -261,11 +331,45 @@ export async function POST(request: Request) {
       throw signedError || new Error("Could not create image URL.");
     }
 
-    const result = await callImageIndexService({
-      asset,
-      imageUrl: signedData.signedUrl,
-      authorization: request.headers.get("authorization") ?? "",
-    });
+    let result: PhotoIndexResult;
+    try {
+      result = await callImageIndexService({
+        asset,
+        imageUrl: signedData.signedUrl,
+        authorization: request.headers.get("authorization") ?? "",
+      });
+      const { data: currentMetadataRow } = await supabase
+        .from("media_assets")
+        .select("ai_metadata")
+        .eq("id", asset.id)
+        .eq("trip_id", asset.trip_id)
+        .single();
+      const currentMetadata =
+        (currentMetadataRow as { ai_metadata?: Record<string, unknown> } | null)
+          ?.ai_metadata ?? {};
+      await supabase
+        .from("media_assets")
+        .update({
+          ai_metadata: {
+            ...currentMetadata,
+            provider: "otr-ai-server",
+            modelUsed: result.model_used,
+            model: result.model_version,
+            summary: result.caption,
+            objects: result.objects,
+            needsLlmReview: result.needs_llm_review,
+            llmReviewReason: result.llm_review_reason,
+          },
+        })
+        .eq("id", asset.id)
+        .eq("trip_id", asset.trip_id);
+    } catch {
+      result = await indexWithVisionFallback({
+        supabase,
+        asset,
+        imageUrl: signedData.signedUrl,
+      });
+    }
     const { data: updatedRow, error: updateError } = await supabase
       .from("media_assets")
       .select("*")

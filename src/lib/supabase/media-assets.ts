@@ -351,6 +351,50 @@ export async function requestPhotoIndexing(assetId: string, tripId: string) {
   return payload.asset;
 }
 
+export async function requestVoiceTranscription(input: {
+  tripId: string;
+  audio: File;
+}) {
+  const { data } = await supabase.auth.getSession();
+  const accessToken = data.session?.access_token;
+
+  if (!accessToken) {
+    throw new Error("You must be logged in to transcribe voice.");
+  }
+
+  const formData = new FormData();
+  formData.append("tripId", input.tripId);
+  formData.append("audio", input.audio);
+  formData.append("timezone", Intl.DateTimeFormat().resolvedOptions().timeZone);
+  formData.append("capturedAt", new Date().toISOString());
+
+  const response = await fetch("/api/capture/transcribe", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: formData,
+  });
+  const payload = (await response.json()) as {
+    captureEventId?: string;
+    transcript?: string;
+    provider?: string;
+    model?: string;
+    error?: string;
+  };
+
+  if (!response.ok || !payload.transcript) {
+    throw new Error(payload.error || "Could not transcribe voice.");
+  }
+
+  return {
+    captureEventId: payload.captureEventId ?? null,
+    transcript: payload.transcript,
+    provider: payload.provider ?? null,
+    model: payload.model ?? null,
+  };
+}
+
 export async function createImageMediaAsset(input: CreateMediaAssetInput) {
   const createdAt = new Date().toISOString();
 
