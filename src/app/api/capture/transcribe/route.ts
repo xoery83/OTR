@@ -16,6 +16,10 @@ function openAiAudioEndpoint(baseUrl: string) {
       : `${normalizedBaseUrl}/audio/transcriptions`;
 }
 
+function sttEndpoint(baseUrl: string) {
+  return `${baseUrl.replace(/\/$/, "")}/stt/transcribe`;
+}
+
 function getSupabaseForRequest(request: Request) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -41,6 +45,62 @@ function getSupabaseForRequest(request: Request) {
 }
 
 async function transcribeAudio(file: File) {
+  try {
+    return await transcribeWithAiServer(file);
+  } catch (error) {
+    if (!process.env.OPENAI_API_KEY) {
+      throw error;
+    }
+    return transcribeWithOpenAi(file);
+  }
+}
+
+async function transcribeWithAiServer(file: File) {
+  const aiServerUrl = process.env.STT_SERVICE_URL || process.env.AI_SERVER_URL;
+  const aiServerSecret = process.env.AI_SERVER_SECRET;
+  if (!aiServerUrl || !aiServerSecret) {
+    throw new Error("STT_SERVICE_URL/AI_SERVER_URL or AI_SERVER_SECRET is not configured.");
+  }
+
+  const formData = new FormData();
+  formData.append("audio", file, file.name || "capture-audio.webm");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+
+  try {
+    const response = await fetch(sttEndpoint(aiServerUrl), {
+      method: "POST",
+      headers: {
+        "x-ai-server-secret": aiServerSecret,
+      },
+      body: formData,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`AI Server STT failed: ${text.slice(0, 300)}`);
+    }
+    const payload = JSON.parse(text) as {
+      text?: string;
+      provider?: string;
+      model?: string;
+      language?: string | null;
+      duration?: number | null;
+      segments?: unknown[];
+    };
+    return {
+      text: payload.text?.trim() ?? "",
+      rawResponse: payload,
+      provider: payload.provider || "faster-whisper",
+      model: payload.model || process.env.STT_MODEL_SIZE || "base",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function transcribeWithOpenAi(file: File) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not configured.");
@@ -82,6 +142,7 @@ async function transcribeAudio(file: File) {
     return {
       text: payload.text?.trim() ?? "",
       rawResponse: payload,
+      provider: "openai",
       model: process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe",
     };
   } finally {
@@ -144,7 +205,7 @@ export async function POST(request: Request) {
           fileName: file.name,
           fileType: file.type,
           fileSize: file.size,
-          transcriptionProvider: "openai",
+          transcriptionProvider: transcript.provider,
           transcriptionModel: transcript.model,
           rawTranscriptionResponse: transcript.rawResponse,
         },
@@ -160,7 +221,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       captureEventId: eventRow.id,
       transcript: transcript.text,
-      provider: "openai",
+      provider: transcript.provider,
       model: transcript.model,
     });
   } catch (error) {
@@ -169,4 +230,3 @@ export async function POST(request: Request) {
     return jsonError(message, 500);
   }
 }
-

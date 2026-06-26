@@ -21,6 +21,7 @@ type TravelerDraft = {
   id: string;
   name: string;
   email: string;
+  notes: string;
   suggestionKey?: string;
 };
 
@@ -40,6 +41,7 @@ function createDraftTraveler() {
     id: crypto.randomUUID(),
     name: "",
     email: "",
+    notes: "",
   };
 }
 
@@ -148,7 +150,9 @@ function NewJourneyTour() {
 
     return suggestions
       .filter((suggestion) =>
-        suggestion.displayName.toLocaleLowerCase().includes(query),
+        `${suggestion.displayName} ${suggestion.notes}`
+          .toLocaleLowerCase()
+          .includes(query),
       )
       .slice(0, 5);
   }, [suggestions, travelers]);
@@ -165,6 +169,7 @@ function NewJourneyTour() {
     updateTraveler(travelerId, {
       name: suggestion.displayName,
       email: suggestion.inviteEmail,
+      notes: suggestion.notes,
       suggestionKey: suggestion.key,
     });
   }
@@ -215,6 +220,7 @@ function NewJourneyTour() {
           displayName: traveler.name.trim(),
           role: "group_member",
           inviteEmail: email,
+          notes: traveler.notes,
         });
 
         const invite = await createJourneyInvite({
@@ -371,7 +377,7 @@ function NewJourneyTour() {
             </h2>
             <p className="mt-2 text-sm leading-6 text-stone-600">
               Type a name to reuse people you have traveled with before. Their
-              previous invite email will be filled in when available.
+              previous invite email and AKA will be filled in when available.
             </p>
           </div>
 
@@ -380,7 +386,7 @@ function NewJourneyTour() {
               const travelerSuggestions = traveler.name.trim()
                 ? suggestions
                     .filter((suggestion) =>
-                      suggestion.displayName
+                      `${suggestion.displayName} ${suggestion.notes}`
                         .toLocaleLowerCase()
                         .includes(traveler.name.trim().toLocaleLowerCase()),
                     )
@@ -434,6 +440,26 @@ function NewJourneyTour() {
                     </button>
                   </div>
 
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-700">
+                      Nicknames / AKA
+                    </span>
+                    <input
+                      value={traveler.notes}
+                      onChange={(event) =>
+                        updateTraveler(traveler.id, {
+                          notes: event.target.value,
+                        })
+                      }
+                      placeholder="Bao 小宝 B, separated by spaces, commas, / or ;"
+                      className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-stone-950 outline-none focus:border-emerald-600"
+                    />
+                    <span className="block text-[11px] leading-5 text-stone-500">
+                      Used by Capture and Planner to recognize this person in notes,
+                      voice and expenses.
+                    </span>
+                  </label>
+
                   {travelerSuggestions.length > 0 ? (
                     <div className="flex flex-wrap gap-2">
                       {travelerSuggestions.map((suggestion) => (
@@ -445,6 +471,7 @@ function NewJourneyTour() {
                         >
                           {suggestion.displayName}
                           {suggestion.inviteEmail ? ` · ${suggestion.inviteEmail}` : ""}
+                          {suggestion.notes ? ` · AKA ${suggestion.notes}` : ""}
                         </button>
                       ))}
                     </div>

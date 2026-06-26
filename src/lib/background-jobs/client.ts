@@ -1,0 +1,166 @@
+import { supabase } from "@/lib/supabase/client";
+import type {
+  BackgroundJobBatch,
+  BackgroundJob,
+  CreateBackgroundJobBatchInput,
+  CreateBackgroundJobInput,
+  UpdateBackgroundJobBatchInput,
+  UpdateBackgroundJobInput,
+} from "./types";
+
+async function authHeaders() {
+  const { data } = await supabase.auth.getSession();
+  const accessToken = data.session?.access_token;
+
+  if (!accessToken) {
+    throw new Error("You must be logged in.");
+  }
+
+  return {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+  };
+}
+
+export async function listBackgroundJobs() {
+  const response = await fetch("/api/background-jobs", {
+    headers: await authHeaders(),
+  });
+  const payload = (await response.json()) as {
+    jobs?: BackgroundJob[];
+    error?: string;
+  };
+
+  if (!response.ok || !payload.jobs) {
+    throw new Error(payload.error || "Could not load background jobs.");
+  }
+
+  return payload.jobs;
+}
+
+export async function listBackgroundJobBatches() {
+  const response = await fetch("/api/background-jobs/batches", {
+    headers: await authHeaders(),
+  });
+  const payload = (await response.json()) as {
+    batches?: BackgroundJobBatch[];
+    error?: string;
+  };
+
+  if (!response.ok || !payload.batches) {
+    throw new Error(payload.error || "Could not load background job batches.");
+  }
+
+  return payload.batches;
+}
+
+export async function createBackgroundJobBatch(
+  input: CreateBackgroundJobBatchInput,
+) {
+  const response = await fetch("/api/background-jobs/batches", {
+    method: "POST",
+    headers: await authHeaders(),
+    body: JSON.stringify(input),
+  });
+  const payload = (await response.json()) as {
+    batch?: BackgroundJobBatch;
+    error?: string;
+  };
+
+  if (!response.ok || !payload.batch) {
+    throw new Error(payload.error || "Could not create background job batch.");
+  }
+
+  return payload.batch;
+}
+
+export async function updateBackgroundJobBatch(
+  batchId: string,
+  input: UpdateBackgroundJobBatchInput,
+) {
+  const response = await fetch(`/api/background-jobs/batches/${batchId}`, {
+    method: "PATCH",
+    headers: await authHeaders(),
+    body: JSON.stringify(input),
+  });
+  const payload = (await response.json()) as {
+    batch?: BackgroundJobBatch;
+    error?: string;
+  };
+
+  if (!response.ok || !payload.batch) {
+    throw new Error(payload.error || "Could not update background job batch.");
+  }
+
+  return payload.batch;
+}
+
+export async function createBackgroundJob(input: CreateBackgroundJobInput) {
+  const response = await fetch("/api/background-jobs", {
+    method: "POST",
+    headers: await authHeaders(),
+    body: JSON.stringify(input),
+  });
+  const payload = (await response.json()) as {
+    job?: BackgroundJob;
+    error?: string;
+  };
+
+  if (!response.ok || !payload.job) {
+    throw new Error(payload.error || "Could not create background job.");
+  }
+
+  return payload.job;
+}
+
+export async function updateBackgroundJob(
+  jobId: string,
+  input: UpdateBackgroundJobInput,
+) {
+  const response = await fetch(`/api/background-jobs/${jobId}`, {
+    method: "PATCH",
+    headers: await authHeaders(),
+    body: JSON.stringify(input),
+  });
+  const payload = (await response.json()) as {
+    job?: BackgroundJob;
+    error?: string;
+  };
+
+  if (!response.ok || !payload.job) {
+    throw new Error(payload.error || "Could not update background job.");
+  }
+
+  return payload.job;
+}
+
+export async function enqueueMediaProcessingJobs(input: {
+  tripId: string;
+  mediaAssetId: string;
+  title?: string;
+}) {
+  const [indexJob, faceJob] = await Promise.all([
+    createBackgroundJob({
+      journeyId: input.tripId,
+      jobType: "image_indexing",
+      title: input.title || "Image indexing",
+      currentStep: "Queued",
+      payload: {
+        tripId: input.tripId,
+        mediaAssetId: input.mediaAssetId,
+      },
+    }),
+    createBackgroundJob({
+      journeyId: input.tripId,
+      jobType: "face_detection",
+      title: "Face detection",
+      currentStep: "Queued",
+      payload: {
+        tripId: input.tripId,
+        mediaAssetId: input.mediaAssetId,
+      },
+    }),
+  ]);
+
+  return [indexJob, faceJob];
+}

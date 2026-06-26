@@ -577,7 +577,15 @@ export async function createLedgerEntry(input: CreateLedgerEntryInput) {
   const amount = Number(input.originalAmount);
   const rate = Number(input.exchangeRate || 1);
   const baseAmount = Number((amount * rate).toFixed(2));
-  const participantMemberIds = [...new Set(input.participantMemberIds ?? [])];
+  const participantMemberIds = [
+    ...new Set(
+      input.accountingMode === "shared" &&
+      (!input.participantMemberIds || input.participantMemberIds.length === 0) &&
+      input.payerMemberId
+        ? [input.payerMemberId]
+        : (input.participantMemberIds ?? []),
+    ),
+  ];
   const shareAmount =
     participantMemberIds.length > 0
       ? Number((baseAmount / participantMemberIds.length).toFixed(2))
@@ -646,7 +654,15 @@ export async function updateLedgerEntry(input: UpdateLedgerEntryInput) {
   const amount = Number(input.originalAmount);
   const rate = Number(input.exchangeRate || 1);
   const baseAmount = Number((amount * rate).toFixed(2));
-  const participantMemberIds = [...new Set(input.participantMemberIds ?? [])];
+  const participantMemberIds = [
+    ...new Set(
+      input.accountingMode === "shared" &&
+      (!input.participantMemberIds || input.participantMemberIds.length === 0) &&
+      input.payerMemberId
+        ? [input.payerMemberId]
+        : (input.participantMemberIds ?? []),
+    ),
+  ];
   const shareAmount =
     participantMemberIds.length > 0
       ? Number((baseAmount / participantMemberIds.length).toFixed(2))

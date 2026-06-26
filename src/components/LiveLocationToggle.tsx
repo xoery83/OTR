@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/components/I18nProvider";
 import { getErrorMessage } from "@/lib/errors";
 import {
+  canShareJourneyLiveLocation,
   getOwnLiveLocation,
   setLiveLocationEnabled,
   upsertLiveLocation,
@@ -19,6 +20,18 @@ type LiveLocationToggleProps = {
 
 const saveIntervalMs = 30_000;
 
+function geolocationErrorMessage(
+  error: GeolocationPositionError,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  if (error.code === error.PERMISSION_DENIED) return t("map.locationDenied");
+  if (error.code === error.POSITION_UNAVAILABLE) {
+    return t("map.locationUnavailable");
+  }
+  if (error.code === error.TIMEOUT) return t("map.locationTimeout");
+  return error.message || t("map.permissionError");
+}
+
 export function LiveLocationToggle({
   tripId,
   compact = false,
@@ -27,6 +40,7 @@ export function LiveLocationToggle({
 }: LiveLocationToggleProps) {
   const { t } = useI18n();
   const [isEnabled, setIsEnabled] = useState(false);
+  const [canShare, setCanShare] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const watchIdRef = useRef<number | null>(null);
@@ -37,6 +51,14 @@ export function LiveLocationToggle({
 
     async function loadOwnLiveLocation() {
       try {
+        const eligible = await canShareJourneyLiveLocation(tripId);
+        if (!isMounted) return;
+        setCanShare(eligible);
+        if (!eligible) {
+          setIsEnabled(false);
+          return;
+        }
+
         const location = await getOwnLiveLocation(tripId);
         if (!isMounted) return;
         setIsEnabled(Boolean(location?.isLiveEnabled));
@@ -88,7 +110,7 @@ export function LiveLocationToggle({
         });
       },
       (positionError) => {
-        setError(positionError.message || t("map.permissionError"));
+        setError(geolocationErrorMessage(positionError, t));
       },
       {
         enableHighAccuracy: true,
@@ -131,11 +153,22 @@ export function LiveLocationToggle({
       setIsEnabled(true);
       startWatching();
     } catch (liveError) {
+      if (
+        liveError &&
+        typeof liveError === "object" &&
+        "code" in liveError &&
+        typeof (liveError as GeolocationPositionError).code === "number"
+      ) {
+        setError(geolocationErrorMessage(liveError as GeolocationPositionError, t));
+        return;
+      }
       setError(getErrorMessage(liveError, t("map.permissionError")));
     } finally {
       setIsBusy(false);
     }
   }
+
+  if (!canShare) return null;
 
   return (
     <div className={className}>

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
 
@@ -55,6 +56,7 @@ function captureItemClass(active: boolean, compact = false) {
 export function BottomNav() {
   const pathname = usePathname();
   const { t } = useI18n();
+  const { openCapture } = useCaptureModal();
   const activeTripId = getActiveTripId(pathname);
   const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
   const [isMoreOpen, setIsMoreOpen] = useState(false);
@@ -77,13 +79,14 @@ export function BottomNav() {
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
             {t("nav.discover")}
           </Link>
-          <Link
-            href="/capture"
+          <button
+            type="button"
+            onClick={() => openCapture({ entryPoint: "global_capture" })}
             className={captureItemClass(pathname.startsWith("/capture"))}
           >
             <span className="text-2xl leading-none">+</span>
             {t("nav.capture")}
-          </Link>
+          </button>
           <Link
             href="/profile"
             className={baseItemClass(pathname.startsWith("/profile"))}
@@ -105,7 +108,6 @@ export function BottomNav() {
 
   const overviewHref = `/trips/${activeTripId}`;
   const plannerHref = `/trips/${activeTripId}/planner`;
-  const captureHref = `/trips/${activeTripId}/capture`;
   const mapHref = `/trips/${activeTripId}/map`;
   const moreActive = moreItems.some(
     (item) => item.href && pathname === `/trips/${activeTripId}/${item.href}`,
@@ -139,13 +141,19 @@ export function BottomNav() {
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
             {t("nav.planner")}
           </Link>
-          <Link
-            href={captureHref}
-            className={captureItemClass(pathname === captureHref, isMapPage)}
+          <button
+            type="button"
+            onClick={() =>
+              openCapture({
+                tripId: activeTripId,
+                entryPoint: "global_capture",
+              })
+            }
+            className={captureItemClass(false, isMapPage)}
           >
             <span className="text-2xl leading-none">+</span>
             {t("nav.capture")}
-          </Link>
+          </button>
           <Link href={mapHref} className={baseItemClass(pathname === mapHref, isMapPage)}>
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
             {t("nav.map")}

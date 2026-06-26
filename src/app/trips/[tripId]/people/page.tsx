@@ -51,6 +51,7 @@ function MembersPageContent() {
   const [displayName, setDisplayName] = useState("");
   const [role, setRole] = useState<JourneyMemberRole>("group_member");
   const [inviteEmail, setInviteEmail] = useState("");
+  const [memberNotes, setMemberNotes] = useState("");
   const [editDrafts, setEditDrafts] = useState<
     Record<string, { displayName: string; notes: string; inviteEmail: string }>
   >({});
@@ -106,10 +107,12 @@ function MembersPageContent() {
         displayName,
         role,
         inviteEmail,
+        notes: memberNotes,
       });
       setMembers((current) => [...current, created]);
       setDisplayName("");
       setInviteEmail("");
+      setMemberNotes("");
       setRole("group_member");
       setNotice("Member added.");
     } catch (addError) {
@@ -314,6 +317,21 @@ function MembersPageContent() {
               {isAdding ? "Adding..." : "Add"}
             </button>
           </div>
+          <label className="block space-y-1">
+            <span className="text-xs font-bold text-stone-700">
+              Nicknames / AKA
+            </span>
+            <input
+              value={memberNotes}
+              onChange={(event) => setMemberNotes(event.target.value)}
+              placeholder="Bao 小宝 B, separated by spaces, commas, / or ;"
+              className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-sm"
+            />
+            <span className="block text-[11px] leading-5 text-stone-500">
+              These aliases help OTR match people in Capture, Planner, voice notes
+              and expenses.
+            </span>
+          </label>
         </form>
       ) : null}
 
@@ -392,6 +410,11 @@ function MembersPageContent() {
                     {member.inviteEmail}
                   </span>
                 ) : null}
+                {member.notes ? (
+                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-800">
+                    AKA {member.notes}
+                  </span>
+                ) : null}
                 {!member.userId ? (
                   <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-500">
                     Not linked
@@ -421,26 +444,31 @@ function MembersPageContent() {
                     }
                     className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
                   />
-                  <input
-                    value={editDrafts[member.id]?.notes ?? member.notes ?? ""}
-                    disabled={isWorking}
-                    onChange={(event) =>
-                      setEditDrafts((current) => ({
-                        ...current,
-                        [member.id]: {
-                          displayName:
-                            current[member.id]?.displayName ?? member.displayName,
-                          notes: event.target.value,
-                          inviteEmail:
-                            current[member.id]?.inviteEmail ??
-                            member.inviteEmail ??
-                            "",
-                        },
-                      }))
-                    }
-                    placeholder="Notes"
-                    className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
-                  />
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-600">
+                      Nicknames / AKA
+                    </span>
+                    <input
+                      value={editDrafts[member.id]?.notes ?? member.notes ?? ""}
+                      disabled={isWorking}
+                      onChange={(event) =>
+                        setEditDrafts((current) => ({
+                          ...current,
+                          [member.id]: {
+                            displayName:
+                              current[member.id]?.displayName ?? member.displayName,
+                            notes: event.target.value,
+                            inviteEmail:
+                              current[member.id]?.inviteEmail ??
+                              member.inviteEmail ??
+                              "",
+                          },
+                        }))
+                      }
+                      placeholder="Bao 小宝 B, separated by spaces, commas, / or ;"
+                      className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
+                    />
+                  </label>
                   {!member.userId ? (
                     <input
                       value={

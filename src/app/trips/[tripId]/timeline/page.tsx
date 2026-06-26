@@ -5,14 +5,13 @@ import type { User } from "@supabase/supabase-js";
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
+import { createBackgroundJob } from "@/lib/background-jobs/client";
 import { formatDayLabel } from "@/lib/format";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import {
   getPhotoFacesForAssets,
   getTripPhotoAssets,
-  requestFaceDetection,
   requestFaceConfirmation,
-  requestPhotoIndexing,
 } from "@/lib/supabase/media-assets";
 import {
   getSignedMemoryImageUrls,
@@ -508,17 +507,13 @@ function PhotoGalleryView({
   facesByAssetId,
   members,
   tripId,
-  onFacesDetected,
   onFaceConfirmed,
-  onPhotoIndexed,
 }: {
   photos: PhotoAssetWithMemory[];
   facesByAssetId: Record<string, PhotoFace[]>;
   members: JourneyMember[];
   tripId: string;
-  onFacesDetected: (assetId: string, faces: PhotoFace[]) => void;
   onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
-  onPhotoIndexed: (photo: PhotoAssetWithMemory) => void;
 }) {
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [activeFacePhotoId, setActiveFacePhotoId] = useState<string | null>(null);
@@ -534,13 +529,18 @@ function PhotoGalleryView({
     setError(null);
 
     try {
-      const updated = await requestPhotoIndexing(photo.id, tripId);
-      onPhotoIndexed({ ...photo, ...updated });
+      await createBackgroundJob({
+        journeyId: tripId,
+        jobType: "image_indexing",
+        title: photo.memory?.content || "Image indexing",
+        currentStep: "Queued",
+        payload: { tripId, mediaAssetId: photo.id },
+      });
     } catch (indexError) {
       setError(
         indexError instanceof Error
           ? indexError.message
-          : "Could not index this photo.",
+          : "Could not queue this photo.",
       );
     } finally {
       setActivePhotoId(null);
@@ -562,13 +562,18 @@ function PhotoGalleryView({
     setError(null);
 
     try {
-      const faces = await requestFaceDetection(photo.id, tripId);
-      onFacesDetected(photo.id, faces);
+      await createBackgroundJob({
+        journeyId: tripId,
+        jobType: "face_detection",
+        title: "Face detection",
+        currentStep: "Queued",
+        payload: { tripId, mediaAssetId: photo.id },
+      });
     } catch (faceError) {
       setError(
         faceError instanceof Error
           ? faceError.message
-          : "Could not detect faces.",
+          : "Could not queue face detection.",
       );
     } finally {
       setActiveFacePhotoId(null);
@@ -938,7 +943,7 @@ function PhotoGalleryView({
                     className="rounded-full bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-stone-300"
                   >
                     {activePhotoId === photo.id
-                      ? "Indexing..."
+                      ? "Queued"
                       : photo.aiStatus === "indexed"
                         ? "Re-index"
                         : "Index photo"}
@@ -950,7 +955,7 @@ function PhotoGalleryView({
                     className="rounded-full bg-stone-950 px-4 py-2 text-sm font-bold text-white disabled:bg-stone-300"
                   >
                     {activeFacePhotoId === photo.id
-                      ? "Detecting..."
+                      ? "Queued"
                       : faces.length > 0
                         ? "Refresh faces"
                         : "Detect faces"}
@@ -1074,19 +1079,6 @@ function TimelineContent({ user }: { user: User }) {
         ? current.filter((id) => id !== memberId)
         : [...current, memberId],
     );
-  }
-
-  function handlePhotoIndexed(photo: PhotoAssetWithMemory) {
-    setPhotoAssets((current) =>
-      current.map((item) => (item.id === photo.id ? photo : item)),
-    );
-  }
-
-  function handleFacesDetected(assetId: string, faces: PhotoFace[]) {
-    setFacesByAssetId((current) => ({
-      ...current,
-      [assetId]: faces,
-    }));
   }
 
   function handleFaceConfirmed(assetId: string, face: PhotoFace) {
@@ -1240,9 +1232,7 @@ function TimelineContent({ user }: { user: User }) {
           facesByAssetId={facesByAssetId}
           members={members}
           tripId={tripId}
-          onFacesDetected={handleFacesDetected}
           onFaceConfirmed={handleFaceConfirmed}
-          onPhotoIndexed={handlePhotoIndexed}
         />
       ) : null}
     </div>

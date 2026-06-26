@@ -45,6 +45,11 @@ export type UpsertLiveLocationInput = {
   recordedAt?: string;
 };
 
+type LiveLocationMemberRow = {
+  role: string;
+  status: string;
+};
+
 function mapMapObject(row: JourneyMapObjectRow): JourneyMapObject {
   return {
     id: row.id,
@@ -77,6 +82,33 @@ function mapLiveLocation(row: JourneyLiveLocationRow): JourneyLiveLocation {
     isLiveEnabled: row.is_live_enabled,
     updatedAt: row.updated_at,
   };
+}
+
+export async function canShareJourneyLiveLocation(journeyId: string) {
+  const user = await getCurrentUser();
+  if (!user) return false;
+
+  const { data, error } = await supabase
+    .from("journey_members")
+    .select("role, status")
+    .eq("trip_id", journeyId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (error) throw error;
+
+  const member = data as LiveLocationMemberRow | null;
+  return Boolean(
+    member?.status === "linked" &&
+      (member.role === "owner" || member.role === "group_member"),
+  );
+}
+
+async function assertCanShareJourneyLiveLocation(journeyId: string) {
+  const canShare = await canShareJourneyLiveLocation(journeyId);
+  if (!canShare) {
+    throw new Error("Live location is only available to journey members.");
+  }
 }
 
 export async function getJourneyMapObjects(journeyId: string) {
@@ -122,6 +154,7 @@ export async function upsertLiveLocation(input: UpsertLiveLocationInput) {
   if (!user) {
     throw new Error("You must be logged in to share live location.");
   }
+  await assertCanShareJourneyLiveLocation(input.journeyId);
 
   const recordedAt = input.recordedAt ?? new Date().toISOString();
 
@@ -155,6 +188,7 @@ export async function setLiveLocationEnabled(
   if (!user) {
     throw new Error("You must be logged in to update live location.");
   }
+  await assertCanShareJourneyLiveLocation(journeyId);
 
   const { data, error } = await supabase
     .from("journey_live_locations")

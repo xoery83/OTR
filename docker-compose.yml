@@ -8,3 +8,13 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+
+  stt-service:
+    container_name: otr-stt-service
+    build:
+      context: ./stt-service
+    ports:
+      - "8020:8020"
+    env_file:
+      - .env
+    restart: unless-stopped

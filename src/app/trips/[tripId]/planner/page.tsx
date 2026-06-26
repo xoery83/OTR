@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
+import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import { PlannerDayCard } from "@/components/PlannerDayCard";
 import { getErrorMessage } from "@/lib/errors";
@@ -93,10 +94,18 @@ function getStoredDayId(tripId: string, days: PlannerV2Data["days"]) {
   return days.find((day) => day.day.dayDate === storedDate)?.day.id ?? null;
 }
 
+function getQueryDayId(date: string | null, days: PlannerV2Data["days"]) {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  return days.find((day) => day.day.dayDate === date)?.day.id ?? null;
+}
+
 function PlannerContent() {
   const params = useParams<{ tripId: string }>();
+  const searchParams = useSearchParams();
   const tripId = params.tripId;
+  const requestedDate = searchParams.get("date");
   const { locale, t } = useI18n();
+  const { openCapture } = useCaptureModal();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [members, setMembers] = useState<JourneyMember[]>([]);
   const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
@@ -126,7 +135,8 @@ function PlannerContent() {
           setLedgerEntries(entryData);
           setLedgerBaseCurrency(baseCurrency);
           setSelectedDayId(
-            getStoredDayId(tripId, plannerData.days) ??
+            getQueryDayId(requestedDate, plannerData.days) ??
+              getStoredDayId(tripId, plannerData.days) ??
               getDefaultDayId(plannerData.days),
           );
         }
@@ -143,7 +153,7 @@ function PlannerContent() {
     return () => {
       isMounted = false;
     };
-  }, [tripId, t]);
+  }, [requestedDate, tripId, t]);
 
   const selectedIndex = useMemo(() => {
     const index = planner.days.findIndex((day) => day.day.id === selectedDayId);
@@ -152,6 +162,10 @@ function PlannerContent() {
   const selectedDay = planner.days[selectedIndex] ?? null;
   const nextDay = planner.days[selectedIndex + 1] ?? null;
   const activeMembers = getActiveJourneyMembers(members);
+  const selectedDayMapHref =
+    selectedDay && selectedDay.day.dayDate !== "unscheduled"
+      ? `/trips/${tripId}/map?date=${selectedDay.day.dayDate}`
+      : `/trips/${tripId}/map`;
 
   function chooseDay(dayId: string) {
     setSelectedDayId(dayId);
@@ -166,7 +180,7 @@ function PlannerContent() {
     }
   }
 
-  async function refreshPlanner() {
+  const refreshPlanner = useCallback(async () => {
     const {
       tripData,
       plannerData,
@@ -179,7 +193,18 @@ function PlannerContent() {
     setMembers(memberData);
     setLedgerEntries(entryData);
     setLedgerBaseCurrency(baseCurrency);
-  }
+  }, [tripId]);
+
+  useEffect(() => {
+    function refreshAfterCapture() {
+      void refreshPlanner();
+    }
+
+    window.addEventListener("otr:capture-completed", refreshAfterCapture);
+    return () => {
+      window.removeEventListener("otr:capture-completed", refreshAfterCapture);
+    };
+  }, [refreshPlanner]);
 
   useEffect(() => {
     if (!selectedDayId) return;
@@ -205,21 +230,8 @@ function PlannerContent() {
     <div className="space-y-4">
       <section className="rounded-3xl border border-stone-200 bg-white px-4 py-3 shadow-sm">
         <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-3">
-              <Link
-                href={`/trips/${tripId}`}
-                className="text-sm font-bold text-stone-500"
-              >
-                {t("common.back")}
-              </Link>
-              <h1 className="truncate text-lg font-semibold text-stone-950">
-                {trip?.name || t("common.journey")}
-              </h1>
-            </div>
-          </div>
           <div className="flex min-w-0 items-center gap-2">
-            <div className="flex max-w-36 items-center -space-x-2 overflow-hidden sm:max-w-56">
+            <div className="flex max-w-48 items-center -space-x-2 overflow-hidden sm:max-w-64">
               {activeMembers.slice(0, 6).map((member) => (
                 <Link
                   key={member.id}
@@ -259,13 +271,24 @@ function PlannerContent() {
                 </span>
               ) : null}
             </div>
-            <Link
-              href={`/trips/${tripId}/planner/import`}
-              className="rounded-full bg-emerald-700 px-3 py-2 text-xs font-bold text-white shadow-sm sm:px-4"
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                openCapture({
+                  tripId,
+                  entryPoint: "planner_import",
+                  intentBias: "planner_import",
+                  mode: "bulk_parse",
+                  lockedContext: { journeyId: tripId },
+                })
+              }
+              className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-bold text-white shadow-sm"
               title={t("planner.import")}
             >
               {t("planner.import")}
-            </Link>
+            </button>
           </div>
         </div>
       </section>
@@ -336,6 +359,7 @@ function PlannerContent() {
             }}
             onPlannerChanged={refreshPlanner}
             nextDay={nextDay}
+            mapHref={selectedDayMapHref}
           />
         </section>
       ) : (

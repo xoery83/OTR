@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import { logout } from "@/lib/supabase/auth";
 import { getTrip } from "@/lib/supabase/trips";
@@ -15,6 +16,7 @@ export function AppHeader() {
   const pathname = usePathname();
   const router = useRouter();
   const { locale, setLocale, t } = useI18n();
+  const { openCapture } = useCaptureModal();
   const tripId = getActiveTripId(pathname);
   const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -152,7 +154,6 @@ export function AppHeader() {
                 [
                   ["nav.journeys", "/trips"],
                   ["nav.discover", "/discover"],
-                  ["nav.capture", "/capture"],
                   ["nav.account", "/profile"],
                   ["nav.settings", "/settings"],
                 ] as const
@@ -166,6 +167,16 @@ export function AppHeader() {
                   {t(labelKey)}
                 </Link>
               ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMenuOpen(false);
+                  openCapture({ tripId, entryPoint: "global_capture" });
+                }}
+                className="rounded-2xl bg-white px-4 py-3 text-left text-sm font-bold text-stone-700 shadow-sm"
+              >
+                {t("nav.capture")}
+              </button>
             </nav>
             <button
               type="button"

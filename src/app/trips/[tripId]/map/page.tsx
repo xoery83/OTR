@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
 import {
   LeafletMapCanvas,
@@ -20,6 +20,7 @@ import {
 import { getErrorMessage } from "@/lib/errors";
 import { getCurrentUser } from "@/lib/supabase/auth";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
+import { getActiveJourneyMembers } from "@/lib/journeys/stats";
 import {
   getJourneyLiveLocations,
   getJourneyMapObjects,
@@ -44,7 +45,7 @@ type MemberLocation = {
   member: JourneyMember;
   location: JourneyLiveLocation | null;
   status: "live" | "stale" | "offline";
-  distance: number | null;
+  distanceFromMe: number | null;
 };
 
 type MapStop = {
@@ -52,6 +53,7 @@ type MapStop = {
   label: string;
   title: string;
   subtitle: string | null;
+  description: string | null;
   coordinates: Coordinates;
   kind: LeafletMapMarker["kind"];
   icon: LeafletMapMarker["icon"];
@@ -62,6 +64,8 @@ type MapStop = {
   thumbnailUrl?: string | null;
 };
 
+const DEFAULT_ROUTING_BASE_URL = "https://router.project-osrm.org";
+
 function getCoordinates(
   value: JourneyLiveLocation | JourneyMapObject | null,
 ): Coordinates | null {
@@ -71,6 +75,50 @@ function getCoordinates(
     latitude: value.latitude,
     longitude: value.longitude,
   };
+}
+
+function dedupeRouteCoordinates(coordinates: Coordinates[]) {
+  return coordinates.filter((coordinate, index) => {
+    const previous = coordinates[index - 1];
+    if (!previous) return true;
+    return (
+      Math.abs(previous.latitude - coordinate.latitude) > 0.00001 ||
+      Math.abs(previous.longitude - coordinate.longitude) > 0.00001
+    );
+  });
+}
+
+async function fetchRoadRoute(
+  coordinates: Coordinates[],
+  signal: AbortSignal,
+): Promise<Coordinates[]> {
+  const routeCoordinates = dedupeRouteCoordinates(coordinates);
+  if (routeCoordinates.length < 2) return routeCoordinates;
+
+  const baseUrl =
+    process.env.NEXT_PUBLIC_ROUTING_BASE_URL ?? DEFAULT_ROUTING_BASE_URL;
+  const coordinatePath = routeCoordinates
+    .map((coordinate) => `${coordinate.longitude},${coordinate.latitude}`)
+    .join(";");
+  const url = `${baseUrl.replace(/\/$/, "")}/route/v1/driving/${coordinatePath}?overview=full&geometries=geojson&steps=false`;
+
+  const response = await fetch(url, { signal });
+  if (!response.ok) throw new Error("Road route request failed.");
+
+  const payload = (await response.json()) as {
+    routes?: Array<{
+      geometry?: {
+        coordinates?: Array<[number, number]>;
+      };
+    }>;
+  };
+  const routedCoordinates = payload.routes?.[0]?.geometry?.coordinates;
+  if (!routedCoordinates?.length) throw new Error("Road route was empty.");
+
+  return routedCoordinates.map(([longitude, latitude]) => ({
+    latitude,
+    longitude,
+  }));
 }
 
 function getLiveStatus(location: JourneyLiveLocation | null) {
@@ -110,6 +158,26 @@ function statusLabel(
   if (status === "live") return t("map.memberStatusLive");
   if (status === "stale") return t("map.memberStatusStale");
   return t("map.memberStatusOffline");
+}
+
+function liveLocationDescription(
+  memberLocation: MemberLocation,
+  currentUserId: string | null,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  const status = statusLabel(memberLocation.status, t);
+  const updatedAt = relativeLabel(memberLocation.location?.recordedAt ?? null, t);
+  if (memberLocation.member.userId === currentUserId) {
+    return `${status} · ${t("map.myLiveLocation")} · ${updatedAt}`;
+  }
+  const distance =
+    memberLocation.distanceFromMe === null
+      ? t("map.distanceUnavailable")
+      : formatDistance(memberLocation.distanceFromMe);
+  return `${status} · ${t("map.memberDistanceFromMe", {
+    name: memberLocation.member.displayName,
+    distance,
+  })} · ${updatedAt}`;
 }
 
 function memberInitial(name: string) {
@@ -184,6 +252,11 @@ function getStoredMapViewId(tripId: string, days: PlannerV2Data["days"]) {
   if (!storedValue) return null;
   if (storedValue === "journey") return "journey";
   return days.find((day) => day.day.dayDate === storedValue)?.day.id ?? null;
+}
+
+function getQueryMapViewId(date: string | null, days: PlannerV2Data["days"]) {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  return days.find((day) => day.day.dayDate === date)?.day.id ?? null;
 }
 
 function shouldShowScheduleStopOnDay(
@@ -271,6 +344,10 @@ function approximatePlaceCoordinates(
     {
       keys: ["reykjavik", "reykjavík"],
       coordinates: { latitude: 64.1466, longitude: -21.9426 },
+    },
+    {
+      keys: ["gardavegur", "garðavegur", "hafnarfjordur", "hafnarfjörður"],
+      coordinates: { latitude: 64.0671, longitude: -21.9377 },
     },
     {
       keys: ["costco", "bonus", "bonus supermarket"],
@@ -384,12 +461,22 @@ function reservationStop(
     getCoordinates(object ?? null) ??
     approximatePlaceCoordinates(trip, reservation.title, reservation.locationName);
   if (!coordinates) return null;
+  const reservationDetails = [
+    reservation.sourceText,
+    reservation.provider,
+    reservation.confirmationCode
+      ? `#${reservation.confirmationCode}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return {
     id: `reservation-${reservation.id}-${day.day.id}`,
     label,
     title: reservation.title,
     subtitle: reservation.locationName,
+    description: reservationDetails || null,
     coordinates,
     kind,
     icon: reservationIcon(reservation.reservationType),
@@ -421,7 +508,8 @@ function eventStop(
     id: `event-${event.id}`,
     label: timeLabel(event.plannedStart) || event.title,
     title: event.title,
-    subtitle: event.locationName || event.description,
+    subtitle: event.locationName,
+    description: event.description,
     coordinates,
     kind: "plan",
     icon: eventIcon(event.eventType),
@@ -448,6 +536,7 @@ function memoryStop(memory: MemoryEntry, objects: JourneyMapObject[]): MapStop |
     label: memory.type === "photo" ? "1" : "M",
     title: memory.content || memory.locationName || "Memory",
     subtitle: memory.locationName,
+    description: memory.content,
     coordinates,
     kind: "memory",
     icon: "memory",
@@ -573,7 +662,9 @@ function mapObjectIcon(object: JourneyMapObject): LeafletMapMarker["icon"] {
 
 function JourneyMapContent() {
   const params = useParams<{ tripId: string }>();
+  const searchParams = useSearchParams();
   const tripId = params.tripId;
+  const requestedDate = searchParams.get("date");
   const { t } = useI18n();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [members, setMembers] = useState<JourneyMember[]>([]);
@@ -585,6 +676,10 @@ function JourneyMapContent() {
   const [showMemories, setShowMemories] = useState(false);
   const [mapViewVersion, setMapViewVersion] = useState(0);
   const [selectedMarker, setSelectedMarker] = useState<LeafletMapMarker | null>(null);
+  const [roadRoute, setRoadRoute] = useState<{
+    key: string;
+    coordinates: Coordinates[];
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const dateStripRef = useRef<HTMLDivElement | null>(null);
@@ -616,9 +711,16 @@ function JourneyMapContent() {
         setLiveLocations(locations);
         setMapObjects(objects);
         setDays(planner.days);
-        setSelectedDayId(
-          getStoredMapViewId(tripId, planner.days) ?? getDefaultDayId(planner.days),
-        );
+        const requestedDayId = getQueryMapViewId(requestedDate, planner.days);
+        const nextSelectedDayId =
+          requestedDayId ??
+          getStoredMapViewId(tripId, planner.days) ??
+          getDefaultDayId(planner.days);
+        setSelectedDayId(nextSelectedDayId);
+        if (requestedDayId && requestedDate) {
+          window.localStorage.setItem(`otr:map-view:${tripId}`, requestedDate);
+          window.localStorage.setItem(`otr:planner-day:${tripId}`, requestedDate);
+        }
         setError(null);
       } catch (mapError) {
         if (isMounted) {
@@ -633,7 +735,7 @@ function JourneyMapContent() {
     return () => {
       isMounted = false;
     };
-  }, [t, tripId]);
+  }, [requestedDate, t, tripId]);
 
   const selectedDay = useMemo(
     () => days.find((day) => day.day.id === selectedDayId) ?? null,
@@ -685,6 +787,7 @@ function JourneyMapContent() {
             label: object.timestamp ? object.timestamp.slice(5, 10).replace("-", ".") : "Stay",
             title: object.title,
             subtitle: object.description,
+            description: object.description,
             coordinates,
             kind: "hotel" as const,
             icon: mapObjectIcon(object),
@@ -790,6 +893,7 @@ function JourneyMapContent() {
             label: object.type === "hotel" ? "Stay" : object.title,
             title: object.title,
             subtitle: object.description,
+            description: object.description,
             coordinates,
             kind: mapObjectKind(object),
             icon: mapObjectIcon(object),
@@ -859,10 +963,29 @@ function JourneyMapContent() {
       const stop = eventStop(activity, selectedDay, mapObjects, trip);
       return stop ? [stop] : [];
     });
+    const tonightStayStop =
+      selectedDay.reservations
+        .filter((reservation) => reservation.reservationType === "hotel")
+        .map((reservation) =>
+          reservationStop(
+            reservation,
+            selectedDay,
+            mapObjects,
+            t("map.tonight"),
+            "hotel",
+            trip,
+          ),
+        )
+        .find((stop): stop is MapStop => Boolean(stop)) ?? null;
 
     const sortedStops = [...reservationStops, ...activityStops].sort((first, second) =>
       (first.label || "").localeCompare(second.label || ""),
     );
+    const dayStops =
+      tonightStayStop &&
+      !sortedStops.some((stop) => stop.sourceId === tonightStayStop.sourceId)
+        ? [...sortedStops, tonightStayStop]
+        : sortedStops;
     return startStop
       ? [
           {
@@ -870,9 +993,9 @@ function JourneyMapContent() {
             id: `day-start-${selectedDay.day.id}-${startStop.sourceId ?? startStop.id}`,
             date: selectedDay.day.dayDate,
           },
-          ...sortedStops,
+          ...dayStops,
         ]
-      : sortedStops;
+      : dayStops;
   }, [days, mapObjects, selectedDay, t, trip]);
 
   const memoryStops = useMemo(
@@ -897,14 +1020,21 @@ function JourneyMapContent() {
     [liveLocations],
   );
 
+  const liveEligibleMembers = useMemo(
+    () =>
+      getActiveJourneyMembers(members).filter(
+        (member) => member.status === "linked" && Boolean(member.userId),
+      ),
+    [members],
+  );
+
   const ownCoordinates = useMemo(() => {
     const ownLocation = currentUserId ? liveByUserId.get(currentUserId) : null;
     return getCoordinates(ownLocation ?? null);
   }, [currentUserId, liveByUserId]);
 
   const memberLocations = useMemo<MemberLocation[]>(() => {
-    return members
-      .filter((member) => member.status !== "invite_pending")
+    return liveEligibleMembers
       .map((member) => {
         const location = member.userId ? liveByUserId.get(member.userId) ?? null : null;
         const coordinates = getCoordinates(location);
@@ -915,10 +1045,10 @@ function JourneyMapContent() {
           member,
           location,
           status: getLiveStatus(location),
-          distance,
+          distanceFromMe: distance,
         };
       });
-  }, [liveByUserId, members, ownCoordinates]);
+  }, [liveByUserId, liveEligibleMembers, ownCoordinates]);
 
   const journeyStops = journeyDayStops.length ? journeyDayStops : hotelObjectStops;
   const journeyRouteCoordinates = useMemo(
@@ -952,10 +1082,12 @@ function JourneyMapContent() {
     return {
       id: `live-${memberLocation.member.userId}`,
       label: memberLocation.member.displayName,
-      subtitle: `${statusLabel(memberLocation.status, t)} · ${relativeLabel(
-        memberLocation.location?.recordedAt ?? null,
-        t,
-      )}`,
+      subtitle: liveLocationDescription(memberLocation, currentUserId, t),
+      title:
+        memberLocation.member.userId === currentUserId
+          ? t("map.currentUser")
+          : memberLocation.member.displayName,
+      description: liveLocationDescription(memberLocation, currentUserId, t),
       coordinates,
       status: memberLocation.status,
       kind: "live" as const,
@@ -972,6 +1104,9 @@ function JourneyMapContent() {
     id: stop.id,
     label: stop.label,
     subtitle: stop.subtitle,
+    title: stop.title,
+    locationLabel: stop.subtitle,
+    description: stop.description,
     coordinates: stop.coordinates,
     kind: stop.kind,
     icon: stop.icon,
@@ -981,6 +1116,9 @@ function JourneyMapContent() {
     id: stop.id,
     label: stop.label,
     subtitle: stop.subtitle,
+    title: stop.title,
+    locationLabel: stop.subtitle,
+    description: stop.description,
     coordinates: stop.coordinates,
     kind: "memory" as const,
     icon: stop.icon,
@@ -994,18 +1132,66 @@ function JourneyMapContent() {
     ...liveMarkers,
   ];
 
+  const routeBaseCoordinates = useMemo(
+    () =>
+      selectedDay
+        ? selectedDayStops.map((stop) => stop.coordinates)
+        : journeyRouteCoordinates,
+    [journeyRouteCoordinates, selectedDay, selectedDayStops],
+  );
+
+  const routeRequestKey = useMemo(
+    () =>
+      routeBaseCoordinates
+        .map(
+          (coordinate) =>
+            `${coordinate.latitude.toFixed(5)},${coordinate.longitude.toFixed(5)}`,
+        )
+        .join("|"),
+    [routeBaseCoordinates],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    if (routeBaseCoordinates.length < 2) {
+      return () => controller.abort();
+    }
+
+    fetchRoadRoute(routeBaseCoordinates, controller.signal)
+      .then((coordinates) => {
+        setRoadRoute({
+          key: routeRequestKey,
+          coordinates: coordinates.length ? coordinates : routeBaseCoordinates,
+        });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setRoadRoute({
+            key: routeRequestKey,
+            coordinates: routeBaseCoordinates,
+          });
+        }
+      });
+
+    return () => controller.abort();
+  }, [routeBaseCoordinates, routeRequestKey]);
+
+  const displayedRouteCoordinates =
+    roadRoute?.key === routeRequestKey ? roadRoute.coordinates : routeBaseCoordinates;
+
   const mapRoutes: LeafletMapRoute[] = selectedDay
     ? [
         {
           id: "day-route",
-          coordinates: selectedDayStops.map((stop) => stop.coordinates),
+          coordinates: displayedRouteCoordinates,
           color: "#047857",
         },
       ]
     : [
         {
           id: "hotel-route",
-          coordinates: journeyRouteCoordinates,
+          coordinates: displayedRouteCoordinates,
           color: "#b45309",
         },
       ];
@@ -1032,18 +1218,15 @@ function JourneyMapContent() {
     const coordinates = getCoordinates(memberLocation.location);
     if (!coordinates || !memberLocation.member.userId) return;
 
-    const distanceLabel =
-      memberLocation.distance === null
-        ? t("map.distanceUnavailable")
-        : formatDistance(memberLocation.distance);
-
     setSelectedMarker({
       id: `outside-live-${memberLocation.member.userId}`,
       label: memberLocation.member.displayName,
-      subtitle: `${statusLabel(memberLocation.status, t)} · ${t("map.liveOutside", {
-        name: memberLocation.member.displayName,
-        distance: distanceLabel,
-      })}`,
+      subtitle: liveLocationDescription(memberLocation, currentUserId, t),
+      title:
+        memberLocation.member.userId === currentUserId
+          ? t("map.currentUser")
+          : memberLocation.member.displayName,
+      description: liveLocationDescription(memberLocation, currentUserId, t),
       coordinates,
       status: memberLocation.status,
       kind: "live",
@@ -1064,6 +1247,7 @@ function JourneyMapContent() {
     const day = days.find((plannerDay) => plannerDay.day.id === dayId);
     if (day) {
       window.localStorage.setItem(`otr:map-view:${tripId}`, day.day.dayDate);
+      window.localStorage.setItem(`otr:planner-day:${tripId}`, day.day.dayDate);
       window.dispatchEvent(
         new CustomEvent("journey:workspace-day-change", {
           detail: { tripId, day: day.day.dayDate },
@@ -1102,6 +1286,34 @@ function JourneyMapContent() {
                 compact
                 onLocationSaved={handleLocationSaved}
               />
+              <Link
+                href={
+                  selectedDay
+                    ? `/trips/${tripId}/planner?date=${selectedDay.day.dayDate}`
+                    : `/trips/${tripId}/planner`
+                }
+                className="grid size-9 place-items-center rounded-full bg-stone-100 text-stone-700 shadow-sm"
+                title={t("map.openPlannerList")}
+                aria-label={t("map.openPlannerList")}
+              >
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  className="size-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                >
+                  <path d="M8 6h13" />
+                  <path d="M8 12h13" />
+                  <path d="M8 18h13" />
+                  <path d="M3 6h.01" />
+                  <path d="M3 12h.01" />
+                  <path d="M3 18h.01" />
+                </svg>
+              </Link>
               <button
                 type="button"
                 onClick={() => selectMapView("journey")}
@@ -1222,11 +1434,21 @@ function JourneyMapContent() {
                         : t("map.dayRoute")}
                 </p>
                 <h2 className="mt-1 truncate text-xl font-black text-stone-950">
-                  {selectedMarker.label}
+                  {selectedMarker.title || selectedMarker.label}
                 </h2>
-                {selectedMarker.subtitle ? (
+                {selectedMarker.label !== selectedMarker.title ? (
+                  <p className="mt-1 text-sm font-black text-emerald-800">
+                    {selectedMarker.label}
+                  </p>
+                ) : null}
+                {selectedMarker.locationLabel || selectedMarker.subtitle ? (
                   <p className="mt-1 text-sm leading-6 text-stone-600">
-                    {selectedMarker.subtitle}
+                    {selectedMarker.locationLabel || selectedMarker.subtitle}
+                  </p>
+                ) : null}
+                {selectedMarker.description ? (
+                  <p className="mt-2 text-sm leading-6 text-stone-700">
+                    {selectedMarker.description}
                   </p>
                 ) : null}
               </div>

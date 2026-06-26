@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { type FormEvent, useMemo, useState } from "react";
+import { useCaptureModal } from "@/components/CaptureModalProvider";
 import type { MemoryEntry } from "@/types";
 import { formatTime, getDefaultCapturedAt } from "@/lib/format";
 import { getErrorMessage } from "@/lib/errors";
@@ -18,6 +19,7 @@ export function DayMemoryPreview({
   tripDayId?: string | null;
   memories: MemoryEntry[];
 }) {
+  const { openCapture } = useCaptureModal();
   const [localMemories, setLocalMemories] = useState<MemoryEntry[]>([]);
   const [isAdding, setIsAdding] = useState(false);
   const [content, setContent] = useState("");
@@ -131,10 +133,29 @@ export function DayMemoryPreview({
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => setIsAdding((current) => !current)}
+              onClick={() =>
+                openCapture({
+                  tripId,
+                  entryPoint: "day_memory",
+                  intentBias: "memory",
+                  lockedContext: {
+                    journeyId: tripId,
+                    dayId: tripDayId,
+                    tripDayId,
+                    dayDate: date,
+                  },
+                })
+              }
               className="inline-flex rounded-full bg-emerald-700 px-3 py-2 text-sm font-bold text-white shadow-sm"
             >
               Add memory
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsAdding((current) => !current)}
+              className="inline-flex rounded-full bg-white px-3 py-2 text-sm font-bold text-stone-700 shadow-sm"
+            >
+              Quick note
             </button>
           <Link
             href={`/trips/${tripId}/days/${date}`}

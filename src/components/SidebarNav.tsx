@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
 
@@ -160,6 +161,7 @@ function Icon({ name }: { name: NavIcon }) {
 export function SidebarNav() {
   const pathname = usePathname();
   const { t } = useI18n();
+  const { openCapture } = useCaptureModal();
   const tripId = getActiveTripId(pathname);
   const mainItems: NavItem[] = [
     { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
@@ -210,6 +212,24 @@ export function SidebarNav() {
 
   function renderItem(item: NavItem) {
     const label = t(item.labelKey);
+
+    if (item.icon === "capture") {
+      return (
+        <button
+          key={item.labelKey}
+          type="button"
+          onClick={() => openCapture({ tripId, entryPoint: "global_capture" })}
+          className={itemClass(isActive(item.href))}
+          title={label}
+          aria-label={label}
+        >
+          <Icon name={item.icon} />
+          <span className="pointer-events-none absolute left-14 top-1/2 z-50 hidden -translate-y-1/2 whitespace-nowrap rounded-xl bg-stone-950 px-3 py-2 text-xs font-bold text-white shadow-lg group-hover:block group-focus-visible:block">
+            {label}
+          </span>
+        </button>
+      );
+    }
 
     return (
       <Link

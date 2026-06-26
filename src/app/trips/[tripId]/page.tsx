@@ -24,7 +24,7 @@ import {
 import { deleteTrip, getTrip } from "@/lib/supabase/trips";
 import type { ItineraryEvent, JourneyMember, MemoryEntry, Trip } from "@/types";
 
-type TutorialId = "import" | "capture" | "expense" | "map" | "invite";
+type TutorialId = "import" | "capture" | "expense" | "map" | "invite" | "aka";
 
 type TutorialCard = {
   id: TutorialId;
@@ -248,6 +248,7 @@ function TripDashboardContent() {
   const hasMapContent = memories.some((memory) => memory.locationName) || events.some((event) => event.locationName);
   const hasPlanner = events.length > 0;
   const hasInvitedPeople = activeMembers.length > 1;
+  const hasEnoughAka = activeMembers.filter((member) => member.notes?.trim()).length >= 2;
 
   const tutorials: TutorialCard[] = [
     {
@@ -293,6 +294,15 @@ function TripDashboardContent() {
       cta: "Invite Members",
       href: `/trips/${trip.id}/invite`,
       completed: hasInvitedPeople,
+    },
+    {
+      id: "aka",
+      icon: "Aa",
+      title: "Add traveler nicknames",
+      copy: "Fill AKA for at least two people so OTR can recognize names in notes and voice.",
+      cta: "Add AKA",
+      href: `/trips/${trip.id}/people`,
+      completed: hasEnoughAka,
     },
   ];
   const activeTutorials = tutorials.filter(

@@ -1,4 +1,5 @@
 import type { MemoryEntry } from "@/types";
+import { enqueueMediaProcessingJobs } from "@/lib/background-jobs/client";
 import { makeSafeFileName, type CompressedImage } from "@/lib/images";
 import { getCurrentUser } from "./auth";
 import { supabase } from "./client";
@@ -314,6 +315,12 @@ export async function createPhotoMemory(
       );
     }
   }
+
+  await enqueueMediaProcessingJobs({
+    tripId,
+    mediaAssetId,
+    title: caption.trim() || originalFileName || "Photo processing",
+  }).catch(() => null);
 
   return {
     id: memoryId,

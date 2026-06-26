@@ -800,6 +800,9 @@ function LedgerContent() {
     form?.originalAmount && form?.exchangeRate
       ? Number(form.originalAmount || 0) * Number(form.exchangeRate || 1)
       : 0;
+  const isSharedSplitInvalid =
+    form?.accountingMode === "shared" &&
+    form.participantMemberIds.length === 0;
   const memberReports = useMemo(
     () =>
       ledgerData
@@ -820,6 +823,16 @@ function LedgerContent() {
     setForm((current) => (current ? { ...current, ...patch } : current));
   }
 
+  function sharedParticipantIdsForForm(nextForm: LedgerFormState) {
+    if (nextForm.accountingMode !== "shared") {
+      return nextForm.participantMemberIds;
+    }
+    if (nextForm.participantMemberIds.length > 0) {
+      return nextForm.participantMemberIds;
+    }
+    return nextForm.payerMemberId ? [nextForm.payerMemberId] : [];
+  }
+
   function startCreateExpense() {
     if (ledgerData) {
       setForm(initialForm(ledgerData.ledger.baseCurrency, ledgerData.members));
@@ -829,6 +842,9 @@ function LedgerContent() {
   }
 
   function startEditExpense(entry: LedgerEntry) {
+    const participantMemberIds = entry.participants.map(
+      (participant) => participant.memberId,
+    );
     setEditingEntryId(entry.id);
     setForm({
       title: entry.title,
@@ -842,9 +858,12 @@ function LedgerContent() {
       originalCurrency: entry.originalCurrency,
       exchangeRate: String(entry.exchangeRate || 1),
       payerMemberId: entry.payerMemberId ?? "",
-      participantMemberIds: entry.participants.map(
-        (participant) => participant.memberId,
-      ),
+      participantMemberIds:
+        entry.accountingMode === "shared" &&
+        participantMemberIds.length === 0 &&
+        entry.payerMemberId
+          ? [entry.payerMemberId]
+          : participantMemberIds,
       addressText: entry.addressText ?? "",
     });
     setShowForm(true);
@@ -925,6 +944,12 @@ function LedgerContent() {
     event.preventDefault();
     if (!form || !ledgerData) return;
 
+    const participantMemberIds = sharedParticipantIdsForForm(form);
+    if (form.accountingMode === "shared" && participantMemberIds.length === 0) {
+      setSaveError(t("ledger.error.splitMembersRequired"));
+      return;
+    }
+
     setIsSaving(true);
     setSaveError(null);
 
@@ -943,7 +968,7 @@ function LedgerContent() {
         baseCurrency,
         exchangeRate: Number(form.exchangeRate || 1),
         payerMemberId: form.payerMemberId || null,
-        participantMemberIds: form.participantMemberIds,
+        participantMemberIds,
         addressText: form.addressText,
       };
       if (editingEntryId) {
@@ -1238,11 +1263,19 @@ function LedgerContent() {
               </span>
               <select
                 value={form.accountingMode}
-                onChange={(event) =>
+                onChange={(event) => {
+                  const accountingMode = event.target.value as LedgerAccountingMode;
+                  const shouldSeedPayer =
+                    accountingMode === "shared" &&
+                    form.participantMemberIds.length === 0 &&
+                    form.payerMemberId;
                   updateForm({
-                    accountingMode: event.target.value as LedgerAccountingMode,
-                  })
-                }
+                    accountingMode,
+                    ...(shouldSeedPayer
+                      ? { participantMemberIds: [form.payerMemberId] }
+                      : {}),
+                  });
+                }}
                 className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
               >
                 <option value="shared">{t("ledger.mode.shared")}</option>
@@ -1255,9 +1288,16 @@ function LedgerContent() {
               </span>
               <select
                 value={form.payerMemberId}
-                onChange={(event) =>
-                  updateForm({ payerMemberId: event.target.value })
-                }
+                onChange={(event) => {
+                  const payerMemberId = event.target.value;
+                  const participantMemberIds =
+                    form.accountingMode === "shared" &&
+                    payerMemberId &&
+                    form.participantMemberIds.length === 0
+                      ? [payerMemberId]
+                      : form.participantMemberIds;
+                  updateForm({ payerMemberId, participantMemberIds });
+                }}
                 className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
               >
                 <option value="">{t("ledger.field.selectPayer")}</option>
@@ -1313,6 +1353,11 @@ function LedgerContent() {
                 {t("ledger.statsOnlyNote")}
               </p>
             ) : null}
+            {isSharedSplitInvalid ? (
+              <p className="text-xs font-bold text-red-700">
+                {t("ledger.error.splitMembersRequired")}
+              </p>
+            ) : null}
           </section>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1353,7 +1398,7 @@ function LedgerContent() {
             </p>
             <button
               type="submit"
-              disabled={isSaving}
+              disabled={isSaving || isSharedSplitInvalid}
               className="rounded-full bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:bg-stone-300"
             >
               {isSaving

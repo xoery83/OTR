@@ -32,6 +32,9 @@ export type LeafletMapMarker = {
   subtitle?: string | null;
   thumbnailUrl?: string | null;
   count?: number;
+  title?: string | null;
+  locationLabel?: string | null;
+  description?: string | null;
 };
 
 export type LeafletMapRoute = {
@@ -170,6 +173,10 @@ export function LeafletMapCanvas({
         maxZoom: 19,
       }).addTo(map);
 
+      const routePane = map.createPane("otr-route-pane");
+      routePane.classList.add("otr-route-pane");
+      routePane.style.zIndex = "410";
+
       routeLayerRef.current = L.layerGroup().addTo(map);
       layerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
@@ -210,6 +217,7 @@ export function LeafletMapCanvas({
           {
             color: route.color ?? "#047857",
             opacity: 0.82,
+            pane: "otr-route-pane",
             weight: 4,
             dashArray: route.id.includes("day") ? undefined : "8 8",
           },
@@ -234,9 +242,9 @@ export function LeafletMapCanvas({
           { icon },
         )
           .bindPopup(
-            marker.subtitle
-              ? `<strong>${marker.label}</strong><br />${marker.subtitle}`
-              : marker.label,
+            marker.locationLabel || marker.subtitle || marker.description
+              ? `<strong>${escapeHtml(marker.title || marker.label)}</strong><br />${escapeHtml(marker.locationLabel || marker.subtitle || marker.description || "")}`
+              : escapeHtml(marker.title || marker.label),
           )
           .on("click", () => onMarkerClick?.(marker));
 
@@ -251,6 +259,34 @@ export function LeafletMapCanvas({
       isMounted = false;
     };
   }, [markers, onMarkerClick, routes]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    let animationFrame = 0;
+    const routePane = map.getPane("otr-route-pane");
+    const hideRoutes = () => {
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      routePane?.classList.add("otr-route-pane-hidden");
+    };
+    const showRoutes = () => {
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(() => {
+        map.invalidateSize();
+        routePane?.classList.remove("otr-route-pane-hidden");
+      });
+    };
+
+    map.on("zoomstart movestart", hideRoutes);
+    map.on("zoomend moveend", showRoutes);
+
+    return () => {
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      map.off("zoomstart movestart", hideRoutes);
+      map.off("zoomend moveend", showRoutes);
+    };
+  }, []);
 
   useEffect(() => {
     const map = mapRef.current;

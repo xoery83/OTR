@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { AuthGate } from "@/components/AuthGate";
@@ -119,6 +120,20 @@ function SettingsContent({ user }: { user: User }) {
           Logout
         </button>
       </section>
+
+      <Link
+        href="/settings/capture-ai"
+        className="block rounded-2xl border border-emerald-100 bg-white p-5 shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50"
+      >
+        <p className="text-sm font-semibold text-emerald-700">Capture AI</p>
+        <h2 className="mt-1 text-xl font-semibold text-stone-950">
+          Intent engine and prompts
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-stone-600">
+          Configure supported intents, confidence thresholds, prompt templates,
+          and test detection without writing data.
+        </p>
+      </Link>
     </div>
   );
 }

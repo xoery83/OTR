@@ -136,6 +136,7 @@ export type JourneyMemberSuggestion = {
   key: string;
   displayName: string;
   inviteEmail: string;
+  notes: string;
   userId: string | null;
   avatarUrl: string | null;
   journeysTogether: number;
@@ -163,6 +164,9 @@ export async function getJourneyMemberSuggestions() {
       if (!existing.avatarUrl && member.avatarUrl) {
         existing.avatarUrl = member.avatarUrl;
       }
+      if (!existing.notes && member.notes) {
+        existing.notes = member.notes;
+      }
       return;
     }
 
@@ -170,6 +174,7 @@ export async function getJourneyMemberSuggestions() {
       key,
       displayName: member.displayName,
       inviteEmail: member.inviteEmail ?? "",
+      notes: member.notes ?? "",
       userId: member.userId,
       avatarUrl: member.avatarUrl,
       journeysTogether: 1,

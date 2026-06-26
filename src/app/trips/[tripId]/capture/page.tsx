@@ -24,7 +24,16 @@ function CaptureContent() {
   const params = useParams<{ tripId: string }>();
   const tripId = params.tripId;
   const photoInputRef = useRef<HTMLInputElement | null>(null);
-  const voiceInputRef = useRef<HTMLInputElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const silenceTimerRef = useRef<number | null>(null);
+  const maxRecordingTimerRef = useRef<number | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const heardSpeechRef = useRef(false);
+  const isStartingRecordingRef = useRef(false);
+  const isStoppingRecordingRef = useRef(false);
+  const hasQueuedRecordingRef = useRef(false);
   const [trip, setTrip] = useState<Trip | null>(null);
   const [text, setText] = useState("");
   const [photoFileName, setPhotoFileName] = useState("");
@@ -39,6 +48,7 @@ function CaptureContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPhotoPreparing, setIsPhotoPreparing] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -85,8 +95,32 @@ function CaptureContent() {
       if (compressedImage?.previewUrl) {
         URL.revokeObjectURL(compressedImage.previewUrl);
       }
+      cleanupRecording();
     };
   }, [compressedImage]);
+
+  function cleanupRecording() {
+    if (silenceTimerRef.current) {
+      window.clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    if (maxRecordingTimerRef.current) {
+      window.clearTimeout(maxRecordingTimerRef.current);
+      maxRecordingTimerRef.current = null;
+    }
+    if (animationFrameRef.current) {
+      window.cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    audioStreamRef.current = null;
+    mediaRecorderRef.current = null;
+    void audioContextRef.current?.close();
+    audioContextRef.current = null;
+    heardSpeechRef.current = false;
+    isStartingRecordingRef.current = false;
+    isStoppingRecordingRef.current = false;
+  }
 
   async function handlePhotoChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -114,10 +148,7 @@ function CaptureContent() {
     }
   }
 
-  async function handleVoiceChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
+  async function transcribeVoiceFile(file: File) {
     setError(null);
     setIsTranscribing(true);
     setVoiceFileName(file.name);
@@ -134,8 +165,114 @@ function CaptureContent() {
       setError(getErrorMessage(voiceError, "Could not transcribe voice."));
     } finally {
       setIsTranscribing(false);
-      event.target.value = "";
     }
+  }
+
+  async function startRecording() {
+    if (isStartingRecordingRef.current || isRecording || isTranscribing) {
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setError("Voice recording is not supported in this browser.");
+      return;
+    }
+
+    setError(null);
+    setVoiceFileName("");
+    setTranscriptionModel(null);
+    isStartingRecordingRef.current = true;
+    hasQueuedRecordingRef.current = false;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const chunks: BlobPart[] = [];
+      const recorder = new MediaRecorder(stream, {
+        mimeType: MediaRecorder.isTypeSupported("audio/webm")
+          ? "audio/webm"
+          : undefined,
+      });
+      mediaRecorderRef.current = recorder;
+      audioStreamRef.current = stream;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        cleanupRecording();
+        setIsRecording(false);
+        if (blob.size > 0 && !hasQueuedRecordingRef.current) {
+          hasQueuedRecordingRef.current = true;
+          const file = new File([blob], `capture-${Date.now()}.webm`, {
+            type: blob.type || "audio/webm",
+          });
+          void transcribeVoiceFile(file);
+        }
+      };
+
+      recorder.start();
+      setIsRecording(true);
+      isStartingRecordingRef.current = false;
+      startSilenceDetection(stream);
+      maxRecordingTimerRef.current = window.setTimeout(() => stopRecording(), 60_000);
+    } catch (recordingError) {
+      cleanupRecording();
+      setIsRecording(false);
+      setError(getErrorMessage(recordingError, "Could not start recording."));
+    }
+  }
+
+  function stopRecording() {
+    if (isStoppingRecordingRef.current) {
+      return;
+    }
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      isStoppingRecordingRef.current = true;
+      recorder.stop();
+    } else {
+      cleanupRecording();
+      setIsRecording(false);
+    }
+  }
+
+  function startSilenceDetection(stream: MediaStream) {
+    const AudioContextClass = window.AudioContext;
+    if (!AudioContextClass) return;
+
+    const audioContext = new AudioContextClass();
+    const analyser = audioContext.createAnalyser();
+    const source = audioContext.createMediaStreamSource(stream);
+    const data = new Uint8Array(analyser.fftSize);
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+    audioContextRef.current = audioContext;
+
+    const tick = () => {
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (const value of data) {
+        const normalized = (value - 128) / 128;
+        sum += normalized * normalized;
+      }
+      const volume = Math.sqrt(sum / data.length);
+
+      if (volume > 0.035) {
+        heardSpeechRef.current = true;
+        if (silenceTimerRef.current) {
+          window.clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = null;
+        }
+      } else if (heardSpeechRef.current && !silenceTimerRef.current) {
+        silenceTimerRef.current = window.setTimeout(() => stopRecording(), 1400);
+      }
+
+      animationFrameRef.current = window.requestAnimationFrame(tick);
+    };
+
+    tick();
   }
 
   async function submitCapture(event: FormEvent<HTMLFormElement>) {
@@ -264,14 +401,6 @@ function CaptureContent() {
           onChange={handlePhotoChange}
           className="sr-only"
         />
-        <input
-          ref={voiceInputRef}
-          type="file"
-          accept="audio/*,.m4a,.mp3,.mp4,.mpeg,.mpga,.wav,.webm"
-          onChange={handleVoiceChange}
-          className="sr-only"
-        />
-
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -283,11 +412,15 @@ function CaptureContent() {
           </button>
           <button
             type="button"
-            onClick={() => voiceInputRef.current?.click()}
+            onClick={() => (isRecording ? stopRecording() : void startRecording())}
             disabled={isTranscribing || isSubmitting}
-            className="rounded-full bg-stone-100 px-4 py-2 text-sm font-bold text-stone-800 disabled:text-stone-400"
+            className={`rounded-full px-4 py-2 text-sm font-bold disabled:text-stone-400 ${
+              isRecording
+                ? "bg-red-600 text-white"
+                : "bg-stone-100 text-stone-800"
+            }`}
           >
-            {isTranscribing ? "Transcribing..." : "Voice"}
+            {isTranscribing ? "Transcribing..." : isRecording ? "Stop" : "Voice"}
           </button>
           <button
             type="submit"

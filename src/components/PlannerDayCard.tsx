@@ -5,11 +5,15 @@ import Link from "next/link";
 import {
   type ChangeEvent,
   type FormEvent,
+  useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
+import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
+import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
+import { enqueueMediaProcessingJobs } from "@/lib/background-jobs/client";
 import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
 import type { PlannerV2Day } from "@/lib/supabase/planner-v2";
 import { getApproxExchangeRate } from "@/lib/exchange-rates";
@@ -24,16 +28,13 @@ import {
   updateItineraryEvent,
   updateItineraryReservation,
 } from "@/lib/supabase/itinerary";
-import { createLedgerEntry } from "@/lib/supabase/ledger";
+import { createLedgerEntry, updateLedgerEntry } from "@/lib/supabase/ledger";
 import {
   createPhotoMemory,
   createTextMemory,
   getSignedMemoryImageUrls,
 } from "@/lib/supabase/memories";
-import {
-  requestFaceDetection,
-  requestPhotoIndexing,
-} from "@/lib/supabase/media-assets";
+import { requestVoiceTranscription } from "@/lib/supabase/media-assets";
 import type {
   JourneyMember,
   ItineraryEventType,
@@ -76,6 +77,7 @@ type InlineAttachmentState = {
 
 type PendingExpense = {
   itemId: string;
+  ledgerEntryId?: string;
   memoryEntryId: string;
   title: string;
   category: LedgerCategory;
@@ -120,6 +122,26 @@ type DraftPlanItem = {
   plannedEnd: string;
   description: string;
 };
+
+function MicrophoneIcon({ className = "size-4" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+    >
+      <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z" />
+      <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
+      <path d="M12 18v4" />
+      <path d="M8 22h8" />
+    </svg>
+  );
+}
 
 const bookingLabelKeys: Partial<Record<string, TranslationKey>> = {
   flight: "planner.booking.flight",
@@ -509,6 +531,12 @@ function detectExpense(
   };
 }
 
+function isExpenseUpdateText(text: string) {
+  return /调整|调成|改成|改为|修改|更新|纠正|不是|应该是|change|update|adjust|correct/i.test(
+    text,
+  );
+}
+
 function capturedAtForItem(item: StoryItem, dayDate: string) {
   if (item.time) return item.time;
   if (dayDate === "unscheduled") return new Date().toISOString();
@@ -668,6 +696,18 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const memberAliasSeparator = /[\s,，、/|;；]+/;
+const latinWordChar = /[A-Za-z0-9_]/;
+
+function isValidMemberAlias(value: string) {
+  const alias = value.trim();
+  if (alias.length < 2) return false;
+  if (isCjk(alias)) return alias.length >= 2;
+  if (/^[A-Z0-9]{2}$/.test(alias)) return true;
+  if (/^[A-Za-z]{2}$/.test(alias)) return false;
+  return alias.length >= 3;
+}
+
 function memberAliases(members: JourneyMember[]) {
   const aliases = new Map<string, MemberAlias>();
 
@@ -677,9 +717,9 @@ function memberAliases(members: JourneyMember[]) {
       const candidates = [
         member.displayName,
         ...(member.notes ?? "")
-          .split(/[,，、/|;\n]+/)
+          .split(memberAliasSeparator)
           .map((value) => value.trim()),
-      ].filter((value) => value.length >= 2);
+      ].filter(isValidMemberAlias);
 
       candidates.forEach((alias) => {
         aliases.set(alias.toLocaleLowerCase(), { alias, member });
@@ -687,6 +727,88 @@ function memberAliases(members: JourneyMember[]) {
     });
 
   return [...aliases.values()].sort((a, b) => b.alias.length - a.alias.length);
+}
+
+const spokenNameAliases: Record<string, string[]> = {
+  bao: ["老老唐", "老老堂", "唐宝坤", "唐寶坤"],
+  "bao tang": ["老老唐", "老老堂", "唐宝坤", "唐寶坤"],
+  caroline: ["卡罗琳", "卡洛琳", "凯若琳"],
+  "caroline li": ["李芊羽", "李千羽", "芊羽", "千羽"],
+  george: ["乔治"],
+  "george chen": ["陈国祥", "陳國祥", "祥哥", "翔哥", "国祥", "國祥"],
+  grace: ["格蕾丝", "格蕾斯"],
+  "grace chen": ["陈奇志", "陳奇志", "奇志", "启智", "祺智"],
+  "qizhi chen": ["陈奇志", "陳奇志", "奇志", "启智", "祺智"],
+  leon: ["里昂", "利昂", "李昂", "李安", "李恩", "李畅", "李暢", "李洋", "李洋翔", "李洋祥"],
+  "leon li": ["李畅", "李暢", "李洋", "李洋翔", "李洋祥"],
+  mary: ["玛丽", "梅里"],
+  "mary ma": ["马瑞", "馬瑞", "玛瑞", "马蕊"],
+};
+
+function isCjk(value: string) {
+  return /[\u3400-\u9fff]/.test(value);
+}
+
+function aliasMatchesAt(text: string, index: number, alias: string) {
+  const value = text.slice(index, index + alias.length);
+  if (value.toLocaleLowerCase() !== alias.toLocaleLowerCase()) return false;
+  if (isCjk(alias)) return true;
+
+  const previous = index > 0 ? text[index - 1] : "";
+  const next = text[index + alias.length] ?? "";
+  return !latinWordChar.test(previous) && !latinWordChar.test(next);
+}
+
+function spokenAliasCandidates(alias: MemberAlias) {
+  const displayNameParts = alias.member.displayName
+    .split(/\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const firstName = displayNameParts[0]?.toLocaleLowerCase() ?? "";
+  const displayName = alias.member.displayName.toLocaleLowerCase();
+  const aliasKey = alias.alias.toLocaleLowerCase();
+  const candidates = [
+    alias.alias,
+    alias.member.displayName,
+    ...displayNameParts,
+    ...(firstName ? spokenNameAliases[firstName] ?? [] : []),
+    ...(spokenNameAliases[displayName] ?? []),
+    ...(spokenNameAliases[aliasKey] ?? []),
+  ];
+
+  return [...new Set(candidates.map((candidate) => candidate.trim()))].filter(
+    isValidMemberAlias,
+  );
+}
+
+function normalizeVoiceTranscriptForMemory(text: string, aliases: MemberAlias[]) {
+  let normalized = text
+    .replace(/@?\s*(所有人|大家|全员)\b/g, "@所有人")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const replacements = aliases
+    .flatMap((alias) =>
+      spokenAliasCandidates(alias).map((candidate) => ({
+        candidate,
+        displayName: alias.member.displayName,
+      })),
+    )
+    .sort((first, second) => second.candidate.length - first.candidate.length);
+
+  replacements.forEach(({ candidate, displayName }) => {
+    const escaped = escapeRegExp(candidate);
+    const pattern = isCjk(candidate)
+      ? new RegExp(`(^|[^@])(${escaped})`, "g")
+      : new RegExp(`(^|[^A-Za-z0-9_@])(${escaped})(?=$|[^A-Za-z0-9_])`, "gi");
+
+    normalized = normalized.replace(pattern, (match, prefix: string) => {
+      if (match.includes(`@${displayName}`)) return match;
+      return `${prefix}@${displayName}`;
+    });
+  });
+
+  return normalized.replace(/\s+/g, " ").trim();
 }
 
 function HighlightedText({
@@ -698,28 +820,43 @@ function HighlightedText({
 }) {
   if (aliases.length === 0) return <>{text}</>;
 
-  const pattern = new RegExp(
-    `(${aliases.map((item) => escapeRegExp(item.alias)).join("|")})`,
-    "gi",
-  );
-  const parts = text.split(pattern).filter(Boolean);
+  const parts: Array<{ text: string; match: MemberAlias | null }> = [];
+  let buffer = "";
+  let index = 0;
+
+  while (index < text.length) {
+    const match = aliases.find((item) => aliasMatchesAt(text, index, item.alias));
+
+    if (match) {
+      if (buffer) {
+        parts.push({ text: buffer, match: null });
+        buffer = "";
+      }
+      parts.push({
+        text: text.slice(index, index + match.alias.length),
+        match,
+      });
+      index += match.alias.length;
+    } else {
+      buffer += text[index];
+      index += 1;
+    }
+  }
+
+  if (buffer) parts.push({ text: buffer, match: null });
 
   return (
     <>
       {parts.map((part, index) => {
-        const match = aliases.find(
-          (item) => item.alias.toLocaleLowerCase() === part.toLocaleLowerCase(),
-        );
-
-        if (!match) return <span key={`${part}-${index}`}>{part}</span>;
+        if (!part.match) return <span key={`${part.text}-${index}`}>{part.text}</span>;
 
         return (
           <span
-            key={`${part}-${index}`}
+            key={`${part.text}-${index}`}
             className="rounded-full bg-emerald-100 px-1.5 py-0.5 font-semibold text-emerald-800"
-            title={`Matched group member: ${match.member.displayName}`}
+            title={`Matched group member: ${part.match.member.displayName}`}
           >
-            {part}
+            {part.text}
           </span>
         );
       })}
@@ -735,6 +872,7 @@ export function PlannerDayCard({
   ledgerBaseCurrency = "NZD",
   preserveOriginalPhotos = false,
   nextDay,
+  mapHref,
   onLedgerEntryCreated,
   onPlannerChanged,
 }: {
@@ -745,10 +883,12 @@ export function PlannerDayCard({
   ledgerBaseCurrency?: string;
   preserveOriginalPhotos?: boolean;
   nextDay?: PlannerV2Day | null;
+  mapHref?: string;
   onLedgerEntryCreated?: () => void;
   onPlannerChanged?: () => void;
 }) {
   const { locale, t } = useI18n();
+  const { openCapture } = useCaptureModal();
   const { day, dayNumber, dayTag, memories } = plannerDay;
   const dayLabel =
     day.dayDate === "unscheduled"
@@ -861,8 +1001,13 @@ export function PlannerDayCard({
   >({});
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const attachmentByItemRef = useRef(attachmentByItem);
+  const activeVoiceItemIdRef = useRef<string | null>(null);
   const [inlineMemories, setInlineMemories] = useState<InlineMemoryState>({});
   const [savingMemoryId, setSavingMemoryId] = useState<string | null>(null);
+  const [recordingMemoryId, setRecordingMemoryId] = useState<string | null>(null);
+  const [transcribingMemoryId, setTranscribingMemoryId] = useState<string | null>(
+    null,
+  );
   const [savingExpenseId, setSavingExpenseId] = useState<string | null>(null);
   const [pendingExpense, setPendingExpense] = useState<PendingExpense | null>(
     null,
@@ -928,6 +1073,75 @@ export function PlannerDayCard({
     };
   }, []);
 
+  const appendMemoryText = useCallback(
+    (itemId: string, nextText: string) => {
+      const normalizedText = normalizeVoiceTranscriptForMemory(nextText, aliases);
+      setMemoryTextByItem((current) => ({
+        ...current,
+        [itemId]: [current[itemId]?.trim(), normalizedText]
+          .filter(Boolean)
+          .join("\n"),
+      }));
+    },
+    [aliases],
+  );
+
+  const transcribeInlineVoice = useCallback(
+    async (file: File) => {
+      const itemId = activeVoiceItemIdRef.current;
+      if (!itemId) return;
+
+      setTranscribingMemoryId(itemId);
+      setMemoryErrorByItem((current) => ({ ...current, [itemId]: "" }));
+
+      try {
+        const result = await requestVoiceTranscription({ tripId, audio: file });
+        appendMemoryText(itemId, result.transcript);
+      } catch (error) {
+        setMemoryErrorByItem((current) => ({
+          ...current,
+          [itemId]: getErrorMessage(error, "Could not transcribe voice."),
+        }));
+      } finally {
+        setTranscribingMemoryId(null);
+        setRecordingMemoryId(null);
+        activeVoiceItemIdRef.current = null;
+      }
+    },
+    [appendMemoryText, tripId],
+  );
+
+  const voiceRecorder = useVoiceRecorder({
+    onRecordingComplete: transcribeInlineVoice,
+    onError: (error) => {
+      const itemId = activeVoiceItemIdRef.current;
+      if (itemId) {
+        setMemoryErrorByItem((current) => ({
+          ...current,
+          [itemId]: getErrorMessage(error, "Could not start recording."),
+        }));
+      }
+      setRecordingMemoryId(null);
+      activeVoiceItemIdRef.current = null;
+    },
+  });
+
+  async function toggleInlineVoice(itemId: string) {
+    if (voiceRecorder.isRecording && recordingMemoryId === itemId) {
+      voiceRecorder.stop();
+      return;
+    }
+
+    if (voiceRecorder.isRecording || transcribingMemoryId) {
+      return;
+    }
+
+    activeVoiceItemIdRef.current = itemId;
+    setRecordingMemoryId(itemId);
+    setMemoryErrorByItem((current) => ({ ...current, [itemId]: "" }));
+    await voiceRecorder.start();
+  }
+
   function ledgerTotalForItem(item: StoryItem) {
     return ledgerEntries
       .filter(
@@ -938,6 +1152,29 @@ export function PlannerDayCard({
             entry.itineraryReservationId === item.itineraryReservationId),
       )
       .reduce((total, entry) => total + entry.baseAmount, 0);
+  }
+
+  function ledgerEntriesForItem(item: StoryItem) {
+    return ledgerEntries.filter(
+      (entry) =>
+        (item.itineraryEventId &&
+          entry.itineraryEventId === item.itineraryEventId) ||
+        (item.itineraryReservationId &&
+          entry.itineraryReservationId === item.itineraryReservationId),
+    );
+  }
+
+  function existingExpenseForItem(
+    item: StoryItem,
+    category: LedgerCategory,
+  ) {
+    const linkedEntries = ledgerEntriesForItem(item);
+    return (
+      linkedEntries.find((entry) => entry.category === category) ??
+      linkedEntries.find((entry) => entry.category === "hotel") ??
+      linkedEntries[0] ??
+      null
+    );
   }
 
   function persistedMemoriesForItem(item: StoryItem) {
@@ -997,10 +1234,10 @@ export function PlannerDayCard({
     return [
       currentMember.displayName,
       ...(currentMember.notes ?? "")
-        .split(/[,，、/|;\n]+/)
+        .split(memberAliasSeparator)
         .map((value) => value.trim()),
     ]
-      .filter((value) => value.length >= 2)
+      .filter(isValidMemberAlias)
       .map((value) => value.toLocaleLowerCase());
   }
 
@@ -1080,6 +1317,44 @@ export function PlannerDayCard({
 
   function labelForStatus(value: ItineraryItemStatus) {
     return t(statusLabelKeys[value]);
+  }
+
+  function lockedContextForItem(item: StoryItem) {
+    return {
+      journeyId: tripId,
+      dayId: day.id.startsWith("synthetic-") ? null : day.id,
+      tripDayId: day.id.startsWith("synthetic-") ? null : day.id,
+      dayDate: day.dayDate,
+      plannerItemId: item.itineraryEventId ?? item.itineraryReservationId,
+      itineraryEventId: item.itineraryEventId,
+      itineraryReservationId: item.itineraryReservationId,
+      locationName: item.location,
+      title: item.title,
+      itemType: item.itemType,
+    };
+  }
+
+  function openItemCapture(item: StoryItem) {
+    openCapture({
+      tripId,
+      entryPoint: "planner_item_memory",
+      intentBias: "memory",
+      lockedContext: lockedContextForItem(item),
+    });
+  }
+
+  function openDayPlannerCapture() {
+    openCapture({
+      tripId,
+      entryPoint: "day_planner_add",
+      intentBias: "planner_update",
+      lockedContext: {
+        journeyId: tripId,
+        dayId: day.id.startsWith("synthetic-") ? null : day.id,
+        tripDayId: day.id.startsWith("synthetic-") ? null : day.id,
+        dayDate: day.dayDate,
+      },
+    });
   }
 
   function startEditItem(item: StoryItem) {
@@ -1262,21 +1537,14 @@ export function PlannerDayCard({
 
     setIndexingStatusByItem((current) => ({
       ...current,
-      [itemId]: t("memory.indexingStarted"),
+      [itemId]: "Saved. Background photo processing started.",
     }));
 
-    const [indexResult, faceResult] = await Promise.allSettled([
-      requestPhotoIndexing(memory.mediaAssetId, tripId),
-      requestFaceDetection(memory.mediaAssetId, tripId),
-    ]);
-
-    setIndexingStatusByItem((current) => ({
-      ...current,
-      [itemId]:
-        indexResult.status === "fulfilled" && faceResult.status === "fulfilled"
-          ? t("memory.indexingDone")
-          : t("memory.indexingFailed"),
-    }));
+    await enqueueMediaProcessingJobs({
+      tripId,
+      mediaAssetId: memory.mediaAssetId,
+      title: memory.content || "Photo processing",
+    }).catch(() => null);
   }
 
   function prepareDraftPlan(event: FormEvent<HTMLFormElement>) {
@@ -1408,11 +1676,17 @@ export function PlannerDayCard({
         const user = await getCurrentUser().catch(() => null);
         const defaultPayer =
           activeMembers().find((member) => member.userId === user?.id)?.id ?? "";
+        const existingExpense = isExpenseUpdateText(content)
+          ? existingExpenseForItem(item, detectedExpense.category)
+          : null;
         const matchedParticipantIds = [
           ...new Set(
             aliases
               .filter((alias) =>
-                item.title
+                `${item.title} ${content}`
+                  .toLocaleLowerCase()
+                  .includes(alias.member.displayName.toLocaleLowerCase()) ||
+                `${item.title} ${content}`
                   .toLocaleLowerCase()
                   .includes(alias.alias.toLocaleLowerCase()),
               )
@@ -1423,6 +1697,9 @@ export function PlannerDayCard({
           detectedExpense.category === "flight" && matchedParticipantIds.length > 0
             ? matchedParticipantIds
             : activeMembers().map((member) => member.id);
+        const existingParticipantIds =
+          existingExpense?.participants.map((participant) => participant.memberId) ??
+          [];
         const perPerson = /每人|每位|each|per person/i.test(content);
         const detectedAmount =
           perPerson && defaultParticipantIds.length > 1
@@ -1433,22 +1710,32 @@ export function PlannerDayCard({
 
         setPendingExpense({
           itemId: item.id,
+          ledgerEntryId: existingExpense?.id,
           memoryEntryId: saved.id,
-          title: detectedExpense.title,
-          category: detectedExpense.category,
+          title: existingExpense?.title ?? detectedExpense.title,
+          category: existingExpense?.category ?? detectedExpense.category,
           accountingMode:
-            detectedExpense.category === "flight" ? "stats_only" : "shared",
+            existingExpense?.accountingMode ??
+            (detectedExpense.category === "flight" ? "stats_only" : "shared"),
           amount: detectedAmount,
           currency: detectedExpense.currency,
           exchangeRate:
             detectedExpense.currency === ledgerBaseCurrency ? "1" : "",
-          payerMemberId: defaultPayer,
-          participantMemberIds: defaultParticipantIds,
-          addressText: item.location ?? "",
+          payerMemberId: existingExpense?.payerMemberId ?? defaultPayer,
+          participantMemberIds:
+            existingParticipantIds.length > 0
+              ? existingParticipantIds
+              : defaultParticipantIds,
+          addressText: existingExpense?.addressText ?? item.location ?? "",
           description: detectedExpense.description,
           itineraryEventId: item.itineraryEventId,
           itineraryReservationId: item.itineraryReservationId,
-          ...rangeForStoryItem(item),
+          ...(existingExpense
+            ? {
+                startDate: existingExpense.startDate,
+                endDate: existingExpense.endDate,
+              }
+            : rangeForStoryItem(item)),
         });
       }
     } catch (error) {
@@ -1483,7 +1770,7 @@ export function PlannerDayCard({
     setExpenseError(null);
 
     try {
-      await createLedgerEntry({
+      const payload = {
         journeyId: tripId,
         itineraryEventId: pendingExpense.itineraryEventId,
         itineraryReservationId: pendingExpense.itineraryReservationId,
@@ -1504,7 +1791,15 @@ export function PlannerDayCard({
         participantMemberIds:
           pendingExpense.participantMemberIds,
         addressText: pendingExpense.addressText,
-      });
+      };
+      if (pendingExpense.ledgerEntryId) {
+        await updateLedgerEntry({
+          ...payload,
+          id: pendingExpense.ledgerEntryId,
+        });
+      } else {
+        await createLedgerEntry(payload);
+      }
       setPendingExpense(null);
       onLedgerEntryCreated?.();
     } catch (error) {
@@ -1517,14 +1812,11 @@ export function PlannerDayCard({
   return (
     <article className="overflow-hidden rounded-[28px] border border-stone-200 bg-white shadow-sm">
       <header className="bg-[#fff8ec] p-4 sm:p-5">
-        <div className="grid grid-cols-[72px_1fr] gap-3">
+        <div className="grid grid-cols-[72px_1fr_auto] gap-3">
           <div className="grid h-[88px] place-items-center rounded-2xl bg-emerald-800 text-white shadow-sm">
             <div className="text-center">
-              <p className="text-[11px] font-bold uppercase tracking-[0.16em]">
-                {t("planner.day.label")}
-              </p>
               <p className="text-3xl font-semibold leading-none">
-                {dayTag || dayNumber}
+                {dayTag ?? `D${dayNumber}`}
               </p>
             </div>
           </div>
@@ -1546,6 +1838,29 @@ export function PlannerDayCard({
               {dayLocation(plannerDay) ?? t("planner.location.tbd")}
             </p>
           </div>
+          {mapHref ? (
+            <Link
+              href={mapHref}
+              className="grid size-10 shrink-0 place-items-center rounded-xl bg-white text-emerald-800 shadow-sm ring-1 ring-emerald-100"
+              title={t("map.openMap")}
+              aria-label={t("map.openMap")}
+            >
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                className="size-5"
+                fill="none"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+              >
+                <path d="M9 18l-6 3V6l6-3 6 3 6-3v15l-6 3-6-3z" />
+                <path d="M9 3v15" />
+                <path d="M15 6v15" />
+              </svg>
+            </Link>
+          ) : null}
         </div>
 
       </header>
@@ -1625,12 +1940,20 @@ export function PlannerDayCard({
                   />
                   <button
                     type="button"
+                    onClick={() => openItemCapture(stayItem)}
+                    className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-lg font-semibold text-stone-500"
+                    title="Capture"
+                  >
+                    +
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => fileInputRefs.current[stayItem.id]?.click()}
                     disabled={preparingAttachmentId === stayItem.id}
-                    className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-lg font-semibold text-stone-500"
+                    className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-[10px] font-black text-stone-500"
                     title={t("memory.attachImage")}
                   >
-                    {preparingAttachmentId === stayItem.id ? "..." : "+"}
+                    {preparingAttachmentId === stayItem.id ? "..." : "IMG"}
                   </button>
                   <textarea
                     value={memoryTextByItem[stayItem.id] ?? ""}
@@ -1645,9 +1968,36 @@ export function PlannerDayCard({
                     className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm leading-5 text-stone-950 outline-none focus:border-amber-300"
                   />
                   <button
+                    type="button"
+                    onClick={() => void toggleInlineVoice(stayItem.id)}
+                    disabled={
+                      savingMemoryId === stayItem.id ||
+                      (Boolean(transcribingMemoryId) &&
+                        transcribingMemoryId !== stayItem.id) ||
+                      (voiceRecorder.isRecording &&
+                        recordingMemoryId !== stayItem.id)
+                    }
+                    className={`grid size-9 shrink-0 place-items-center rounded-full text-stone-500 disabled:text-stone-300 ${
+                      recordingMemoryId === stayItem.id
+                        ? "bg-red-600 text-white"
+                        : transcribingMemoryId === stayItem.id
+                          ? "bg-amber-50 text-amber-700"
+                          : "bg-stone-100"
+                    }`}
+                    title={t("planner.voiceInput")}
+                    aria-label={t("planner.voiceInput")}
+                  >
+                    {transcribingMemoryId === stayItem.id ? (
+                      <span className="text-xs font-bold">...</span>
+                    ) : (
+                      <MicrophoneIcon />
+                    )}
+                  </button>
+                  <button
                     type="submit"
                     disabled={
                       savingMemoryId === stayItem.id ||
+                      transcribingMemoryId === stayItem.id ||
                       (!attachmentByItem[stayItem.id] &&
                         !(memoryTextByItem[stayItem.id] ?? "").trim())
                     }
@@ -1752,7 +2102,9 @@ export function PlannerDayCard({
                       {t("planner.expense.detected")}
                     </p>
                     <h4 className="mt-1 font-semibold text-stone-950">
-                      {t("planner.expense.addStay")}
+                      {pendingExpense.ledgerEntryId
+                        ? t("planner.expense.updateStay")
+                        : t("planner.expense.addStay")}
                     </h4>
                   </div>
                   <button
@@ -1900,7 +2252,9 @@ export function PlannerDayCard({
                   >
                       {savingExpenseId === pendingExpense.itemId
                       ? t("common.adding")
-                      : t("planner.expense.addToLedger")}
+                      : pendingExpense.ledgerEntryId
+                        ? t("planner.expense.updateLedger")
+                        : t("planner.expense.addToLedger")}
                   </button>
                 </div>
                 {expenseError ? (
@@ -1934,11 +2288,7 @@ export function PlannerDayCard({
               {canManagePlans && day.dayDate !== "unscheduled" ? (
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsAddingPlan(true);
-                    setDraftPlan(null);
-                    setPlanError(null);
-                  }}
+                  onClick={openDayPlannerCapture}
                   className="grid size-8 place-items-center rounded-full bg-emerald-700 text-lg font-bold leading-none text-white shadow-sm"
                   title={t("planner.addSchedule")}
                 >
@@ -2080,14 +2430,22 @@ export function PlannerDayCard({
                             />
                             <button
                               type="button"
+                              onClick={() => openItemCapture(item)}
+                              className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-lg font-semibold text-stone-500"
+                              title="Capture"
+                            >
+                              +
+                            </button>
+                            <button
+                              type="button"
                               onClick={() =>
                                 fileInputRefs.current[item.id]?.click()
                               }
                               disabled={preparingAttachmentId === item.id}
-                              className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-lg font-semibold text-stone-500"
+                              className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-[10px] font-black text-stone-500"
                               title={t("memory.attachImage")}
                             >
-                              {preparingAttachmentId === item.id ? "..." : "+"}
+                              {preparingAttachmentId === item.id ? "..." : "IMG"}
                             </button>
                             <textarea
                               value={memoryTextByItem[item.id] ?? ""}
@@ -2103,15 +2461,35 @@ export function PlannerDayCard({
                             />
                             <button
                               type="button"
-                              className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-xs font-bold text-stone-500"
+                              onClick={() => void toggleInlineVoice(item.id)}
+                              disabled={
+                                savingMemoryId === item.id ||
+                                (Boolean(transcribingMemoryId) &&
+                                  transcribingMemoryId !== item.id) ||
+                                (voiceRecorder.isRecording &&
+                                  recordingMemoryId !== item.id)
+                              }
+                              className={`grid size-9 shrink-0 place-items-center rounded-full text-stone-500 disabled:text-stone-300 ${
+                                recordingMemoryId === item.id
+                                  ? "bg-red-600 text-white"
+                                  : transcribingMemoryId === item.id
+                                    ? "bg-emerald-50 text-emerald-700"
+                                    : "bg-stone-100"
+                              }`}
                               title={t("planner.voiceInput")}
+                              aria-label={t("planner.voiceInput")}
                             >
-                              {t("planner.mic")}
+                              {transcribingMemoryId === item.id ? (
+                                <span className="text-xs font-bold">...</span>
+                              ) : (
+                                <MicrophoneIcon />
+                              )}
                             </button>
                             <button
                               type="submit"
                               disabled={
                                 savingMemoryId === item.id ||
+                                transcribingMemoryId === item.id ||
                                 (!attachmentByItem[item.id] &&
                                   !(memoryTextByItem[item.id] ?? "").trim())
                               }
@@ -2188,7 +2566,9 @@ export function PlannerDayCard({
                                 {t("planner.expense.detected")}
                               </p>
                               <h4 className="mt-1 font-semibold text-stone-950">
-                                {t("planner.expense.addThis")}
+                                {pendingExpense.ledgerEntryId
+                                  ? t("planner.expense.updateThis")
+                                  : t("planner.expense.addThis")}
                               </h4>
                             </div>
                             <button
@@ -2419,7 +2799,9 @@ export function PlannerDayCard({
                             >
                               {savingExpenseId === pendingExpense.itemId
                                 ? t("common.adding")
-                                : t("planner.expense.addToLedger")}
+                                : pendingExpense.ledgerEntryId
+                                  ? t("planner.expense.updateLedger")
+                                  : t("planner.expense.addToLedger")}
                             </button>
                           </div>
                           {expenseError ? (

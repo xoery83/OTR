@@ -53,6 +53,15 @@ input[type="date"] {
   border: 0;
 }
 
+.otr-route-pane {
+  opacity: 1;
+  transition: opacity 120ms ease;
+}
+
+.otr-route-pane-hidden {
+  opacity: 0;
+}
+
 .otr-map-marker {
   display: inline-flex;
   max-width: 112px;
