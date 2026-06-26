@@ -74,6 +74,32 @@ function timeValue(value: string | null) {
   return Number.isNaN(time) ? null : time;
 }
 
+function dateValue(value: string | null) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}/.test(value)) return null;
+  return value.slice(0, 10);
+}
+
+function addDateDays(value: string, days: number) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function getDatesInRange(startValue: string | null, endValue: string | null) {
+  const startDate = dateValue(startValue);
+  const endDate = dateValue(endValue);
+  if (!startDate) return [];
+  if (!endDate || endDate < startDate) return [startDate];
+
+  const dates: string[] = [];
+  let current = startDate;
+  while (current <= endDate && dates.length < 370) {
+    dates.push(current);
+    current = addDateDays(current, 1);
+  }
+  return dates;
+}
+
 function getReservationValidationNotes(reservations: ParsedReservationDraft[]) {
   const notes: string[] = [];
   const flights = reservations.filter((item) => item.reservation_type === "flight");
@@ -110,7 +136,19 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
   const [trip, setTrip] = useState<Trip | null>(null);
   const [members, setMembers] = useState<TripMember[]>([]);
   const [existingEvents, setExistingEvents] = useState<ItineraryEvent[]>([]);
-  const [rawText, setRawText] = useState("");
+  const [rawText, setRawText] = useState(() => {
+    if (typeof window === "undefined") return "";
+
+    const storedDraft = window.localStorage.getItem(
+      `otr:planner-import-draft:${tripId}`,
+    );
+
+    if (storedDraft) {
+      window.localStorage.removeItem(`otr:planner-import-draft:${tripId}`);
+    }
+
+    return storedDraft ?? "";
+  });
   const [drafts, setDrafts] = useState<ParsedItineraryDraft[]>([]);
   const [reservationDrafts, setReservationDrafts] = useState<
     ParsedReservationDraft[]
@@ -160,6 +198,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
     currentMember?.role === "owner" ||
     currentMember?.role === "admin" ||
     trip?.createdBy === currentUserId;
+  const hasDrafts = drafts.length > 0 || reservationDrafts.length > 0;
 
   function recomputeWarnings(nextDrafts: ParsedItineraryDraft[]) {
     return addConflictWarnings(
@@ -177,6 +216,17 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
         current.map((draft) =>
           draft.clientId === clientId ? { ...draft, ...patch } : draft,
         ),
+      ),
+    );
+  }
+
+  function updateReservationDraft(
+    clientId: string,
+    patch: Partial<ParsedReservationDraft>,
+  ) {
+    setReservationDrafts((current) =>
+      current.map((item) =>
+        item.clientId === clientId ? { ...item, ...patch } : item,
       ),
     );
   }
@@ -258,18 +308,24 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
         { title: string | null; notes: string | null }
       >();
 
-      [...reservationDrafts, ...importable].forEach((draft) => {
+      reservationDrafts.forEach((reservation) => {
+        const dates = getDatesInRange(reservation.starts_at, reservation.ends_at);
+        (dates.length > 0 ? dates : reservation.day_date ? [reservation.day_date] : [])
+          .forEach((date) => {
+            const existing = dayInputs.get(date);
+            dayInputs.set(date, {
+              title: existing?.title || null,
+              notes: existing?.notes || null,
+            });
+          });
+      });
+
+      importable.forEach((draft) => {
         if (!draft.day_date) return;
         const existing = dayInputs.get(draft.day_date);
         dayInputs.set(draft.day_date, {
-          title:
-            "day_title" in draft
-              ? draft.day_title || existing?.title || null
-              : existing?.title || null,
-          notes:
-            "day_notes" in draft
-              ? draft.day_notes || existing?.notes || null
-              : existing?.notes || null,
+          title: draft.day_title || existing?.title || null,
+          notes: draft.day_notes || existing?.notes || null,
         });
       });
 
@@ -394,6 +450,25 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
         </button>
       </form>
 
+      {hasDrafts ? (
+        <section className="flex flex-col gap-3 rounded-3xl border border-emerald-100 bg-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-emerald-800">Review ready</p>
+            <p className="text-sm text-emerald-900">
+              {drafts.length} events and {reservationDrafts.length} reservations ready to import.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={importDrafts}
+            disabled={isImporting}
+            className="rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:bg-stone-300"
+          >
+            {isImporting ? "Importing..." : "Confirm import"}
+          </button>
+        </section>
+      ) : null}
+
       {aiWarnings.length > 0 ? (
         <section className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-800">
           <p className="font-bold">AI notes</p>
@@ -414,14 +489,6 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                 {drafts.length} draft events
               </h2>
             </div>
-            <button
-              type="button"
-              onClick={importDrafts}
-              disabled={isImporting}
-              className="rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:bg-stone-300"
-            >
-              {isImporting ? "Importing..." : "Import to Planner"}
-            </button>
           </div>
 
           {drafts.map((draft) => {
@@ -698,13 +765,9 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                   <input
                     value={reservation.title}
                     onChange={(event) =>
-                      setReservationDrafts((current) =>
-                        current.map((item) =>
-                          item.clientId === reservation.clientId
-                            ? { ...item, title: event.target.value }
-                            : item,
-                        ),
-                      )
+                      updateReservationDraft(reservation.clientId, {
+                        title: event.target.value,
+                      })
                     }
                     className="w-full rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-lg font-semibold text-stone-950"
                   />
@@ -725,17 +788,9 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                 <select
                   value={reservation.reservation_type}
                   onChange={(event) =>
-                    setReservationDrafts((current) =>
-                      current.map((item) =>
-                        item.clientId === reservation.clientId
-                          ? {
-                              ...item,
-                              reservation_type: event.target
-                                .value as ItineraryReservationType,
-                            }
-                          : item,
-                      ),
-                    )
+                    updateReservationDraft(reservation.clientId, {
+                      reservation_type: event.target.value as ItineraryReservationType,
+                    })
                   }
                   className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
                 >
@@ -748,18 +803,51 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                 <input
                   value={reservation.location_name ?? ""}
                   onChange={(event) =>
-                    setReservationDrafts((current) =>
-                      current.map((item) =>
-                        item.clientId === reservation.clientId
-                          ? { ...item, location_name: event.target.value || null }
-                          : item,
-                      ),
-                    )
+                    updateReservationDraft(reservation.clientId, {
+                      location_name: event.target.value || null,
+                    })
                   }
                   placeholder="Location"
                   className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
                 />
+                <input
+                  type="datetime-local"
+                  value={toInputDateTime(reservation.starts_at)}
+                  onChange={(event) =>
+                    updateReservationDraft(reservation.clientId, {
+                      day_date: event.target.value
+                        ? event.target.value.slice(0, 10)
+                        : reservation.day_date,
+                      starts_at: event.target.value
+                        ? new Date(event.target.value).toISOString()
+                        : null,
+                    })
+                  }
+                  className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
+                />
+                <input
+                  type="datetime-local"
+                  value={toInputDateTime(reservation.ends_at)}
+                  onChange={(event) =>
+                    updateReservationDraft(reservation.clientId, {
+                      ends_at: event.target.value
+                        ? new Date(event.target.value).toISOString()
+                        : null,
+                    })
+                  }
+                  className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
+                />
               </div>
+              {reservation.starts_at || reservation.ends_at ? (
+                <p className="text-sm font-medium text-stone-600">
+                  {reservation.starts_at
+                    ? `Starts ${formatDateTime(reservation.starts_at)}`
+                    : "Start time missing"}
+                  {reservation.ends_at
+                    ? ` · Ends ${formatDateTime(reservation.ends_at)}`
+                    : " · End time missing"}
+                </p>
+              ) : null}
               {reservation.source_excerpt ? (
                 <p className="rounded-xl bg-stone-50 p-3 text-xs leading-5 text-stone-600">
                   Source: {reservation.source_excerpt}

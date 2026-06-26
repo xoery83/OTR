@@ -8,7 +8,9 @@ import type { TranslationKey } from "@/lib/i18n/dictionaries";
 type NavIcon =
   | "home"
   | "journeys"
+  | "discover"
   | "people"
+  | "account"
   | "profile"
   | "overview"
   | "planner"
@@ -57,6 +59,13 @@ function Icon({ name }: { name: NavIcon }) {
           <path d="M4 17h16" />
         </svg>
       );
+    case "discover":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="m15 9-2 5-5 2 2-5 5-2Z" />
+        </svg>
+      );
     case "people":
       return (
         <svg {...common}>
@@ -67,6 +76,7 @@ function Icon({ name }: { name: NavIcon }) {
         </svg>
       );
     case "profile":
+    case "account":
       return (
         <svg {...common}>
           <circle cx="12" cy="8" r="4" />
@@ -152,10 +162,11 @@ export function SidebarNav() {
   const { t } = useI18n();
   const tripId = getActiveTripId(pathname);
   const mainItems: NavItem[] = [
-    { labelKey: "nav.home", href: "/?home=1", icon: "home" },
     { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
-    { labelKey: "nav.people", href: "/people", icon: "people" },
-    { labelKey: "nav.profile", href: "/profile", icon: "profile" },
+    { labelKey: "nav.discover", href: "/discover", icon: "discover" },
+    { labelKey: "nav.capture", href: "/capture", icon: "capture" },
+    { labelKey: "nav.account", href: "/profile", icon: "account" },
+    { labelKey: "nav.settings", href: "/settings", icon: "settings" },
   ];
   const journeyItems: NavItem[] = tripId
     ? [
@@ -164,6 +175,7 @@ export function SidebarNav() {
         { labelKey: "nav.capture", href: `/trips/${tripId}/capture`, icon: "capture" },
         { labelKey: "nav.map", href: `/trips/${tripId}/map`, icon: "map" },
         { labelKey: "nav.ledger", href: `/trips/${tripId}/ledger`, icon: "ledger" },
+        { labelKey: "nav.people", href: `/trips/${tripId}/people`, icon: "people" },
         {
           labelKey: "nav.timeline",
           href: `/trips/${tripId}/timeline`,
@@ -217,7 +229,7 @@ export function SidebarNav() {
 
   return (
     <aside className="fixed left-0 top-0 z-40 hidden h-screen w-20 border-r border-emerald-100 bg-[#fffdf8] px-3 py-5 md:block">
-      <Link href="/?home=1" className="grid place-items-center" title="OTR">
+      <Link href="/trips" className="grid place-items-center" title="OTR">
         <span className="grid size-10 place-items-center rounded-xl bg-emerald-700 text-sm font-bold text-white">
           O
         </span>

@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/components/I18nProvider";
-import { LiveLocationToggle } from "@/components/LiveLocationToggle";
 import { logout } from "@/lib/supabase/auth";
 import { getTrip } from "@/lib/supabase/trips";
 
@@ -52,7 +51,7 @@ export function AppHeader() {
   return (
     <>
       <header className="sticky top-0 z-20 border-b border-emerald-100 bg-[#fffdf8]/95 backdrop-blur md:hidden">
-        <div className="mx-auto flex h-16 w-full max-w-3xl items-center justify-between px-5">
+        <div className="relative mx-auto flex h-16 w-full max-w-3xl items-center justify-between px-5">
           <button
             type="button"
             onClick={() => setIsMenuOpen(true)}
@@ -62,7 +61,7 @@ export function AppHeader() {
             <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-emerald-700 text-sm font-bold text-white">
               O
             </span>
-            <div className="min-w-0">
+            <div className="hidden min-w-0 min-[380px]:block">
               <p className="text-lg font-semibold tracking-wide text-stone-950">
                 OTR
               </p>
@@ -71,15 +70,15 @@ export function AppHeader() {
               </p>
             </div>
           </button>
-          <div className="flex min-w-0 items-center gap-2">
-            {tripId ? <LiveLocationToggle tripId={tripId} compact /> : null}
-            <Link
-              href="/trips"
-              className="max-w-[34vw] truncate rounded-full bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm"
-            >
-              {journeyName ? `${journeyName} ▾` : t("nav.journeys")}
-            </Link>
-          </div>
+          <p className="pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-sm font-black text-stone-900">
+            {tripId ? journeyName || t("common.journey") : "OTR"}
+          </p>
+          <Link
+            href="/trips"
+            className="shrink-0 rounded-full bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm"
+          >
+            {t("nav.journeys")}
+          </Link>
         </div>
       </header>
 
@@ -130,12 +129,11 @@ export function AppHeader() {
             <nav className="mt-7 grid gap-2">
               {(
                 [
-                  ["nav.profile", "/profile"],
+                  ["nav.journeys", "/trips"],
+                  ["nav.discover", "/discover"],
+                  ["nav.capture", "/capture"],
+                  ["nav.account", "/profile"],
                   ["nav.settings", "/settings"],
-                  ["nav.notifications", "/settings"],
-                  ["nav.syncStatus", "/settings"],
-                  ["nav.offlineData", "/settings"],
-                  ["nav.help", "/settings"],
                 ] as const
               ).map(([labelKey, href]) => (
                 <Link

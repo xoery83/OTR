@@ -10,9 +10,10 @@ import {
   useState,
 } from "react";
 import { useI18n } from "@/components/I18nProvider";
+import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
 import type { PlannerV2Day } from "@/lib/supabase/planner-v2";
 import { getApproxExchangeRate } from "@/lib/exchange-rates";
-import { formatDayLabel, formatTime, toDateTimeLocalValue } from "@/lib/format";
+import { formatTime, toDateTimeLocalValue } from "@/lib/format";
 import { getErrorMessage } from "@/lib/errors";
 import { compressImageFile, type CompressedImage } from "@/lib/images";
 import { getCurrentUser } from "@/lib/supabase/auth";
@@ -120,27 +121,27 @@ type DraftPlanItem = {
   description: string;
 };
 
-const bookingLabels: Record<string, string> = {
-  flight: "Flight",
-  hotel: "Stay",
-  car: "Car",
-  ferry: "Ferry",
-  tour: "Tour",
-  restaurant: "Dining",
-  other: "Booking",
+const bookingLabelKeys: Partial<Record<string, TranslationKey>> = {
+  flight: "planner.booking.flight",
+  hotel: "planner.booking.hotel",
+  car: "planner.booking.car",
+  ferry: "planner.booking.ferry",
+  tour: "planner.booking.tour",
+  restaurant: "planner.booking.restaurant",
+  other: "planner.booking.other",
 };
 
-const expenseCategories: { value: LedgerCategory; label: string }[] = [
-  { value: "flight", label: "Flight" },
-  { value: "hotel", label: "Hotel" },
-  { value: "car", label: "Car" },
-  { value: "fuel", label: "Fuel" },
-  { value: "food", label: "Food" },
-  { value: "ticket", label: "Ticket" },
-  { value: "shopping", label: "Shopping" },
-  { value: "transport", label: "Transport" },
-  { value: "insurance", label: "Insurance" },
-  { value: "other", label: "Other" },
+const expenseCategories: LedgerCategory[] = [
+  "flight",
+  "hotel",
+  "car",
+  "fuel",
+  "food",
+  "ticket",
+  "shopping",
+  "transport",
+  "insurance",
+  "other",
 ];
 
 const expenseCurrencies = ["ISK", "NZD", "DKK", "EUR", "CNY", "USD", "GBP"];
@@ -171,6 +172,38 @@ const itemStatuses: ItineraryItemStatus[] = [
   "skipped",
 ];
 
+const eventLabelKeys: Partial<Record<string, TranslationKey>> = {
+  flight: "planner.event.flight",
+  hotel: "planner.event.hotel",
+  car: "planner.event.car",
+  activity: "planner.event.activity",
+  shopping: "planner.event.shopping",
+  meal: "planner.event.meal",
+  transport: "planner.event.transport",
+  note: "planner.event.note",
+  other: "planner.event.other",
+};
+
+const expenseCategoryLabelKeys: Record<LedgerCategory, TranslationKey> = {
+  flight: "planner.expense.flight",
+  hotel: "planner.expense.hotel",
+  car: "planner.expense.car",
+  fuel: "planner.expense.fuel",
+  food: "planner.expense.food",
+  ticket: "planner.expense.ticket",
+  shopping: "planner.expense.shopping",
+  transport: "planner.expense.transport",
+  insurance: "planner.expense.insurance",
+  other: "planner.expense.other",
+};
+
+const statusLabelKeys: Record<ItineraryItemStatus, TranslationKey> = {
+  planned: "planner.status.planned",
+  cancelled: "planner.status.cancelled",
+  completed: "planner.status.completed",
+  skipped: "planner.status.skipped",
+};
+
 function mapsHref(location: string | null) {
   if (!location) return null;
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(location)}`;
@@ -182,7 +215,7 @@ function dayLocation(plannerDay: PlannerV2Day) {
     ...plannerDay.reservations.map((item) => item.locationName),
   ].filter((location): location is string => Boolean(location));
 
-  return [...new Set(locations)][0] ?? "Location TBD";
+  return [...new Set(locations)][0] ?? null;
 }
 
 function tonightStay(plannerDay: PlannerV2Day) {
@@ -223,7 +256,7 @@ function storyItems(plannerDay: PlannerV2Day): StoryItem[] {
         title: item.title,
         detail: item.provider || item.confirmationCode || null,
         location: item.locationName,
-        kind: bookingLabels[item.reservationType] ?? item.reservationType,
+        kind: item.reservationType,
         note: item.sourceText,
         itineraryEventId: null,
         itineraryReservationId: item.id,
@@ -269,16 +302,22 @@ function storyItems(plannerDay: PlannerV2Day): StoryItem[] {
 
 function groupedBookings(plannerDay: PlannerV2Day) {
   return Object.entries(
-    plannerDay.reservations.reduce<Record<string, typeof plannerDay.reservations>>(
-      (groups, reservation) => {
+    plannerDay.reservations
+      .filter((reservation) => {
+        if (reservation.reservationType === "hotel") return true;
+        return shouldShowInStory(
+          plannerDay.day.dayDate,
+          reservation.startsAt,
+          reservation.endsAt,
+        );
+      })
+      .reduce<Record<string, typeof plannerDay.reservations>>((groups, reservation) => {
         groups[reservation.reservationType] = [
           ...(groups[reservation.reservationType] ?? []),
           reservation,
         ];
         return groups;
-      },
-      {},
-    ),
+      }, {}),
   );
 }
 
@@ -290,12 +329,39 @@ function SectionTitle({ title }: { title: string }) {
   );
 }
 
-function money(amount: number, currency: string) {
-  return new Intl.NumberFormat("en", {
+function money(amount: number, currency: string, locale: Locale) {
+  return new Intl.NumberFormat(locale === "zh-CN" ? "zh-CN" : "en", {
     style: "currency",
     currency,
     maximumFractionDigits: 0,
   }).format(amount);
+}
+
+function formatPlannerDayLabel(value: string, locale: Locale) {
+  const date = new Date(`${value}T00:00:00`);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  const sameDate = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+
+  const formatted = new Intl.DateTimeFormat(locale === "zh-CN" ? "zh-CN" : "en", {
+    month: "short",
+    day: "numeric",
+  }).format(date);
+
+  if (sameDate(date, today)) {
+    return locale === "zh-CN" ? `今天 · ${formatted}` : `Today · ${formatted}`;
+  }
+
+  if (sameDate(date, yesterday)) {
+    return locale === "zh-CN" ? `昨天 · ${formatted}` : `Yesterday · ${formatted}`;
+  }
+
+  return formatted;
 }
 
 function daysBetweenInclusive(startDate: string, endDate: string) {
@@ -682,10 +748,12 @@ export function PlannerDayCard({
   onLedgerEntryCreated?: () => void;
   onPlannerChanged?: () => void;
 }) {
-  const { t } = useI18n();
-  const { day, dayNumber, memories } = plannerDay;
+  const { locale, t } = useI18n();
+  const { day, dayNumber, dayTag, memories } = plannerDay;
   const dayLabel =
-    day.dayDate === "unscheduled" ? "Unscheduled" : formatDayLabel(day.dayDate);
+    day.dayDate === "unscheduled"
+      ? t("planner.day.unscheduled")
+      : formatPlannerDayLabel(day.dayDate, locale);
   const stay = tonightStay(plannerDay);
   const stayMapsHref = mapsHref(stay?.locationName ?? null);
   const stayItem: StoryItem | null = stay
@@ -695,7 +763,7 @@ export function PlannerDayCard({
         title: stay.title,
         detail: stay.provider || stay.confirmationCode || null,
         location: stay.locationName,
-        kind: "Stay",
+        kind: "hotel",
         note: stay.sourceText,
         itineraryEventId: null,
         itineraryReservationId: stay.id,
@@ -987,10 +1055,31 @@ export function PlannerDayCard({
 
   function itemSubtitle(item: StoryItem) {
     const total = ledgerTotalForItem(item);
-    const label = item.detail || item.location || item.kind;
+    const label = item.detail || item.location || labelForItemKind(item.kind);
     return total > 0
-      ? `${label} · ${money(total, ledgerCurrency)}`
+      ? `${label} · ${money(total, ledgerCurrency, locale)}`
       : label;
+  }
+
+  function labelForItemKind(value: string) {
+    const key = bookingLabelKeys[value] ?? eventLabelKeys[value];
+    return key ? t(key) : value;
+  }
+
+  function labelForExpenseCategory(value: LedgerCategory) {
+    return t(expenseCategoryLabelKeys[value]);
+  }
+
+  function labelForEventType(value: ItineraryEventType) {
+    return t(eventLabelKeys[value] ?? "planner.event.other");
+  }
+
+  function labelForReservationType(value: ItineraryReservationType) {
+    return t(bookingLabelKeys[value] ?? "planner.booking.other");
+  }
+
+  function labelForStatus(value: ItineraryItemStatus) {
+    return t(statusLabelKeys[value]);
   }
 
   function startEditItem(item: StoryItem) {
@@ -1054,7 +1143,7 @@ export function PlannerDayCard({
       setEditingItem(null);
       await onPlannerChanged?.();
     } catch (error) {
-      setPlanError(getErrorMessage(error, "Could not update plan item."));
+      setPlanError(getErrorMessage(error, t("planner.error.updateItem")));
     } finally {
       setIsSavingPlan(false);
     }
@@ -1062,7 +1151,9 @@ export function PlannerDayCard({
 
   async function deleteEditingItem() {
     if (!editingItem) return;
-    const confirmed = globalThis.confirm(`Delete "${editingItem.title}" from planner?`);
+    const confirmed = globalThis.confirm(
+      t("planner.confirm.delete", { title: editingItem.title }),
+    );
     if (!confirmed) return;
 
     setIsSavingPlan(true);
@@ -1077,7 +1168,7 @@ export function PlannerDayCard({
       setEditingItem(null);
       await onPlannerChanged?.();
     } catch (error) {
-      setPlanError(getErrorMessage(error, "Could not delete plan item."));
+      setPlanError(getErrorMessage(error, t("planner.error.deleteItem")));
     } finally {
       setIsSavingPlan(false);
     }
@@ -1094,7 +1185,7 @@ export function PlannerDayCard({
     if (query === null) return [];
 
     return [
-      { id: "all", label: "所有人" },
+      { id: "all", label: t("planner.mentions.everyone") },
       ...activeMembers().map((member) => ({
         id: member.id,
         label: member.displayName,
@@ -1145,7 +1236,7 @@ export function PlannerDayCard({
     } catch (error) {
       setMemoryErrorByItem((current) => ({
         ...current,
-        [itemId]: getErrorMessage(error, "Could not prepare this image."),
+        [itemId]: getErrorMessage(error, t("planner.error.prepareImage")),
       }));
     } finally {
       setPreparingAttachmentId(null);
@@ -1223,7 +1314,7 @@ export function PlannerDayCard({
       setDraftPlan(null);
       await onPlannerChanged?.();
     } catch (error) {
-      setPlanError(getErrorMessage(error, "Could not add plan item."));
+      setPlanError(getErrorMessage(error, t("planner.error.addItem")));
     } finally {
       setIsSavingPlan(false);
     }
@@ -1363,7 +1454,7 @@ export function PlannerDayCard({
     } catch (error) {
       setMemoryErrorByItem((current) => ({
         ...current,
-        [item.id]: getErrorMessage(error, "Could not save memory."),
+        [item.id]: getErrorMessage(error, t("planner.error.saveMemory")),
       }));
     } finally {
       setSavingMemoryId(null);
@@ -1417,7 +1508,7 @@ export function PlannerDayCard({
       setPendingExpense(null);
       onLedgerEntryCreated?.();
     } catch (error) {
-      setExpenseError(getErrorMessage(error, "Could not add expense."));
+      setExpenseError(getErrorMessage(error, t("planner.error.addExpense")));
     } finally {
       setSavingExpenseId(null);
     }
@@ -1430,9 +1521,11 @@ export function PlannerDayCard({
           <div className="grid h-[88px] place-items-center rounded-2xl bg-emerald-800 text-white shadow-sm">
             <div className="text-center">
               <p className="text-[11px] font-bold uppercase tracking-[0.16em]">
-                Day
+                {t("planner.day.label")}
               </p>
-              <p className="text-3xl font-semibold leading-none">{dayNumber}</p>
+              <p className="text-3xl font-semibold leading-none">
+                {dayTag || dayNumber}
+              </p>
             </div>
           </div>
           <div className="min-w-0">
@@ -1440,15 +1533,17 @@ export function PlannerDayCard({
               <p className="text-sm font-bold text-emerald-800">{dayLabel}</p>
               {ledgerTotal > 0 ? (
                 <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-900">
-                  Day cost {money(ledgerTotal, ledgerCurrency)}
+                  {t("planner.day.cost", {
+                    amount: money(ledgerTotal, ledgerCurrency, locale),
+                  })}
                 </span>
               ) : null}
             </div>
             <h2 className="mt-1 text-xl font-semibold leading-tight text-stone-950">
-              {day.title || "Open travel day"}
+              {day.title || t("planner.day.open")}
             </h2>
             <p className="mt-2 truncate text-sm text-stone-600">
-              {dayLocation(plannerDay)}
+              {dayLocation(plannerDay) ?? t("planner.location.tbd")}
             </p>
           </div>
         </div>
@@ -1461,7 +1556,7 @@ export function PlannerDayCard({
             <summary className="grid cursor-pointer list-none grid-cols-[1fr_auto] gap-3">
               <div className="min-w-0">
                 <p className="text-xs font-bold uppercase tracking-wide text-amber-800">
-                  Tonight
+                  {t("planner.tonight")}
                 </p>
                 <h3 className="mt-1 truncate text-base font-semibold text-stone-950">
                   {stay.title}
@@ -1473,8 +1568,8 @@ export function PlannerDayCard({
                 ) : null}
               </div>
               <span className="pt-1 text-xs font-bold text-amber-800">
-                <span className="group-open:hidden">Open</span>
-                <span className="hidden group-open:inline">Close</span>
+                <span className="group-open:hidden">{t("common.open")}</span>
+                <span className="hidden group-open:inline">{t("common.close")}</span>
               </span>
             </summary>
             <div className="mt-3 rounded-xl bg-white p-3 text-sm leading-6 text-stone-600">
@@ -1490,7 +1585,9 @@ export function PlannerDayCard({
                       {stay.locationName}
                     </a>
                   ) : (
-                    <span className="text-stone-400">Location TBD</span>
+                    <span className="text-stone-400">
+                      {t("planner.location.tbd")}
+                    </span>
                   )}
                 </div>
                 {canManagePlans ? (
@@ -1498,7 +1595,7 @@ export function PlannerDayCard({
                     type="button"
                     onClick={() => startEditItem(stayItem)}
                     className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-50 shadow-sm"
-                    title="Modify booking"
+                    title={t("planner.modify.booking")}
                   >
                     <Image
                       src="/icons/modify.png"
@@ -1544,7 +1641,7 @@ export function PlannerDayCard({
                       }))
                     }
                     rows={1}
-                    placeholder="Add stay memory, @someone, or expense..."
+                    placeholder={t("planner.memory.placeholderStay")}
                     className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm leading-5 text-stone-950 outline-none focus:border-amber-300"
                   />
                   <button
@@ -1555,9 +1652,9 @@ export function PlannerDayCard({
                         !(memoryTextByItem[stayItem.id] ?? "").trim())
                     }
                     className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300"
-                    title="Save memory"
+                    title={t("planner.memory.save")}
                   >
-                    {savingMemoryId === stayItem.id ? "..." : "Go"}
+                    {savingMemoryId === stayItem.id ? "..." : t("common.go")}
                   </button>
                 </div>
                 {attachmentByItem[stayItem.id] ? (
@@ -1626,7 +1723,7 @@ export function PlannerDayCard({
                     className="rounded-2xl bg-white px-3 py-2"
                   >
                     <p className="text-xs font-semibold text-emerald-800">
-                      {memory.contributorName || "Traveler"}
+                      {memory.contributorName || t("planner.traveler")}
                     </p>
                     {memory.type === "photo" &&
                     memory.mediaUrl &&
@@ -1652,10 +1749,10 @@ export function PlannerDayCard({
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-xs font-bold uppercase tracking-[0.14em] text-amber-800">
-                      Expense detected
+                      {t("planner.expense.detected")}
                     </p>
                     <h4 className="mt-1 font-semibold text-stone-950">
-                      Add stay cost to ledger?
+                      {t("planner.expense.addStay")}
                     </h4>
                   </div>
                   <button
@@ -1663,13 +1760,13 @@ export function PlannerDayCard({
                     onClick={() => setPendingExpense(null)}
                     className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-500"
                   >
-                    Dismiss
+                    {t("common.dismiss")}
                   </button>
                 </div>
                 <div className="mt-3 grid grid-cols-[1fr_96px_1fr] gap-2">
                   <label className="space-y-1">
                     <span className="text-xs font-bold text-stone-700">
-                      Amount
+                      {t("planner.field.amount")}
                     </span>
                     <input
                       value={pendingExpense.amount}
@@ -1684,7 +1781,7 @@ export function PlannerDayCard({
                   </label>
                   <label className="space-y-1">
                     <span className="text-xs font-bold text-stone-700">
-                      Currency
+                      {t("planner.field.currency")}
                     </span>
                     <select
                       value={pendingExpense.currency}
@@ -1706,7 +1803,7 @@ export function PlannerDayCard({
                   </label>
                   <label className="space-y-1">
                     <span className="text-xs font-bold text-stone-700">
-                      Rate to {ledgerBaseCurrency}
+                      {t("planner.field.rateTo", { currency: ledgerBaseCurrency })}
                     </span>
                     <input
                       value={pendingExpense.exchangeRate}
@@ -1725,7 +1822,7 @@ export function PlannerDayCard({
                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
                   <label className="space-y-1">
                     <span className="text-xs font-bold text-stone-700">
-                      Paid by
+                      {t("planner.field.paidBy")}
                     </span>
                     <select
                       value={pendingExpense.payerMemberId}
@@ -1736,7 +1833,7 @@ export function PlannerDayCard({
                       }
                       className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
                     >
-                      <option value="">Choose payer</option>
+                      <option value="">{t("planner.field.choosePayer")}</option>
                       {activeMembers().map((member) => (
                         <option key={member.id} value={member.id}>
                           {member.displayName}
@@ -1746,7 +1843,7 @@ export function PlannerDayCard({
                   </label>
                   <label className="space-y-1">
                     <span className="text-xs font-bold text-stone-700">
-                      Mode
+                      {t("planner.field.mode")}
                     </span>
                     <select
                       value={pendingExpense.accountingMode}
@@ -1758,16 +1855,16 @@ export function PlannerDayCard({
                       }
                       className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
                     >
-                      <option value="shared">Shared</option>
-                      <option value="stats_only">Stats only</option>
+                      <option value="shared">{t("ledger.shared")}</option>
+                      <option value="stats_only">{t("ledger.statsOnly")}</option>
                     </select>
                   </label>
                 </div>
                 <div className="mt-3 space-y-2">
                   <p className="text-xs font-bold text-stone-700">
                     {pendingExpense.accountingMode === "shared"
-                      ? "Split with"
-                      : "Count for"}
+                      ? t("planner.expense.splitWith")
+                      : t("planner.expense.countFor")}
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {activeMembers().map((member) => {
@@ -1801,9 +1898,9 @@ export function PlannerDayCard({
                     }
                     className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-bold text-white disabled:bg-stone-300"
                   >
-                    {savingExpenseId === pendingExpense.itemId
-                      ? "Adding..."
-                      : "Add to ledger"}
+                      {savingExpenseId === pendingExpense.itemId
+                      ? t("common.adding")
+                      : t("planner.expense.addToLedger")}
                   </button>
                 </div>
                 {expenseError ? (
@@ -1819,7 +1916,7 @@ export function PlannerDayCard({
 
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <SectionTitle title="Today" />
+            <SectionTitle title={t("planner.section.today")} />
             <div className="flex items-center gap-2">
               {currentMember ? (
                 <button
@@ -1831,7 +1928,7 @@ export function PlannerDayCard({
                       : "bg-white text-emerald-800"
                   }`}
                 >
-                  Mine
+                  {t("planner.filter.mine")}
                 </button>
               ) : null}
               {canManagePlans && day.dayDate !== "unscheduled" ? (
@@ -1843,7 +1940,7 @@ export function PlannerDayCard({
                     setPlanError(null);
                   }}
                   className="grid size-8 place-items-center rounded-full bg-emerald-700 text-lg font-bold leading-none text-white shadow-sm"
-                  title="Add schedule item"
+                  title={t("planner.addSchedule")}
                 >
                   +
                 </button>
@@ -1852,11 +1949,11 @@ export function PlannerDayCard({
           </div>
           {story.length === 0 ? (
             <p className="rounded-2xl bg-stone-50 p-4 text-sm text-stone-500">
-              No schedule added yet.
+              {t("planner.empty.schedule")}
             </p>
           ) : visibleStory.length === 0 ? (
             <p className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-900">
-              Nothing directly mentions you on this day yet.
+              {t("planner.empty.mine")}
             </p>
           ) : (
             <div className="relative space-y-2 pl-5 before:absolute before:bottom-4 before:left-2 before:top-4 before:w-px before:bg-emerald-100">
@@ -1874,14 +1971,14 @@ export function PlannerDayCard({
                     <summary className="grid cursor-pointer list-none grid-cols-[48px_1fr] gap-3">
                       <span className="absolute -left-[17px] top-5 size-3 rounded-full border-2 border-white bg-emerald-700 shadow-sm" />
                       <span className="text-sm font-bold text-emerald-800">
-                        {item.time ? formatTime(item.time) : "Any"}
+                        {item.time ? formatTime(item.time) : t("planner.anytime")}
                       </span>
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-semibold text-stone-950">
                           <HighlightedText text={item.title} aliases={aliases} />
                           {item.status !== "planned" ? (
                             <span className="ml-2 rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-bold uppercase text-stone-600">
-                              {item.status}
+                              {labelForStatus(item.status)}
                             </span>
                           ) : null}
                         </span>
@@ -1906,7 +2003,9 @@ export function PlannerDayCard({
                               {item.location}
                             </a>
                           ) : (
-                            <span className="text-stone-400">Location TBD</span>
+                            <span className="text-stone-400">
+                              {t("planner.location.tbd")}
+                            </span>
                           )}
                         </div>
                         {canManagePlans ? (
@@ -1914,7 +2013,7 @@ export function PlannerDayCard({
                             type="button"
                             onClick={() => startEditItem(item)}
                             className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-50 shadow-sm"
-                            title="Modify schedule item"
+                            title={t("planner.modify.schedule")}
                           >
                             <Image
                               src="/icons/modify.png"
@@ -1929,7 +2028,7 @@ export function PlannerDayCard({
                       <HighlightedText
                         text={
                           item.note ||
-                          "No notes yet. Add memory to leave details for this stop."
+                          t("planner.note.empty")
                         }
                         aliases={aliases}
                       />
@@ -1941,7 +2040,7 @@ export function PlannerDayCard({
                               className="rounded-2xl bg-emerald-50 px-3 py-2"
                             >
                               <p className="text-xs font-semibold text-emerald-800">
-                                {memory.contributorName || "Traveler"}
+                                {memory.contributorName || t("planner.traveler")}
                               </p>
                               {memory.type === "photo" &&
                               memory.mediaUrl &&
@@ -1999,15 +2098,15 @@ export function PlannerDayCard({
                                 }))
                               }
                               rows={1}
-                              placeholder="Add a memory, @someone, or expense..."
+                              placeholder={t("planner.memory.placeholder")}
                               className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm leading-5 text-stone-950 outline-none focus:border-emerald-300"
                             />
                             <button
                               type="button"
                               className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-xs font-bold text-stone-500"
-                              title="Voice input"
+                              title={t("planner.voiceInput")}
                             >
-                              Mic
+                              {t("planner.mic")}
                             </button>
                             <button
                               type="submit"
@@ -2017,9 +2116,9 @@ export function PlannerDayCard({
                                   !(memoryTextByItem[item.id] ?? "").trim())
                               }
                               className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300"
-                              title="Save memory"
+                              title={t("planner.memory.save")}
                             >
-                              {savingMemoryId === item.id ? "..." : "Go"}
+                              {savingMemoryId === item.id ? "..." : t("common.go")}
                             </button>
                           </div>
                           {attachmentByItem[item.id] ? (
@@ -2086,10 +2185,10 @@ export function PlannerDayCard({
                           <div className="flex items-start justify-between gap-3">
                             <div>
                               <p className="text-xs font-bold uppercase tracking-[0.14em] text-amber-800">
-                                Expense detected
+                                {t("planner.expense.detected")}
                               </p>
                               <h4 className="mt-1 font-semibold text-stone-950">
-                                Add this to ledger?
+                                {t("planner.expense.addThis")}
                               </h4>
                             </div>
                             <button
@@ -2097,14 +2196,14 @@ export function PlannerDayCard({
                               onClick={() => setPendingExpense(null)}
                               className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-stone-500"
                             >
-                              Dismiss
+                              {t("common.dismiss")}
                             </button>
                           </div>
 
                           <div className="mt-3 grid gap-2 sm:grid-cols-2">
                             <label className="space-y-1">
                               <span className="text-xs font-bold text-stone-700">
-                                Title
+                                {t("planner.field.title")}
                               </span>
                               <input
                                 value={pendingExpense.title}
@@ -2118,7 +2217,7 @@ export function PlannerDayCard({
                             </label>
                             <label className="space-y-1">
                               <span className="text-xs font-bold text-stone-700">
-                                Category
+                                {t("planner.field.category")}
                               </span>
                               <select
                                 value={pendingExpense.category}
@@ -2131,10 +2230,10 @@ export function PlannerDayCard({
                               >
                                 {expenseCategories.map((category) => (
                                   <option
-                                    key={category.value}
-                                    value={category.value}
+                                    key={category}
+                                    value={category}
                                   >
-                                    {category.label}
+                                    {labelForExpenseCategory(category)}
                                   </option>
                                 ))}
                               </select>
@@ -2144,7 +2243,7 @@ export function PlannerDayCard({
                           <div className="mt-2 grid grid-cols-[1fr_96px_1fr] gap-2">
                             <label className="space-y-1">
                               <span className="text-xs font-bold text-stone-700">
-                                Amount
+                                {t("planner.field.amount")}
                               </span>
                               <input
                                 value={pendingExpense.amount}
@@ -2161,7 +2260,7 @@ export function PlannerDayCard({
                             </label>
                             <label className="space-y-1">
                               <span className="text-xs font-bold text-stone-700">
-                                Currency
+                                {t("planner.field.currency")}
                               </span>
                               <select
                                 value={pendingExpense.currency}
@@ -2185,8 +2284,10 @@ export function PlannerDayCard({
                             </label>
                             <label className="space-y-1">
                               <span className="text-xs font-bold text-stone-700">
-                                Rate to {ledgerBaseCurrency}
-                                {isLoadingRate ? " · loading" : ""}
+                                {t("planner.field.rateTo", {
+                                  currency: ledgerBaseCurrency,
+                                })}
+                                {isLoadingRate ? t("planner.loadingSuffix") : ""}
                               </span>
                               <input
                                 value={pendingExpense.exchangeRate}
@@ -2207,7 +2308,7 @@ export function PlannerDayCard({
                           <div className="mt-2 grid gap-2 sm:grid-cols-2">
                             <label className="space-y-1">
                               <span className="text-xs font-bold text-stone-700">
-                                Paid by
+                                {t("planner.field.paidBy")}
                               </span>
                               <select
                                 value={pendingExpense.payerMemberId}
@@ -2218,7 +2319,9 @@ export function PlannerDayCard({
                                 }
                                 className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
                               >
-                                <option value="">Choose payer</option>
+                                <option value="">
+                                  {t("planner.field.choosePayer")}
+                                </option>
                                 {activeMembers().map((member) => (
                                   <option key={member.id} value={member.id}>
                                     {member.displayName}
@@ -2228,7 +2331,7 @@ export function PlannerDayCard({
                             </label>
                             <label className="space-y-1">
                               <span className="text-xs font-bold text-stone-700">
-                                Mode
+                                {t("planner.field.mode")}
                               </span>
                               <select
                                 value={pendingExpense.accountingMode}
@@ -2240,8 +2343,10 @@ export function PlannerDayCard({
                                 }
                                 className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
                               >
-                                <option value="shared">Shared</option>
-                                <option value="stats_only">Stats only</option>
+                                <option value="shared">{t("ledger.shared")}</option>
+                                <option value="stats_only">
+                                  {t("ledger.statsOnly")}
+                                </option>
                               </select>
                             </label>
                           </div>
@@ -2249,8 +2354,8 @@ export function PlannerDayCard({
                           <div className="mt-3 space-y-2">
                             <p className="text-xs font-bold text-stone-700">
                               {pendingExpense.accountingMode === "shared"
-                                ? "Split with"
-                                : "Count for"}
+                                ? t("planner.expense.splitWith")
+                                : t("planner.expense.countFor")}
                             </p>
                             <div className="flex flex-wrap gap-2">
                               {activeMembers().map((member) => {
@@ -2278,15 +2383,14 @@ export function PlannerDayCard({
                             </div>
                             {pendingExpense.accountingMode === "stats_only" ? (
                               <p className="text-xs leading-5 text-stone-500">
-                                This will be used for personal trip cost stats,
-                                not final settlement.
+                                {t("planner.expense.statsOnlyNote")}
                               </p>
                             ) : null}
                           </div>
 
                           <label className="mt-3 block space-y-1">
                             <span className="text-xs font-bold text-stone-700">
-                              Location
+                              {t("planner.field.location")}
                             </span>
                             <input
                               value={pendingExpense.addressText}
@@ -2301,7 +2405,7 @@ export function PlannerDayCard({
 
                           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                             <p className="text-xs font-semibold text-amber-900">
-                              Linked to this schedule item and memory.
+                              {t("planner.expense.linked")}
                             </p>
                             <button
                               type="button"
@@ -2314,8 +2418,8 @@ export function PlannerDayCard({
                               className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-bold text-white disabled:bg-stone-300"
                             >
                               {savingExpenseId === pendingExpense.itemId
-                                ? "Adding..."
-                                : "Add to ledger"}
+                                ? t("common.adding")
+                                : t("planner.expense.addToLedger")}
                             </button>
                           </div>
                           {expenseError ? (
@@ -2335,7 +2439,7 @@ export function PlannerDayCard({
 
         {bookings.length > 0 ? (
           <section className="space-y-3">
-            <SectionTitle title="Key bookings" />
+            <SectionTitle title={t("planner.section.keyBookings")} />
             <div className="grid gap-2 sm:grid-cols-3">
               {bookings.map(([type, items]) => {
                 const first = items[0];
@@ -2353,11 +2457,11 @@ export function PlannerDayCard({
                     className="rounded-2xl border border-stone-100 bg-white p-3 shadow-sm"
                   >
                     <p className="text-xs font-bold uppercase tracking-wide text-emerald-800">
-                      {bookingLabels[type] ?? type}
+                      {labelForItemKind(type)}
                     </p>
                     <h4 className="mt-1 truncate text-sm font-semibold text-stone-950">
                       {items.length > 1
-                        ? `${items.length} items`
+                        ? t("planner.items.count", { count: items.length })
                         : first.title}
                     </h4>
                     {first.locationName ? (
@@ -2367,7 +2471,7 @@ export function PlannerDayCard({
                     ) : null}
                     {bookingTotal > 0 ? (
                       <p className="mt-2 text-xs font-bold text-emerald-800">
-                        {money(bookingTotal, ledgerCurrency)}
+                        {money(bookingTotal, ledgerCurrency, locale)}
                       </p>
                     ) : null}
                   </div>
@@ -2379,54 +2483,54 @@ export function PlannerDayCard({
 
         {day.notes ? (
           <section className="space-y-2 rounded-3xl bg-[#fff8ec] p-4">
-            <SectionTitle title="Day notes" />
+            <SectionTitle title={t("planner.section.dayNotes")} />
             <p className="text-sm leading-6 text-stone-700">{day.notes}</p>
           </section>
         ) : null}
 
         <section className="space-y-3 rounded-3xl border border-stone-100 bg-white p-4 shadow-sm">
           <div className="flex items-center justify-between gap-3">
-            <SectionTitle title="Ledger" />
+            <SectionTitle title={t("nav.ledger")} />
             <Link
               href={`/trips/${tripId}/ledger`}
               className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-700"
             >
-              Open
+              {t("common.open")}
             </Link>
           </div>
           {ledgerEntries.length === 0 ? (
             <p className="rounded-2xl bg-stone-50 p-3 text-sm text-stone-500">
-              No expenses logged for this day.
+              {t("planner.empty.expenses")}
             </p>
           ) : (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <div className="rounded-2xl bg-emerald-50 p-3">
                 <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-800">
-                  Total
+                  {t("ledger.totalCost")}
                 </p>
                 <p className="mt-1 font-semibold text-emerald-950">
-                  {money(ledgerTotal, ledgerCurrency)}
+                  {money(ledgerTotal, ledgerCurrency, locale)}
                 </p>
               </div>
               <div className="rounded-2xl bg-amber-50 p-3">
                 <p className="text-[11px] font-bold uppercase tracking-wide text-amber-800">
-                  Shared
+                  {t("ledger.shared")}
                 </p>
                 <p className="mt-1 font-semibold text-amber-950">
-                  {money(sharedTotal, ledgerCurrency)}
+                  {money(sharedTotal, ledgerCurrency, locale)}
                 </p>
               </div>
               <div className="rounded-2xl bg-stone-50 p-3">
                 <p className="text-[11px] font-bold uppercase tracking-wide text-stone-500">
-                  Stats
+                  {t("ledger.statsOnly")}
                 </p>
                 <p className="mt-1 font-semibold text-stone-950">
-                  {money(statsOnlyTotal, ledgerCurrency)}
+                  {money(statsOnlyTotal, ledgerCurrency, locale)}
                 </p>
               </div>
               <div className="rounded-2xl bg-stone-50 p-3">
                 <p className="text-[11px] font-bold uppercase tracking-wide text-stone-500">
-                  Review
+                  {t("ledger.needsReview")}
                 </p>
                 <p className="mt-1 font-semibold text-stone-950">
                   {reviewCount}
@@ -2437,7 +2541,7 @@ export function PlannerDayCard({
         </section>
 
         <section className="space-y-3 rounded-3xl bg-emerald-50/60 p-3">
-          <SectionTitle title="Memory preview" />
+          <SectionTitle title={t("planner.section.memoryPreview")} />
           <DayMemoryPreview
             tripId={tripId}
             date={day.dayDate}
@@ -2448,9 +2552,10 @@ export function PlannerDayCard({
 
         {nextDay ? (
           <section className="rounded-3xl border border-stone-100 bg-stone-50 p-4">
-            <SectionTitle title="Tomorrow" />
+            <SectionTitle title={t("planner.section.tomorrow")} />
             <h3 className="mt-2 text-base font-semibold text-stone-950">
-              {nextDay.day.title || formatDayLabel(nextDay.day.dayDate)}
+              {nextDay.day.title ||
+                formatPlannerDayLabel(nextDay.day.dayDate, locale)}
             </h3>
             {nextStory.length > 0 ? (
               <p className="mt-1 line-clamp-2 text-sm text-stone-600">
@@ -2458,7 +2563,7 @@ export function PlannerDayCard({
               </p>
             ) : (
               <p className="mt-1 text-sm text-stone-500">
-                No major plans added yet.
+                {t("planner.empty.tomorrow")}
               </p>
             )}
           </section>
@@ -2470,10 +2575,10 @@ export function PlannerDayCard({
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-bold text-emerald-800">
-                  Add schedule
+                  {t("planner.addSchedule")}
                 </p>
                 <h3 className="mt-1 text-xl font-semibold text-stone-950">
-                  Describe the plan
+                  {t("planner.describePlan")}
                 </h3>
               </div>
               <button
@@ -2485,7 +2590,7 @@ export function PlannerDayCard({
                 }}
                 className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
               >
-                Close
+                {t("common.close")}
               </button>
             </div>
 
@@ -2497,7 +2602,7 @@ export function PlannerDayCard({
                   setDraftPlan(null);
                 }}
                 rows={3}
-                placeholder="Example: 17:00 go to Costco for group groceries"
+                placeholder={t("planner.add.placeholder")}
                 className="w-full resize-none rounded-2xl border border-stone-200 px-4 py-3 text-sm leading-6 text-stone-950 outline-none focus:border-emerald-300"
               />
               <button
@@ -2505,14 +2610,16 @@ export function PlannerDayCard({
                 disabled={!newPlanText.trim()}
                 className="rounded-full bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-stone-300"
               >
-                Parse plan
+                {t("planner.parsePlan")}
               </button>
             </form>
 
             {draftPlan ? (
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <label className="space-y-1 sm:col-span-2">
-                  <span className="text-sm font-bold text-stone-800">Title</span>
+                  <span className="text-sm font-bold text-stone-800">
+                    {t("planner.field.title")}
+                  </span>
                   <input
                     value={draftPlan.title}
                     onChange={(event) =>
@@ -2524,7 +2631,9 @@ export function PlannerDayCard({
                   />
                 </label>
                 <label className="space-y-1">
-                  <span className="text-sm font-bold text-stone-800">Type</span>
+                  <span className="text-sm font-bold text-stone-800">
+                    {t("planner.field.type")}
+                  </span>
                   <select
                     value={draftPlan.eventType}
                     onChange={(event) =>
@@ -2541,14 +2650,14 @@ export function PlannerDayCard({
                   >
                     {eventTypes.map((type) => (
                       <option key={type} value={type}>
-                        {type}
+                        {labelForEventType(type)}
                       </option>
                     ))}
                   </select>
                 </label>
                 <label className="space-y-1">
                   <span className="text-sm font-bold text-stone-800">
-                    Location
+                    {t("planner.field.location")}
                   </span>
                   <input
                     value={draftPlan.locationName}
@@ -2563,7 +2672,9 @@ export function PlannerDayCard({
                   />
                 </label>
                 <label className="space-y-1">
-                  <span className="text-sm font-bold text-stone-800">Start</span>
+                  <span className="text-sm font-bold text-stone-800">
+                    {t("planner.field.start")}
+                  </span>
                   <input
                     value={draftPlan.plannedStart}
                     onChange={(event) =>
@@ -2578,7 +2689,9 @@ export function PlannerDayCard({
                   />
                 </label>
                 <label className="space-y-1">
-                  <span className="text-sm font-bold text-stone-800">End</span>
+                  <span className="text-sm font-bold text-stone-800">
+                    {t("planner.field.end")}
+                  </span>
                   <input
                     value={draftPlan.plannedEnd}
                     onChange={(event) =>
@@ -2593,7 +2706,9 @@ export function PlannerDayCard({
                   />
                 </label>
                 <label className="space-y-1 sm:col-span-2">
-                  <span className="text-sm font-bold text-stone-800">Note</span>
+                  <span className="text-sm font-bold text-stone-800">
+                    {t("planner.field.note")}
+                  </span>
                   <textarea
                     value={draftPlan.description}
                     onChange={(event) =>
@@ -2614,7 +2729,7 @@ export function PlannerDayCard({
                     disabled={isSavingPlan || !draftPlan.title.trim()}
                     className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-bold text-white disabled:bg-stone-300"
                   >
-                    {isSavingPlan ? "Adding..." : "Add to today"}
+                    {isSavingPlan ? t("common.adding") : t("planner.addToToday")}
                   </button>
                 </div>
               </div>
@@ -2638,11 +2753,11 @@ export function PlannerDayCard({
               <div>
                 <p className="text-sm font-bold text-emerald-800">
                   {editingItem.itemType === "event"
-                    ? "Edit schedule item"
-                    : "Edit booking"}
+                    ? t("planner.edit.schedule")
+                    : t("planner.edit.booking")}
                 </p>
                 <h3 className="mt-1 text-xl font-semibold text-stone-950">
-                  {editingItem.title || "Plan item"}
+                  {editingItem.title || t("planner.planItem")}
                 </h3>
               </div>
               <button
@@ -2650,13 +2765,15 @@ export function PlannerDayCard({
                 onClick={() => setEditingItem(null)}
                 className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
               >
-                Close
+                {t("common.close")}
               </button>
             </div>
 
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <label className="space-y-1 sm:col-span-2">
-                <span className="text-sm font-bold text-stone-800">Title</span>
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.title")}
+                </span>
                 <input
                   value={editingItem.title}
                   onChange={(event) =>
@@ -2670,7 +2787,9 @@ export function PlannerDayCard({
               </label>
 
               <label className="space-y-1">
-                <span className="text-sm font-bold text-stone-800">Type</span>
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.type")}
+                </span>
                 <select
                   value={editingItem.typeValue}
                   onChange={(event) =>
@@ -2687,14 +2806,18 @@ export function PlannerDayCard({
                     : reservationTypes
                   ).map((type) => (
                     <option key={type} value={type}>
-                      {type}
+                      {editingItem.itemType === "event"
+                        ? labelForEventType(type as ItineraryEventType)
+                        : labelForReservationType(type as ItineraryReservationType)}
                     </option>
                   ))}
                 </select>
               </label>
 
               <label className="space-y-1">
-                <span className="text-sm font-bold text-stone-800">Status</span>
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.status")}
+                </span>
                 <select
                   value={editingItem.status}
                   onChange={(event) =>
@@ -2711,7 +2834,7 @@ export function PlannerDayCard({
                 >
                   {itemStatuses.map((status) => (
                     <option key={status} value={status}>
-                      {status}
+                      {labelForStatus(status)}
                     </option>
                   ))}
                 </select>
@@ -2720,8 +2843,8 @@ export function PlannerDayCard({
               <label className="space-y-1">
                 <span className="text-sm font-bold text-stone-800">
                   {editingItem.itemType === "event"
-                    ? "Detail / note"
-                    : "Provider"}
+                    ? t("planner.field.detailNote")
+                    : t("planner.field.provider")}
                 </span>
                 <input
                   value={
@@ -2743,7 +2866,9 @@ export function PlannerDayCard({
               </label>
 
               <label className="space-y-1">
-                <span className="text-sm font-bold text-stone-800">Location</span>
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.location")}
+                </span>
                 <input
                   value={editingItem.locationName}
                   onChange={(event) =>
@@ -2758,7 +2883,9 @@ export function PlannerDayCard({
               </label>
 
               <label className="space-y-1">
-                <span className="text-sm font-bold text-stone-800">Start</span>
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.start")}
+                </span>
                 <input
                   value={editingItem.startsAt}
                   onChange={(event) =>
@@ -2774,7 +2901,9 @@ export function PlannerDayCard({
               </label>
 
               <label className="space-y-1">
-                <span className="text-sm font-bold text-stone-800">End</span>
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.end")}
+                </span>
                 <input
                   value={editingItem.endsAt}
                   onChange={(event) =>
@@ -2788,7 +2917,9 @@ export function PlannerDayCard({
               </label>
 
               <label className="space-y-1 sm:col-span-2">
-                <span className="text-sm font-bold text-stone-800">URL</span>
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.url")}
+                </span>
                 <input
                   value={editingItem.url}
                   onChange={(event) =>
@@ -2813,14 +2944,14 @@ export function PlannerDayCard({
                 onClick={deleteEditingItem}
                 className="rounded-full bg-red-50 px-4 py-2 text-sm font-bold text-red-700"
               >
-                Delete
+                {t("common.delete")}
               </button>
               <button
                 type="submit"
                 disabled={isSavingPlan}
                 className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-bold text-white disabled:bg-stone-300"
               >
-                {isSavingPlan ? "Saving..." : "Save changes"}
+                {isSavingPlan ? t("common.saving") : t("common.saveChanges")}
               </button>
             </div>
           </form>

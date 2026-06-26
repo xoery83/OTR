@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
+import { useI18n } from "@/components/I18nProvider";
 import { PlannerDayCard } from "@/components/PlannerDayCard";
 import { getErrorMessage } from "@/lib/errors";
 import { getActiveJourneyMembers } from "@/lib/journeys/stats";
@@ -31,8 +32,8 @@ async function loadPlannerData(tripId: string) {
   };
 }
 
-function compactDate(value: string) {
-  if (value === "unscheduled") return "Any";
+function compactDate(value: string, locale: string) {
+  if (value === "unscheduled") return locale === "zh-CN" ? "任意" : "Any";
   const date = new Date(`${value}T00:00:00`);
   return `${date.getMonth() + 1}.${date.getDate()}`;
 }
@@ -95,6 +96,7 @@ function getStoredDayId(tripId: string, days: PlannerV2Data["days"]) {
 function PlannerContent() {
   const params = useParams<{ tripId: string }>();
   const tripId = params.tripId;
+  const { locale, t } = useI18n();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [members, setMembers] = useState<JourneyMember[]>([]);
   const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
@@ -130,7 +132,7 @@ function PlannerContent() {
         }
       } catch (plannerError) {
         if (isMounted) {
-          setError(getErrorMessage(plannerError, "Could not load planner."));
+          setError(getErrorMessage(plannerError, t("planner.error.load")));
         }
       } finally {
         if (isMounted) setIsLoading(false);
@@ -141,7 +143,7 @@ function PlannerContent() {
     return () => {
       isMounted = false;
     };
-  }, [tripId]);
+  }, [tripId, t]);
 
   const selectedIndex = useMemo(() => {
     const index = planner.days.findIndex((day) => day.day.id === selectedDayId);
@@ -192,7 +194,11 @@ function PlannerContent() {
   }, [selectedDayId]);
 
   if (isLoading) {
-    return <div className="rounded-2xl bg-white p-5">Loading planner...</div>;
+    return (
+      <div className="rounded-2xl bg-white p-5">
+        {t("planner.loading")}
+      </div>
+    );
   }
 
   return (
@@ -205,10 +211,10 @@ function PlannerContent() {
                 href={`/trips/${tripId}`}
                 className="text-sm font-bold text-stone-500"
               >
-                Back
+                {t("common.back")}
               </Link>
               <h1 className="truncate text-lg font-semibold text-stone-950">
-                {trip?.name || "Journey"}
+                {trip?.name || t("common.journey")}
               </h1>
             </div>
           </div>
@@ -230,7 +236,9 @@ function PlannerContent() {
                   title={
                     member.userId
                       ? member.displayName
-                      : `${member.displayName} · not linked`
+                      : t("planner.member.notLinked", {
+                          name: member.displayName,
+                        })
                   }
                 >
                   {member.avatarUrl ? (
@@ -254,9 +262,9 @@ function PlannerContent() {
             <Link
               href={`/trips/${tripId}/planner/import`}
               className="rounded-full bg-emerald-700 px-3 py-2 text-xs font-bold text-white shadow-sm sm:px-4"
-              title="Import planner"
+              title={t("planner.import")}
             >
-              Import
+              {t("planner.import")}
             </Link>
           </div>
         </div>
@@ -287,12 +295,17 @@ function PlannerContent() {
                         : "border-dashed border-stone-200 bg-white/70 text-stone-400"
                   }`}
                   title={
-                    official ? "Journey day" : "Preparation or return buffer"
+                    official
+                      ? t("planner.day.official")
+                      : t("planner.day.buffer")
                   }
                 >
-                  <p className="text-xs font-bold">D{plannerDay.dayNumber}</p>
+                  <p className="text-xs font-bold">
+                    {plannerDay.dayTag ??
+                      t("planner.day.short", { number: plannerDay.dayNumber })}
+                  </p>
                   <p className="text-[11px] leading-tight opacity-80">
-                    {compactDate(plannerDay.day.dayDate)}
+                    {compactDate(plannerDay.day.dayDate, locale)}
                   </p>
                 </button>
               );
@@ -327,7 +340,7 @@ function PlannerContent() {
         </section>
       ) : (
         <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-5 text-sm text-stone-600">
-          No planned days yet.
+          {t("planner.empty.days")}
         </div>
       )}
     </div>

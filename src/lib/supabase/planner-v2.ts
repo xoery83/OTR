@@ -28,6 +28,7 @@ type TripDayRow = {
 export type PlannerV2Day = {
   day: TripDay;
   dayNumber: number;
+  dayTag: string | null;
   reservations: ItineraryReservation[];
   activities: ItineraryEvent[];
   memories: MemoryEntry[];
@@ -81,6 +82,40 @@ function tripDateRange(trip: Trip) {
   }
 
   return dates;
+}
+
+function dayNumberFromTripStart(date: string, tripStartDate: string | null) {
+  if (!tripStartDate) {
+    return null;
+  }
+
+  const start = new Date(`${tripStartDate}T00:00:00Z`).getTime();
+  const target = new Date(`${date}T00:00:00Z`).getTime();
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  if (!Number.isFinite(start) || !Number.isFinite(target)) {
+    return null;
+  }
+  const dayOffset = Math.floor((target - start) / dayMs) + 1;
+  if (dayOffset < 1) return null;
+  return dayOffset;
+}
+
+function dayTagForDate(date: string, tripStartDate: string | null) {
+  if (date === "unscheduled") {
+    return null;
+  }
+
+  if (!tripStartDate) {
+    return null;
+  }
+
+  if (date < tripStartDate) {
+    return "Prep";
+  }
+
+  const journeyDay = dayNumberFromTripStart(date, tripStartDate);
+  return journeyDay ? `D${journeyDay}` : "Prep";
 }
 
 function makeSyntheticDay(tripId: string, date: string, orderIndex: number): TripDay {
@@ -209,10 +244,14 @@ export async function getPlannerV2(trip: Trip): Promise<PlannerV2Data> {
   return {
     days: sortedDates.map((date, index) => {
       const day = daysByDate.get(date) ?? makeSyntheticDay(trip.id, date, index);
+      const dayTag = dayTagForDate(date, trip.startDate);
+      const dayNumberFromTag =
+        dayTag?.startsWith("D") ? Number.parseInt(dayTag.slice(1), 10) : null;
 
       return {
         day,
-        dayNumber: index + 1,
+        dayNumber: dayNumberFromTag ?? index + 1,
+        dayTag,
         reservations: sortByTime(
           reservations.filter((reservation) => {
             if (coversDate(date, reservation.startsAt, reservation.endsAt)) {

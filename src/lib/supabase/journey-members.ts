@@ -7,6 +7,7 @@ import type {
 } from "@/types";
 import { getCurrentUser } from "./auth";
 import { supabase } from "./client";
+import { getTripsForCurrentUser } from "./trips";
 
 type JourneyMemberRpcRow = {
   member_id: string;
@@ -129,6 +130,55 @@ export async function createJourneyMember(input: CreateJourneyMemberInput) {
 
   if (error) throw error;
   return mapJourneyMember(data as JourneyMemberRow);
+}
+
+export type JourneyMemberSuggestion = {
+  key: string;
+  displayName: string;
+  inviteEmail: string;
+  userId: string | null;
+  avatarUrl: string | null;
+  journeysTogether: number;
+};
+
+export async function getJourneyMemberSuggestions() {
+  const trips = await getTripsForCurrentUser();
+  const members = (await Promise.all(trips.map((trip) => getJourneyMembers(trip.id))))
+    .flat()
+    .filter((member) => member.role === "group_member" || member.role === "guest");
+  const suggestions = new Map<string, JourneyMemberSuggestion>();
+
+  members.forEach((member) => {
+    const normalizedName = member.displayName.trim().toLocaleLowerCase();
+    if (!normalizedName) return;
+
+    const key = member.userId || member.inviteEmail || normalizedName;
+    const existing = suggestions.get(key);
+
+    if (existing) {
+      existing.journeysTogether += 1;
+      if (!existing.inviteEmail && member.inviteEmail) {
+        existing.inviteEmail = member.inviteEmail;
+      }
+      if (!existing.avatarUrl && member.avatarUrl) {
+        existing.avatarUrl = member.avatarUrl;
+      }
+      return;
+    }
+
+    suggestions.set(key, {
+      key,
+      displayName: member.displayName,
+      inviteEmail: member.inviteEmail ?? "",
+      userId: member.userId,
+      avatarUrl: member.avatarUrl,
+      journeysTogether: 1,
+    });
+  });
+
+  return [...suggestions.values()].sort(
+    (left, right) => right.journeysTogether - left.journeysTogether,
+  );
 }
 
 export async function updateJourneyMember(input: UpdateJourneyMemberInput) {

@@ -48,71 +48,23 @@ type MediaAssetRow = {
 };
 
 type PhotoIndexResult = {
-  summary: string;
-  sceneTags: string[];
-  ocrText: string | null;
-  locationHints: string[];
-  peopleDescription: string | null;
+  media_asset_id: string;
+  status: "indexed_local" | "needs_llm" | "failed";
+  caption: string;
+  scene: string | null;
   objects: string[];
-  travelMomentType: string | null;
-  qualityNotes: string[];
-};
-
-const photoIndexSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    summary: { type: "string" },
-    sceneTags: {
-      type: "array",
-      items: { type: "string" },
-      maxItems: 12,
-    },
-    ocrText: { type: ["string", "null"] },
-    locationHints: {
-      type: "array",
-      items: { type: "string" },
-      maxItems: 8,
-    },
-    peopleDescription: { type: ["string", "null"] },
-    objects: {
-      type: "array",
-      items: { type: "string" },
-      maxItems: 12,
-    },
-    travelMomentType: {
-      type: ["string", "null"],
-      enum: [
-        "arrival",
-        "meal",
-        "shopping",
-        "hotel",
-        "flight",
-        "drive",
-        "sightseeing",
-        "hike",
-        "group_moment",
-        "document",
-        "other",
-        null,
-      ],
-    },
-    qualityNotes: {
-      type: "array",
-      items: { type: "string" },
-      maxItems: 6,
-    },
-  },
-  required: [
-    "summary",
-    "sceneTags",
-    "ocrText",
-    "locationHints",
-    "peopleDescription",
-    "objects",
-    "travelMomentType",
-    "qualityNotes",
-  ],
+  ocr_text: string | null;
+  people: Record<string, unknown>[];
+  image_hash: string;
+  duplicate_hash: string;
+  blur_score: number;
+  brightness_score: number;
+  dominant_colors: string[];
+  quality_score: number;
+  needs_llm_review: boolean;
+  llm_review_reason: string | null;
+  model_used: string;
+  model_version: string;
 };
 
 function jsonError(message: string, status: number) {
@@ -141,15 +93,6 @@ function getSupabaseForRequest(request: Request) {
       autoRefreshToken: false,
     },
   });
-}
-
-function openAiEndpoint(baseUrl: string) {
-  const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
-  return normalizedBaseUrl.endsWith("/v1")
-    ? `${normalizedBaseUrl}/chat/completions`
-    : normalizedBaseUrl.includes("api.openai.com")
-      ? `${normalizedBaseUrl}/v1/chat/completions`
-      : `${normalizedBaseUrl}/chat/completions`;
 }
 
 function mapMediaAsset(row: MediaAssetRow): MediaAsset {
@@ -194,78 +137,77 @@ function mapMediaAsset(row: MediaAssetRow): MediaAsset {
   };
 }
 
-async function analyzePhoto(imageUrl: string): Promise<PhotoIndexResult> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  const model =
-    process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || "gpt-4.1-mini";
+function getAiServerConfig() {
+  const aiServerUrl = (
+    process.env.IMAGE_INDEX_SERVICE_URL ||
+    process.env.AI_SERVER_URL ||
+    ""
+  ).replace(/\/$/, "");
+  const aiServerSecret = process.env.AI_SERVER_SECRET;
 
-  if (!apiKey) {
-    throw new Error("Missing OPENAI_API_KEY for photo indexing.");
+  if (!aiServerUrl) {
+    throw new Error("Missing AI_SERVER_URL or IMAGE_INDEX_SERVICE_URL.");
   }
 
-  const response = await fetch(
-    openAiEndpoint(
-      process.env.OPENAI_BASE_URL ||
-        process.env.OPENAI_API_URL ||
-        "https://api.openai.com/v1",
-    ),
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.1,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You index travel photos for OTR. Extract searchable metadata only. Do not identify people by name. Return compact valid JSON.",
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text:
-                  "Analyze this travel photo for search and memory organization. Capture visible text, scene tags, objects, location hints, and a short summary.",
-              },
-              {
-                type: "image_url",
-                image_url: { url: imageUrl, detail: "low" },
-              },
-            ],
-          },
-        ],
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "otr_photo_index",
-            strict: true,
-            schema: photoIndexSchema,
-          },
-        },
-      }),
+  if (!aiServerSecret) {
+    throw new Error("Missing AI_SERVER_SECRET.");
+  }
+
+  return { aiServerUrl, aiServerSecret };
+}
+
+async function callImageIndexService(input: {
+  asset: MediaAssetRow;
+  imageUrl: string;
+  authorization: string;
+}): Promise<PhotoIndexResult> {
+  const { aiServerUrl, aiServerSecret } = getAiServerConfig();
+  const response = await fetch(`${aiServerUrl}/image-index/index`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-ai-server-secret": aiServerSecret,
+      Authorization: input.authorization,
     },
-  );
-  const text = await response.text();
+    body: JSON.stringify({
+      media_asset_id: input.asset.id,
+      journey_id: input.asset.trip_id,
+      image_url: input.imageUrl,
+      metadata: {
+        file_id: input.asset.provider_file_id ?? input.asset.id,
+        journey_id: input.asset.trip_id,
+        uploader_id: input.asset.user_id,
+        upload_time: input.asset.created_at,
+        original_filename: input.asset.provider_original_reference,
+        file_size:
+          input.asset.compressed_file_size ?? input.asset.original_file_size,
+        width: input.asset.width,
+        height: input.asset.height,
+        exif_time: input.asset.taken_at,
+        gps_latitude: input.asset.gps_latitude,
+        gps_longitude: input.asset.gps_longitude,
+        camera_model: input.asset.camera_model,
+        google_drive_file_id:
+          input.asset.storage_provider === "google_drive"
+            ? input.asset.provider_file_id
+            : null,
+        supabase_asset_id: input.asset.id,
+        storage_provider: input.asset.storage_provider,
+        provider_file_id: input.asset.provider_file_id,
+        mime_type: input.asset.mime_type,
+        exif_json: input.asset.exif_json ?? {},
+      },
+    }),
+  });
+  const payload = (await response.json()) as PhotoIndexResult & {
+    detail?: string;
+  };
 
   if (!response.ok) {
-    throw new Error(text || "OpenAI photo indexing failed.");
+    throw new Error(payload.detail || "Image index service request failed.");
   }
 
-  const payload = JSON.parse(text) as {
-    choices?: { message?: { content?: string | null } }[];
-  };
-  const content = payload.choices?.[0]?.message?.content;
-
-  if (!content) {
-    throw new Error("OpenAI returned an empty photo indexing response.");
-  }
-
-  return JSON.parse(content) as PhotoIndexResult;
+  return payload;
 }
 
 export async function POST(request: Request) {
@@ -319,38 +261,26 @@ export async function POST(request: Request) {
       throw signedError || new Error("Could not create image URL.");
     }
 
-    const result = await analyzePhoto(signedData.signedUrl);
+    const result = await callImageIndexService({
+      asset,
+      imageUrl: signedData.signedUrl,
+      authorization: request.headers.get("authorization") ?? "",
+    });
     const { data: updatedRow, error: updateError } = await supabase
       .from("media_assets")
-      .update({
-        ai_status: "indexed",
-        ai_metadata: {
-          summary: result.summary,
-          locationHints: result.locationHints,
-          peopleDescription: result.peopleDescription,
-          objects: result.objects,
-          travelMomentType: result.travelMomentType,
-          qualityNotes: result.qualityNotes,
-          provider: "openai",
-          model:
-            process.env.OPENAI_VISION_MODEL ||
-            process.env.OPENAI_MODEL ||
-            "gpt-4.1-mini",
-        },
-        ocr_text: result.ocrText,
-        scene_tags: result.sceneTags,
-        indexed_at: new Date().toISOString(),
-      })
+      .select("*")
       .eq("id", assetId)
       .eq("trip_id", tripId)
-      .select("*")
       .single();
 
     if (updateError || !updatedRow) {
-      throw updateError || new Error("Could not save photo index.");
+      throw updateError || new Error("Could not load saved photo index.");
     }
 
-    return NextResponse.json({ asset: mapMediaAsset(updatedRow as MediaAssetRow) });
+    return NextResponse.json({
+      asset: mapMediaAsset(updatedRow as MediaAssetRow),
+      index: result,
+    });
   } catch (error) {
     if (assetId && tripId) {
       try {

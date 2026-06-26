@@ -10,28 +10,36 @@ cd face-service
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-FACE_SERVICE_SECRET=dev-face-secret uvicorn app.main:app --host 0.0.0.0 --port 8001
+FACE_SERVICE_SECRET=dev-face-secret uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Then set this in the Next.js app:
 
 ```bash
-FACE_SERVICE_URL=http://localhost:8001
+FACE_SERVICE_URL=http://localhost:8000
 FACE_SERVICE_SECRET=dev-face-secret
 ```
 
-The first request downloads the InsightFace model into the local model cache, so
-it can take a little while.
+Startup downloads the InsightFace model into the local model cache when needed,
+so the first boot can take a little while.
 
 ## API
 
-`POST /detect`
+The face model is loaded once during service startup.
+
+### `GET /health`
+
+No secret is required.
+
+### Authenticated endpoints
 
 Headers:
 
 ```text
 x-face-service-secret: ...
 ```
+
+### `POST /faces/detect`
 
 Body:
 
@@ -57,3 +65,44 @@ Response:
   ]
 }
 ```
+
+### `POST /faces/embed`
+
+Uses the same request and response shape as `/faces/detect`.
+
+### `POST /faces/compare`
+
+Compare two embeddings:
+
+```json
+{
+  "embedding_a": [0.01, -0.02],
+  "embedding_b": [0.03, -0.04],
+  "threshold": 0.42
+}
+```
+
+Or compare the first detected face in two images:
+
+```json
+{
+  "image_url_a": "https://signed-image-url-a",
+  "image_url_b": "https://signed-image-url-b"
+}
+```
+
+Response:
+
+```json
+{
+  "model_name": "buffalo_l",
+  "embedding_version": "insightface-buffalo_l-512",
+  "similarity": 0.73,
+  "is_match": true,
+  "threshold": 0.42
+}
+```
+
+### `POST /detect`
+
+Legacy alias for `/faces/detect`.

@@ -1,8 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
+import {
+  LeafletMapCanvas,
+  type LeafletMapMarker,
+  type LeafletMapRoute,
+} from "@/components/LeafletMapCanvas";
 import { LiveLocationToggle } from "@/components/LiveLocationToggle";
 import { useI18n } from "@/components/I18nProvider";
 import {
@@ -18,17 +24,21 @@ import {
   getJourneyLiveLocations,
   getJourneyMapObjects,
 } from "@/lib/supabase/map";
-import { getPlannerV2, type PlannerV2Day } from "@/lib/supabase/planner-v2";
+import {
+  getPlannerV2,
+  type PlannerV2Data,
+  type PlannerV2Day,
+} from "@/lib/supabase/planner-v2";
 import { getTrip } from "@/lib/supabase/trips";
-import type { TranslationKey } from "@/lib/i18n/dictionaries";
 import type {
+  ItineraryEvent,
+  ItineraryReservation,
   JourneyLiveLocation,
   JourneyMapObject,
   JourneyMember,
+  MemoryEntry,
   Trip,
 } from "@/types";
-
-type MapMode = "live" | "route" | "day" | "memories" | "places";
 
 type MemberLocation = {
   member: JourneyMember;
@@ -37,13 +47,19 @@ type MemberLocation = {
   distance: number | null;
 };
 
-const mapModes: MapMode[] = ["live", "route", "day", "memories", "places"];
-const mapModeLabelKeys: Record<MapMode, TranslationKey> = {
-  live: "map.live",
-  route: "map.route",
-  day: "map.day",
-  memories: "map.memories",
-  places: "map.places",
+type MapStop = {
+  id: string;
+  label: string;
+  title: string;
+  subtitle: string | null;
+  coordinates: Coordinates;
+  kind: LeafletMapMarker["kind"];
+  icon: LeafletMapMarker["icon"];
+  date: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
+  memoryCount?: number;
+  thumbnailUrl?: string | null;
 };
 
 function getCoordinates(
@@ -64,27 +80,6 @@ function getLiveStatus(location: JourneyLiveLocation | null) {
   if (!Number.isFinite(ageMs) || ageMs > 30 * 60_000) return "offline";
   if (ageMs > 10 * 60_000) return "stale";
   return "live";
-}
-
-function initials(name: string) {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0])
-    .join("")
-    .toUpperCase();
-}
-
-function markerStyle(index: number, total: number) {
-  if (total <= 1) return { left: "50%", top: "50%" };
-
-  const angle = (index / total) * Math.PI * 2 - Math.PI / 2;
-  const radius = 30;
-  return {
-    left: `${50 + Math.cos(angle) * radius}%`,
-    top: `${50 + Math.sin(angle) * radius}%`,
-  };
 }
 
 function relativeLabel(
@@ -117,14 +112,454 @@ function statusLabel(
   return t("map.memberStatusOffline");
 }
 
-function locationTextFromDay(day: PlannerV2Day) {
-  const reservationLocation = day.reservations.find(
-    (reservation) => reservation.locationName,
-  )?.locationName;
-  const activityLocation = day.activities.find(
-    (activity) => activity.locationName,
-  )?.locationName;
-  return reservationLocation || activityLocation || "";
+function dateKey(value: string | null | undefined) {
+  return value?.slice(0, 10) ?? null;
+}
+
+function timeLabel(value: string | null | undefined) {
+  if (!value) return "";
+  return new Date(value).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function compactDate(value: string, t: ReturnType<typeof useI18n>["t"]) {
+  if (value === "unscheduled") return t("planner.anytime");
+  const date = new Date(`${value}T00:00:00`);
+  return `${date.getMonth() + 1}.${date.getDate()}`;
+}
+
+function isOfficialTripDay(value: string, trip: Trip | null) {
+  if (value === "unscheduled" || !trip?.startDate || !trip.endDate) {
+    return false;
+  }
+  return value >= trip.startDate && value <= trip.endDate;
+}
+
+function todayKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
+    2,
+    "0",
+  )}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function getDefaultDayId(days: PlannerV2Data["days"]) {
+  if (days.length === 0) return "journey";
+
+  const today = todayKey();
+  const exact = days.find((day) => day.day.dayDate === today);
+  if (exact) return exact.day.id;
+
+  const datedDays = days.filter((day) => day.day.dayDate !== "unscheduled");
+  if (datedDays.length === 0) return days[0]?.day.id ?? "journey";
+
+  const todayTime = new Date(`${today}T00:00:00`).getTime();
+  const closest = datedDays.reduce((best, day) => {
+    const bestDistance = Math.abs(
+      new Date(`${best.day.dayDate}T00:00:00`).getTime() - todayTime,
+    );
+    const dayDistance = Math.abs(
+      new Date(`${day.day.dayDate}T00:00:00`).getTime() - todayTime,
+    );
+
+    return dayDistance < bestDistance ? day : best;
+  });
+
+  return closest.day.id;
+}
+
+function getStoredMapViewId(tripId: string, days: PlannerV2Data["days"]) {
+  const storedValue = window.localStorage.getItem(`otr:map-view:${tripId}`);
+  if (!storedValue) return null;
+  if (storedValue === "journey") return "journey";
+  return days.find((day) => day.day.dayDate === storedValue)?.day.id ?? null;
+}
+
+function shouldShowScheduleStopOnDay(
+  dayDate: string,
+  startValue: string | null | undefined,
+  endValue: string | null | undefined,
+) {
+  if (dayDate === "unscheduled") return true;
+
+  const startDate = dateKey(startValue);
+  const endDate = dateKey(endValue);
+
+  if (startDate && endDate && startDate !== endDate) {
+    return dayDate === startDate || dayDate === endDate;
+  }
+
+  return true;
+}
+
+function normalizeText(value: string | null | undefined) {
+  return (value ?? "")
+    .trim()
+    .toLocaleLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function objectThumbnail(object: JourneyMapObject) {
+  const metadata = object.metadata ?? {};
+  const candidates = [
+    metadata.thumbnailUrl,
+    metadata.providerThumbnailUrl,
+    metadata.displayUrl,
+    metadata.imageUrl,
+  ];
+  return candidates.find((value): value is string => typeof value === "string") ?? null;
+}
+
+function findObjectForSource(
+  objects: JourneyMapObject[],
+  sourceType: string,
+  sourceId: string | null,
+  title: string,
+  locationName: string | null,
+) {
+  if (sourceId) {
+    const exact = objects.find(
+      (object) => object.sourceType === sourceType && object.sourceId === sourceId,
+    );
+    if (exact) return exact;
+  }
+
+  const titleKey = normalizeText(title);
+  const locationKey = normalizeText(locationName);
+  return objects.find((object) => {
+    const objectTitle = normalizeText(object.title);
+    return (
+      (titleKey && objectTitle === titleKey) ||
+      (locationKey && objectTitle === locationKey)
+    );
+  });
+}
+
+function approximatePlaceCoordinates(
+  trip: Trip | null,
+  title: string | null | undefined,
+  locationName: string | null | undefined,
+): Coordinates | null {
+  const tripText = normalizeText(`${trip?.name ?? ""} ${trip?.destination ?? ""}`);
+  const text = normalizeText(`${title ?? ""} ${locationName ?? ""}`);
+
+  if (!tripText.includes("iceland") && !tripText.includes("reykjavik")) {
+    return null;
+  }
+
+  const icelandPlaces: Array<{ keys: string[]; coordinates: Coordinates }> = [
+    {
+      keys: ["keflavik airport", "kef airport", "keflavik", "kef"],
+      coordinates: { latitude: 63.985, longitude: -22.6056 },
+    },
+    {
+      keys: ["blue lagoon"],
+      coordinates: { latitude: 63.8804, longitude: -22.4495 },
+    },
+    {
+      keys: ["reykjavik", "reykjavík"],
+      coordinates: { latitude: 64.1466, longitude: -21.9426 },
+    },
+    {
+      keys: ["costco", "bonus", "bonus supermarket"],
+      coordinates: { latitude: 64.1016, longitude: -21.8837 },
+    },
+    {
+      keys: ["stora mörk", "storamork", "stora-mork", "hvölsvollur", "hvolsvollur"],
+      coordinates: { latitude: 63.7357, longitude: -20.2247 },
+    },
+    {
+      keys: ["selfoss"],
+      coordinates: { latitude: 63.9331, longitude: -20.9971 },
+    },
+    {
+      keys: ["hella"],
+      coordinates: { latitude: 63.8358, longitude: -20.4006 },
+    },
+    {
+      keys: ["kirkjubaejarklaustur", "kirkjubæjarklaustur", "klaustur"],
+      coordinates: { latitude: 63.7895, longitude: -18.058 },
+    },
+    {
+      keys: ["skaftafell"],
+      coordinates: { latitude: 64.0175, longitude: -16.9666 },
+    },
+    {
+      keys: ["hofn", "höfn"],
+      coordinates: { latitude: 64.2497, longitude: -15.202 },
+    },
+    {
+      keys: ["egilsstadir", "egilsstaðir"],
+      coordinates: { latitude: 65.2669, longitude: -14.3948 },
+    },
+    {
+      keys: ["seyðisfjörður", "seydisfjordur"],
+      coordinates: { latitude: 65.2609, longitude: -14.0108 },
+    },
+    {
+      keys: ["myvatn", "mývatn", "lake myvatn"],
+      coordinates: { latitude: 65.6039, longitude: -16.9961 },
+    },
+    {
+      keys: ["akureyri"],
+      coordinates: { latitude: 65.6885, longitude: -18.1262 },
+    },
+    {
+      keys: ["husavik", "húsavík"],
+      coordinates: { latitude: 66.0449, longitude: -17.3389 },
+    },
+    {
+      keys: ["borgarnes"],
+      coordinates: { latitude: 64.5383, longitude: -21.9206 },
+    },
+    {
+      keys: ["stykkisholmur", "stykkishólmur"],
+      coordinates: { latitude: 65.0757, longitude: -22.7298 },
+    },
+    {
+      keys: ["grundarfjordur", "grundarfjörður", "kirkjufell"],
+      coordinates: { latitude: 64.9243, longitude: -23.2631 },
+    },
+    {
+      keys: ["golden circle", "thingvellir", "þingvellir", "geysir", "gullfoss"],
+      coordinates: { latitude: 64.2559, longitude: -20.5193 },
+    },
+    {
+      keys: ["seljalandsfoss"],
+      coordinates: { latitude: 63.6156, longitude: -19.9886 },
+    },
+    {
+      keys: ["skogafoss", "skógafoss"],
+      coordinates: { latitude: 63.5321, longitude: -19.5114 },
+    },
+    {
+      keys: ["vik", "vík"],
+      coordinates: { latitude: 63.4186, longitude: -19.006 },
+    },
+    {
+      keys: ["jokulsarlon", "jökulsárlón"],
+      coordinates: { latitude: 64.0784, longitude: -16.2306 },
+    },
+    {
+      keys: ["landmannalaugar"],
+      coordinates: { latitude: 63.992, longitude: -19.061 },
+    },
+  ];
+
+  return (
+    icelandPlaces.find((place) =>
+      place.keys.some((key) => text.includes(normalizeText(key))),
+    )?.coordinates ?? null
+  );
+}
+
+function reservationStop(
+  reservation: ItineraryReservation,
+  day: PlannerV2Day,
+  objects: JourneyMapObject[],
+  label: string,
+  kind: LeafletMapMarker["kind"],
+  trip: Trip | null,
+): MapStop | null {
+  const object = findObjectForSource(
+    objects,
+    "itinerary_reservation",
+    reservation.id,
+    reservation.title,
+    reservation.locationName,
+  );
+  const coordinates =
+    getCoordinates(object ?? null) ??
+    approximatePlaceCoordinates(trip, reservation.title, reservation.locationName);
+  if (!coordinates) return null;
+
+  return {
+    id: `reservation-${reservation.id}-${day.day.id}`,
+    label,
+    title: reservation.title,
+    subtitle: reservation.locationName,
+    coordinates,
+    kind,
+    icon: reservationIcon(reservation.reservationType),
+    date: day.day.dayDate,
+    sourceType: "itinerary_reservation",
+    sourceId: reservation.id,
+  };
+}
+
+function eventStop(
+  event: ItineraryEvent,
+  day: PlannerV2Day,
+  objects: JourneyMapObject[],
+  trip: Trip | null,
+): MapStop | null {
+  const object = findObjectForSource(
+    objects,
+    "itinerary_event",
+    event.id,
+    event.title,
+    event.locationName,
+  );
+  const coordinates =
+    getCoordinates(object ?? null) ??
+    approximatePlaceCoordinates(trip, event.title, event.locationName);
+  if (!coordinates) return null;
+
+  return {
+    id: `event-${event.id}`,
+    label: timeLabel(event.plannedStart) || event.title,
+    title: event.title,
+    subtitle: event.locationName || event.description,
+    coordinates,
+    kind: "plan",
+    icon: eventIcon(event.eventType),
+    date: day.day.dayDate,
+    sourceType: "itinerary_event",
+    sourceId: event.id,
+  };
+}
+
+function memoryStop(memory: MemoryEntry, objects: JourneyMapObject[]): MapStop | null {
+  const object = findObjectForSource(
+    objects,
+    "memory",
+    memory.id,
+    memory.content,
+    memory.locationName,
+  );
+  if (!object) return null;
+  const coordinates = getCoordinates(object);
+  if (!coordinates) return null;
+
+  return {
+    id: `memory-${memory.id}`,
+    label: memory.type === "photo" ? "1" : "M",
+    title: memory.content || memory.locationName || "Memory",
+    subtitle: memory.locationName,
+    coordinates,
+    kind: "memory",
+    icon: "memory",
+    date: dateKey(memory.capturedAt),
+    sourceType: "memory",
+    sourceId: memory.id,
+    memoryCount: 1,
+    thumbnailUrl: objectThumbnail(object),
+  };
+}
+
+function coordinatesBounds(coordinates: Coordinates[]) {
+  if (!coordinates.length) return null;
+
+  const latitudes = coordinates.map((coordinate) => coordinate.latitude);
+  const longitudes = coordinates.map((coordinate) => coordinate.longitude);
+  return {
+    minLat: Math.min(...latitudes),
+    maxLat: Math.max(...latitudes),
+    minLon: Math.min(...longitudes),
+    maxLon: Math.max(...longitudes),
+  };
+}
+
+function containsCoordinate(bounds: ReturnType<typeof coordinatesBounds>, coordinate: Coordinates) {
+  if (!bounds) return true;
+
+  const latPadding = Math.max(0.2, (bounds.maxLat - bounds.minLat) * 0.25);
+  const lonPadding = Math.max(0.2, (bounds.maxLon - bounds.minLon) * 0.25);
+  return (
+    coordinate.latitude >= bounds.minLat - latPadding &&
+    coordinate.latitude <= bounds.maxLat + latPadding &&
+    coordinate.longitude >= bounds.minLon - lonPadding &&
+    coordinate.longitude <= bounds.maxLon + lonPadding
+  );
+}
+
+function destinationFallbackCenter(trip: Trip | null): Coordinates {
+  const destination = normalizeText(`${trip?.name ?? ""} ${trip?.destination ?? ""}`);
+
+  if (destination.includes("faroe")) return { latitude: 62.0079, longitude: -6.7909 };
+  if (destination.includes("greenland")) return { latitude: 71.7069, longitude: -42.6043 };
+  if (destination.includes("iceland") || destination.includes("reykjavik")) {
+    return { latitude: 64.9631, longitude: -19.0208 };
+  }
+  if (destination.includes("auckland")) return { latitude: -36.8485, longitude: 174.7633 };
+  if (destination.includes("new zealand")) return { latitude: -41.2865, longitude: 174.7762 };
+
+  return { latitude: 64.9631, longitude: -19.0208 };
+}
+
+function destinationFallbackBounds(trip: Trip | null) {
+  const destination = normalizeText(`${trip?.name ?? ""} ${trip?.destination ?? ""}`);
+
+  if (destination.includes("faroe")) {
+    return { minLat: 61.35, maxLat: 62.45, minLon: -7.8, maxLon: -6.1 };
+  }
+  if (destination.includes("greenland")) {
+    return { minLat: 59.5, maxLat: 83.7, minLon: -73, maxLon: -11 };
+  }
+  if (destination.includes("iceland") || destination.includes("reykjavik")) {
+    return { minLat: 63.0, maxLat: 67.2, minLon: -25.5, maxLon: -13.0 };
+  }
+  if (destination.includes("auckland")) {
+    return { minLat: -37.2, maxLat: -36.55, minLon: 174.45, maxLon: 175.15 };
+  }
+  if (destination.includes("new zealand")) {
+    return { minLat: -47.5, maxLat: -34.0, minLon: 166.0, maxLon: 179.0 };
+  }
+
+  return null;
+}
+
+function boundsToCoordinates(
+  bounds: NonNullable<ReturnType<typeof coordinatesBounds>>,
+): Coordinates[] {
+  return [
+    { latitude: bounds.minLat, longitude: bounds.minLon },
+    { latitude: bounds.maxLat, longitude: bounds.maxLon },
+  ];
+}
+
+function mapObjectKind(object: JourneyMapObject): LeafletMapMarker["kind"] {
+  if (object.type === "hotel") return "hotel";
+  if (object.type === "memory") return "memory";
+  if (object.type === "plan_item" || object.type === "route_point") return "plan";
+  return "place";
+}
+
+function reservationIcon(
+  type: ItineraryReservation["reservationType"],
+): LeafletMapMarker["icon"] {
+  if (type === "flight") return "flight";
+  if (type === "hotel") return "hotel";
+  if (type === "car") return "car";
+  if (type === "ferry") return "ferry";
+  if (type === "restaurant") return "meal";
+  if (type === "tour") return "tour";
+  return "place";
+}
+
+function eventIcon(type: ItineraryEvent["eventType"]): LeafletMapMarker["icon"] {
+  if (type === "flight") return "flight";
+  if (type === "hotel") return "hotel";
+  if (type === "car") return "car";
+  if (type === "meal") return "meal";
+  if (type === "shopping") return "shopping";
+  if (type === "transport") return "transport";
+  if (type === "note") return "note";
+  if (type === "activity") return "activity";
+  return "place";
+}
+
+function mapObjectIcon(object: JourneyMapObject): LeafletMapMarker["icon"] {
+  if (object.type === "airport") return "flight";
+  if (object.type === "hotel") return "hotel";
+  if (object.type === "memory") return "memory";
+  if (object.type === "restaurant") return "meal";
+  if (object.type === "route_point") return "transport";
+  if (object.type === "plan_item") return "activity";
+  return "place";
 }
 
 function JourneyMapContent() {
@@ -137,11 +572,13 @@ function JourneyMapContent() {
   const [mapObjects, setMapObjects] = useState<JourneyMapObject[]>([]);
   const [days, setDays] = useState<PlannerV2Day[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [mode, setMode] = useState<MapMode>("live");
-  const [selectedDayId, setSelectedDayId] = useState<string>("all");
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [selectedDayId, setSelectedDayId] = useState<string>("journey");
+  const [showMemories, setShowMemories] = useState(false);
+  const [mapViewVersion, setMapViewVersion] = useState(0);
+  const [selectedMarker, setSelectedMarker] = useState<LeafletMapMarker | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const dateStripRef = useRef<HTMLDivElement | null>(null);
 
   const refreshLiveLocations = useCallback(async () => {
     const locations = await getJourneyLiveLocations(tripId);
@@ -170,7 +607,9 @@ function JourneyMapContent() {
         setLiveLocations(locations);
         setMapObjects(objects);
         setDays(planner.days);
-        setSelectedDayId(planner.days[0]?.day.id ?? "all");
+        setSelectedDayId(
+          getStoredMapViewId(tripId, planner.days) ?? getDefaultDayId(planner.days),
+        );
         setError(null);
       } catch (mapError) {
         if (isMounted) {
@@ -186,6 +625,263 @@ function JourneyMapContent() {
       isMounted = false;
     };
   }, [t, tripId]);
+
+  const selectedDay = useMemo(
+    () => days.find((day) => day.day.id === selectedDayId) ?? null,
+    [days, selectedDayId],
+  );
+
+  useEffect(() => {
+    if (!selectedDayId || selectedDayId === "journey") return;
+    const node = dateStripRef.current?.querySelector(
+      `[data-map-day-id="${selectedDayId}"]`,
+    );
+    node?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+  }, [selectedDayId]);
+
+  const hotelStops = useMemo(
+    () =>
+      days.flatMap((day) =>
+        day.reservations
+          .filter((reservation) => reservation.reservationType === "hotel")
+          .flatMap((reservation) => {
+            const stop = reservationStop(
+              reservation,
+              day,
+              mapObjects,
+              day.dayTag ?? `D${day.dayNumber}`,
+              "hotel",
+              trip,
+            );
+            return stop ? [stop] : [];
+          }),
+      ),
+    [days, mapObjects, trip],
+  );
+
+  const hotelObjectStops = useMemo(
+    () =>
+      mapObjects.flatMap((object) => {
+        if (object.type !== "hotel") return [];
+        const coordinates = getCoordinates(object);
+        if (!coordinates) return [];
+
+        return [
+          {
+            id: `map-object-${object.id}`,
+            label: object.timestamp ? object.timestamp.slice(5, 10).replace("-", ".") : "Stay",
+            title: object.title,
+            subtitle: object.description,
+            coordinates,
+            kind: "hotel" as const,
+            icon: mapObjectIcon(object),
+            date: dateKey(object.timestamp),
+            sourceType: object.sourceType,
+            sourceId: object.sourceId,
+          },
+        ];
+      }),
+    [mapObjects],
+  );
+
+  const journeyDayStops = useMemo(
+    () =>
+      days.flatMap((day) => {
+        const dayLabel = day.dayTag ?? `D${day.dayNumber}`;
+        const stayStop =
+          day.reservations
+            .filter((reservation) => reservation.reservationType === "hotel")
+            .map((reservation) =>
+              reservationStop(
+                reservation,
+                day,
+                mapObjects,
+                dayLabel,
+                "hotel",
+                trip,
+              ),
+            )
+            .find((stop): stop is MapStop => Boolean(stop)) ?? null;
+
+        if (stayStop) return [stayStop];
+
+        const reservationStops = day.reservations.flatMap((reservation) => {
+          if (reservation.reservationType === "hotel") return [];
+          if (
+            !shouldShowScheduleStopOnDay(
+              day.day.dayDate,
+              reservation.startsAt,
+              reservation.endsAt,
+            )
+          ) {
+            return [];
+          }
+
+          const stop = reservationStop(
+            reservation,
+            day,
+            mapObjects,
+            timeLabel(
+              dateKey(reservation.startsAt) === day.day.dayDate
+                ? reservation.startsAt
+                : reservation.endsAt,
+            ) || reservation.title,
+            reservation.reservationType === "car" ? "place" : "plan",
+            trip,
+          );
+          return stop ? [stop] : [];
+        });
+        const activityStops = day.activities.flatMap((activity) => {
+          if (
+            !shouldShowScheduleStopOnDay(
+              day.day.dayDate,
+              activity.plannedStart,
+              activity.plannedEnd,
+            )
+          ) {
+            return [];
+          }
+
+          const stop = eventStop(activity, day, mapObjects, trip);
+          return stop ? [stop] : [];
+        });
+        const firstLocatedStop = [...reservationStops, ...activityStops].sort(
+          (first, second) => (first.label || "").localeCompare(second.label || ""),
+        )[0];
+
+        return firstLocatedStop
+          ? [
+              {
+                ...firstLocatedStop,
+                id: `journey-day-${day.day.id}-${firstLocatedStop.sourceId ?? firstLocatedStop.id}`,
+                label: dayLabel,
+                date: day.day.dayDate,
+              },
+            ]
+          : [];
+      }),
+    [days, mapObjects, trip],
+  );
+
+  const journeyObjectStops = useMemo(
+    () =>
+      mapObjects.flatMap((object) => {
+        if (object.type === "live_location" || object.type === "memory") return [];
+        if (object.type === "hotel" && hotelStops.length) return [];
+        const coordinates = getCoordinates(object);
+        if (!coordinates) return [];
+
+        return [
+          {
+            id: `map-object-${object.id}`,
+            label: object.type === "hotel" ? "Stay" : object.title,
+            title: object.title,
+            subtitle: object.description,
+            coordinates,
+            kind: mapObjectKind(object),
+            icon: mapObjectIcon(object),
+            date: dateKey(object.timestamp),
+            sourceType: object.sourceType,
+            sourceId: object.sourceId,
+          },
+        ];
+      }),
+    [hotelStops.length, mapObjects],
+  );
+
+  const selectedDayStops = useMemo(() => {
+    if (!selectedDay) return [];
+    const selectedDayIndex = days.findIndex((day) => day.day.id === selectedDay.day.id);
+    const previousDay = selectedDayIndex > 0 ? days[selectedDayIndex - 1] : null;
+    const previousStay = previousDay?.reservations.find(
+      (reservation) => reservation.reservationType === "hotel",
+    );
+    const startStop =
+      previousDay && previousStay
+        ? reservationStop(
+            previousStay,
+            previousDay,
+            mapObjects,
+            t("map.start"),
+            "hotel",
+            trip,
+          )
+        : null;
+
+    const reservationStops = selectedDay.reservations.flatMap((reservation) => {
+      if (reservation.reservationType === "hotel") return [];
+      if (
+        !shouldShowScheduleStopOnDay(
+          selectedDay.day.dayDate,
+          reservation.startsAt,
+          reservation.endsAt,
+        )
+      ) {
+        return [];
+      }
+      const stop = reservationStop(
+        reservation,
+        selectedDay,
+        mapObjects,
+        timeLabel(
+          dateKey(reservation.startsAt) === selectedDay.day.dayDate
+            ? reservation.startsAt
+            : reservation.endsAt,
+        ) || reservation.title,
+        reservation.reservationType === "car" ? "place" : "plan",
+        trip,
+      );
+      return stop ? [stop] : [];
+    });
+    const activityStops = selectedDay.activities.flatMap((activity) => {
+      if (
+        !shouldShowScheduleStopOnDay(
+          selectedDay.day.dayDate,
+          activity.plannedStart,
+          activity.plannedEnd,
+        )
+      ) {
+        return [];
+      }
+      const stop = eventStop(activity, selectedDay, mapObjects, trip);
+      return stop ? [stop] : [];
+    });
+
+    const sortedStops = [...reservationStops, ...activityStops].sort((first, second) =>
+      (first.label || "").localeCompare(second.label || ""),
+    );
+    return startStop
+      ? [
+          {
+            ...startStop,
+            id: `day-start-${selectedDay.day.id}-${startStop.sourceId ?? startStop.id}`,
+            date: selectedDay.day.dayDate,
+          },
+          ...sortedStops,
+        ]
+      : sortedStops;
+  }, [days, mapObjects, selectedDay, t, trip]);
+
+  const memoryStops = useMemo(
+    () =>
+      days.flatMap((day) =>
+        day.memories.flatMap((memory) => {
+          const stop = memoryStop(memory, mapObjects);
+          return stop ? [stop] : [];
+        }),
+      ),
+    [days, mapObjects],
+  );
+
+  const visibleMemoryStops = useMemo(() => {
+    if (!showMemories) return [];
+    if (!selectedDay) return memoryStops;
+    return memoryStops.filter((stop) => stop.date === selectedDay.day.dayDate);
+  }, [memoryStops, selectedDay, showMemories]);
 
   const liveByUserId = useMemo(
     () => new Map(liveLocations.map((location) => [location.userId, location])),
@@ -215,58 +911,98 @@ function JourneyMapContent() {
       });
   }, [liveByUserId, members, ownCoordinates]);
 
-  const selectedMemberLocation = useMemo(
-    () =>
-      memberLocations.find(
-        (memberLocation) => memberLocation.member.userId === selectedUserId,
-      ) ?? null,
-    [memberLocations, selectedUserId],
+  const journeyStops = journeyDayStops.length ? journeyDayStops : hotelObjectStops;
+  const journeyRouteCoordinates = useMemo(
+    () => journeyStops.map((stop) => stop.coordinates),
+    [journeyStops],
   );
+  const fallbackCenter = useMemo(() => destinationFallbackCenter(trip), [trip]);
+  const fallbackBounds = useMemo(() => destinationFallbackBounds(trip), [trip]);
+  const activePlanStops = selectedDay
+    ? selectedDayStops
+    : journeyStops.length
+      ? journeyStops
+      : journeyObjectStops;
+  const focusCoordinates = useMemo(
+    () =>
+      activePlanStops.length
+        ? activePlanStops.map((stop) => stop.coordinates)
+        : fallbackBounds
+          ? boundsToCoordinates(fallbackBounds)
+          : [fallbackCenter],
+    [activePlanStops, fallbackBounds, fallbackCenter],
+  );
+  const planBounds =
+    coordinatesBounds(focusCoordinates) ?? fallbackBounds;
 
-  const activeDay = useMemo(() => {
-    if (selectedDayId === "all") return null;
-    return days.find((day) => day.day.id === selectedDayId) ?? null;
-  }, [days, selectedDayId]);
+  const liveMarkers = memberLocations.flatMap((memberLocation) => {
+    const coordinates = getCoordinates(memberLocation.location);
+    if (!coordinates || !memberLocation.member.userId) return [];
+    if (!containsCoordinate(planBounds, coordinates)) return [];
 
-  const relevantObjects = useMemo(() => {
-    if (mode === "memories") {
-      return mapObjects.filter((object) => object.type === "memory");
-    }
-    if (mode === "places") {
-      return mapObjects.filter((object) =>
-        ["hotel", "restaurant", "parking", "fuel", "toilet", "trailhead", "poi", "emergency"].includes(
-          object.type,
-        ),
-      );
-    }
-    if (mode === "day" && activeDay) {
-      const date = activeDay.day.dayDate;
-      return mapObjects.filter((object) => object.timestamp?.slice(0, 10) === date);
-    }
-    return mapObjects;
-  }, [activeDay, mapObjects, mode]);
+    return {
+      id: `live-${memberLocation.member.userId}`,
+      label: memberLocation.member.displayName,
+      subtitle: `${statusLabel(memberLocation.status, t)} · ${relativeLabel(
+        memberLocation.location?.recordedAt ?? null,
+        t,
+      )}`,
+      coordinates,
+      status: memberLocation.status,
+      kind: "live" as const,
+      icon: "live" as const,
+    };
+  });
 
-  const visibleMarkers = useMemo(() => {
-    if (mode === "live") {
-      return memberLocations
-        .filter((memberLocation) => getCoordinates(memberLocation.location))
-        .map((memberLocation) => ({
-          id: memberLocation.member.id,
-          label: memberLocation.member.displayName,
-          status: memberLocation.status,
-          userId: memberLocation.member.userId,
-        }));
-    }
+  const outsideLiveMembers = memberLocations.filter((memberLocation) => {
+    const coordinates = getCoordinates(memberLocation.location);
+    return coordinates && !containsCoordinate(planBounds, coordinates);
+  });
 
-    return relevantObjects
-      .filter((object) => getCoordinates(object))
-      .map((object) => ({
-        id: object.id,
-        label: object.title,
-        status: "live" as const,
-        userId: null,
-      }));
-  }, [memberLocations, mode, relevantObjects]);
+  const planMarkers = activePlanStops.map((stop) => ({
+    id: stop.id,
+    label: stop.label,
+    subtitle: stop.subtitle,
+    coordinates: stop.coordinates,
+    kind: stop.kind,
+    icon: stop.icon,
+  }));
+
+  const memoryMarkers = visibleMemoryStops.map((stop) => ({
+    id: stop.id,
+    label: stop.label,
+    subtitle: stop.subtitle,
+    coordinates: stop.coordinates,
+    kind: "memory" as const,
+    icon: stop.icon,
+    thumbnailUrl: stop.thumbnailUrl,
+    count: stop.memoryCount,
+  }));
+
+  const mapMarkers: LeafletMapMarker[] = [
+    ...planMarkers,
+    ...memoryMarkers,
+    ...liveMarkers,
+  ];
+
+  const mapRoutes: LeafletMapRoute[] = selectedDay
+    ? [
+        {
+          id: "day-route",
+          coordinates: selectedDayStops.map((stop) => stop.coordinates),
+          color: "#047857",
+        },
+      ]
+    : [
+        {
+          id: "hotel-route",
+          coordinates: journeyRouteCoordinates,
+          color: "#b45309",
+        },
+      ];
+
+  const mappedStopCount =
+    activePlanStops.length + visibleMemoryStops.length;
 
   function handleLocationSaved(location: JourneyLiveLocation) {
     setLiveLocations((current) => {
@@ -279,301 +1015,229 @@ function JourneyMapContent() {
     refreshLiveLocations().catch(() => undefined);
   }
 
+  function handleMarkerClick(marker: LeafletMapMarker) {
+    setSelectedMarker(marker);
+  }
+
+  function selectMapView(dayId: string) {
+    setSelectedDayId(dayId);
+    setSelectedMarker(null);
+    setMapViewVersion((value) => value + 1);
+
+    if (dayId === "journey") {
+      window.localStorage.setItem(`otr:map-view:${tripId}`, "journey");
+      return;
+    }
+
+    const day = days.find((plannerDay) => plannerDay.day.id === dayId);
+    if (day) {
+      window.localStorage.setItem(`otr:map-view:${tripId}`, day.day.dayDate);
+      window.dispatchEvent(
+        new CustomEvent("journey:workspace-day-change", {
+          detail: { tripId, day: day.day.dayDate },
+        }),
+      );
+    }
+  }
+
   return (
-    <section className="space-y-5">
-      <div className="rounded-[28px] border border-stone-200 bg-white p-5 shadow-sm">
-        <p className="text-sm font-bold text-emerald-800">{t("map.title")}</p>
-        <h1 className="mt-1 text-3xl font-semibold text-stone-950">
-          {trip?.name || t("nav.map")}
-        </h1>
-        <p className="mt-3 max-w-2xl text-base leading-7 text-stone-600">
-          {mode === "live"
-            ? t("map.enableNote")
-            : mode === "route"
-              ? t("map.routeDescription")
-              : mode === "day"
-                ? t("map.dayDescription")
-                : mode === "memories"
-                  ? t("map.memoriesDescription")
-                  : t("map.placesDescription")}
-        </p>
+    <section className="fixed inset-x-0 bottom-20 top-16 z-10 bg-stone-100 md:bottom-0 md:left-20 md:top-0">
+      <LeafletMapCanvas
+        markers={mapMarkers}
+        routes={mapRoutes}
+        fitCoordinates={focusCoordinates}
+        fitVersion={`${selectedDayId}-${mapViewVersion}-${showMemories ? "memories" : "base"}`}
+        fallbackCenter={fallbackCenter}
+        onMarkerClick={handleMarkerClick}
+      />
+
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-[500] p-3 md:p-5">
+        <div className="pointer-events-auto rounded-[28px] border border-white/80 bg-white/92 p-3 shadow-xl backdrop-blur">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-800">
+                {trip?.name || t("map.title")}
+              </p>
+              <h1 className="truncate text-xl font-black text-stone-950">
+                {selectedDay
+                  ? `${selectedDay.dayTag ?? `D${selectedDay.dayNumber}`} · ${selectedDay.day.dayDate}`
+                  : t("map.fullJourney")}
+              </h1>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <LiveLocationToggle
+                tripId={tripId}
+                compact
+                onLocationSaved={handleLocationSaved}
+              />
+              <button
+                type="button"
+                onClick={() => selectMapView("journey")}
+                className={`rounded-full px-3 py-2 text-xs font-black shadow-sm ${
+                  selectedDayId === "journey"
+                    ? "bg-emerald-700 text-white"
+                    : "bg-stone-100 text-stone-700"
+                }`}
+              >
+                {t("map.fullJourney")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowMemories((value) => !value)}
+                className={`rounded-full px-3 py-2 text-xs font-black shadow-sm ${
+                  showMemories
+                    ? "bg-violet-700 text-white"
+                    : "bg-stone-100 text-stone-700"
+                }`}
+              >
+                {t("map.memoriesLayer")}
+              </button>
+            </div>
+          </div>
+
+          <div ref={dateStripRef} className="mt-3 flex gap-2 overflow-x-auto pb-1">
+            {days.map((day) => (
+              (() => {
+                const selected = selectedDayId === day.day.id;
+                const official = isOfficialTripDay(day.day.dayDate, trip);
+                return (
+                  <button
+                    key={day.day.id}
+                    data-map-day-id={day.day.id}
+                    type="button"
+                    onClick={() => selectMapView(day.day.id)}
+                    className={`min-w-12 shrink-0 rounded-xl border px-2 py-1 text-center transition ${
+                      selected
+                        ? official
+                          ? "border-emerald-700 bg-emerald-700 text-white shadow-sm"
+                          : "border-stone-500 bg-stone-700 text-white shadow-sm"
+                        : official
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                          : "border-dashed border-stone-200 bg-white/70 text-stone-400"
+                    }`}
+                    title={
+                      official
+                        ? t("planner.day.official")
+                        : t("planner.day.buffer")
+                    }
+                  >
+                    <p className="text-xs font-bold">
+                      {day.dayTag ??
+                        t("planner.day.short", { number: day.dayNumber })}
+                    </p>
+                    <p className="text-[11px] leading-tight opacity-80">
+                      {compactDate(day.day.dayDate, t)}
+                    </p>
+                  </button>
+                );
+              })()
+            ))}
+          </div>
+        </div>
+
         {error ? (
-          <p className="mt-4 rounded-2xl bg-red-50 p-3 text-sm font-medium text-red-700">
+          <p className="pointer-events-auto mt-3 rounded-2xl bg-red-50 p-3 text-sm font-bold text-red-700 shadow-sm">
             {error}
           </p>
         ) : null}
       </div>
 
-      <div className="sticky top-16 z-10 -mx-4 border-y border-emerald-100 bg-[#fffdf8]/95 px-4 py-3 backdrop-blur md:static md:mx-0 md:rounded-[24px] md:border md:bg-white">
-        <div className="flex gap-2 overflow-x-auto">
-          {mapModes.map((mapMode) => (
-            <button
-              key={mapMode}
-              type="button"
-              onClick={() => setMode(mapMode)}
-              className={`shrink-0 rounded-full px-4 py-2 text-sm font-bold ${
-                mode === mapMode
-                  ? "bg-emerald-700 text-white shadow-sm"
-                  : "bg-white text-stone-600 ring-1 ring-stone-200"
-              }`}
-            >
-              {t(mapModeLabelKeys[mapMode])}
-            </button>
-          ))}
-        </div>
-      </div>
+      <div className="pointer-events-none absolute inset-x-0 bottom-3 z-[500] px-3 md:bottom-5 md:px-5">
+        {isLoading ? (
+          <p className="pointer-events-auto mb-3 inline-flex rounded-full bg-white px-4 py-2 text-sm font-black text-stone-600 shadow-lg">
+            {t("map.loading")}
+          </p>
+        ) : null}
 
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
-        <div className="overflow-hidden rounded-[30px] border border-stone-200 bg-white shadow-sm">
-          <div className="relative min-h-[360px] bg-[radial-gradient(circle_at_18%_18%,#d1fae5,transparent_24%),radial-gradient(circle_at_78%_28%,#fef3c7,transparent_22%),linear-gradient(135deg,#ecfdf5,#f8fafc_48%,#f5efe3)]">
-            <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(16,185,129,0.12)_1px,transparent_1px),linear-gradient(to_bottom,rgba(16,185,129,0.12)_1px,transparent_1px)] bg-[size:44px_44px]" />
-            <div className="absolute left-5 top-5 rounded-2xl bg-white/90 px-4 py-3 shadow-sm backdrop-blur">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-800">
-                {t("map.placeholder")}
-              </p>
-              <p className="mt-1 max-w-xs text-xs leading-5 text-stone-500">
-                {t("map.mapNote")}
-              </p>
-            </div>
-            {isLoading ? (
-              <div className="absolute inset-0 grid place-items-center">
-                <p className="rounded-full bg-white px-4 py-2 text-sm font-bold text-stone-600 shadow-sm">
-                  {t("map.loading")}
-                </p>
-              </div>
-            ) : null}
-            {visibleMarkers.map((marker, index) => (
-              <button
-                key={marker.id}
-                type="button"
-                onClick={() => marker.userId && setSelectedUserId(marker.userId)}
-                className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full px-3 py-2 text-xs font-black shadow-lg ring-2 ring-white ${
-                  marker.status === "offline"
-                    ? "bg-stone-300 text-stone-700"
-                    : marker.status === "stale"
-                      ? "bg-amber-400 text-amber-950"
-                      : "bg-emerald-700 text-white"
-                }`}
-                style={markerStyle(index, visibleMarkers.length)}
-              >
-                {marker.label}
-              </button>
-            ))}
+        {!isLoading && mappedStopCount === 0 ? (
+          <p className="pointer-events-auto mb-3 inline-flex rounded-full bg-white px-4 py-2 text-sm font-black text-stone-600 shadow-lg">
+            {t("map.noMappedStops")}
+          </p>
+        ) : null}
+
+        {outsideLiveMembers.length ? (
+          <div className="pointer-events-auto mb-3 grid gap-2">
+            {outsideLiveMembers.slice(0, 3).map((memberLocation) => {
+              const coordinates = getCoordinates(memberLocation.location);
+              const distanceLabel =
+                memberLocation.distance === null
+                  ? t("map.distanceUnavailable")
+                  : formatDistance(memberLocation.distance);
+
+              return (
+                <a
+                  key={memberLocation.member.id}
+                  href={coordinates ? navigationHref(coordinates, memberLocation.member.displayName) : "#"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-2xl bg-white/95 px-4 py-3 text-sm font-bold text-stone-700 shadow-lg backdrop-blur"
+                >
+                  {t("map.liveOutside", {
+                    name: memberLocation.member.displayName,
+                    distance: distanceLabel,
+                  })}
+                </a>
+              );
+            })}
           </div>
-        </div>
+        ) : null}
 
-        <aside className="space-y-4">
-          {mode === "live" ? (
-            <div className="rounded-[28px] border border-stone-200 bg-white p-5 shadow-sm">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-800">
-                    {t("map.live")}
-                  </p>
-                  <h2 className="mt-1 text-2xl font-semibold text-stone-950">
-                    {t("map.memberLocations")}
-                  </h2>
-                </div>
-                <LiveLocationToggle
-                  tripId={tripId}
-                  onLocationSaved={handleLocationSaved}
-                />
-              </div>
-            </div>
-          ) : null}
-
-          {mode === "day" ? (
-            <div className="rounded-[28px] border border-stone-200 bg-white p-5 shadow-sm">
-              <label className="text-xs font-black uppercase tracking-[0.18em] text-emerald-800">
-                {t("map.selectedDay")}
-              </label>
-              <select
-                value={selectedDayId}
-                onChange={(event) => setSelectedDayId(event.target.value)}
-                className="mt-3 w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-sm font-bold text-stone-700"
-              >
-                <option value="all">{t("map.allDays")}</option>
-                {days.map((day) => (
-                  <option key={day.day.id} value={day.day.id}>
-                    D{day.dayNumber} · {day.day.dayDate}
-                  </option>
-                ))}
-              </select>
-              {activeDay ? (
-                <p className="mt-3 text-sm leading-6 text-stone-600">
-                  {activeDay.day.title || locationTextFromDay(activeDay) || activeDay.day.dayDate}
+        {selectedMarker ? (
+          <div className="pointer-events-auto rounded-[28px] border border-white/80 bg-white/95 p-4 shadow-2xl backdrop-blur md:max-w-md">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-800">
+                  {selectedMarker.kind === "memory"
+                    ? t("map.memories")
+                    : selectedMarker.kind === "hotel"
+                      ? t("map.hotelRoute")
+                      : selectedMarker.kind === "live"
+                        ? t("map.live")
+                        : t("map.dayRoute")}
                 </p>
+                <h2 className="mt-1 truncate text-xl font-black text-stone-950">
+                  {selectedMarker.label}
+                </h2>
+                {selectedMarker.subtitle ? (
+                  <p className="mt-1 text-sm leading-6 text-stone-600">
+                    {selectedMarker.subtitle}
+                  </p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedMarker(null)}
+                className="rounded-full bg-stone-100 px-4 py-2 text-xs font-black text-stone-600"
+              >
+                {t("common.close")}
+              </button>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <a
+                href={navigationHref(selectedMarker.coordinates, selectedMarker.label)}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-black text-white"
+              >
+                {t("map.openNavigation")}
+              </a>
+              {selectedMarker.kind === "memory" ? (
+                <Link
+                  href={`/trips/${tripId}/timeline`}
+                  className="rounded-full bg-stone-100 px-4 py-2 text-xs font-black text-stone-700"
+                >
+                  {t("map.openTimeline")}
+                </Link>
               ) : null}
             </div>
-          ) : null}
-
-          <div className="rounded-[28px] border border-stone-200 bg-white p-5 shadow-sm">
-            <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-800">
-              {mode === "live" ? t("map.memberList") : t("map.objects")}
-            </p>
-
-            {mode === "live" ? (
-              <div className="mt-4 grid gap-3">
-                {memberLocations.length ? (
-                  memberLocations.map((memberLocation) => {
-                    const coordinates = getCoordinates(memberLocation.location);
-                    const isMe = memberLocation.member.userId === currentUserId;
-
-                    return (
-                      <button
-                        key={memberLocation.member.id}
-                        type="button"
-                        onClick={() =>
-                          memberLocation.member.userId &&
-                          setSelectedUserId(memberLocation.member.userId)
-                        }
-                        className="rounded-3xl bg-stone-50 p-4 text-left transition hover:bg-emerald-50"
-                      >
-                        <div className="flex items-center gap-3">
-                          {memberLocation.member.avatarUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={memberLocation.member.avatarUrl}
-                              alt=""
-                              className="size-11 rounded-full object-cover"
-                            />
-                          ) : (
-                            <span className="grid size-11 place-items-center rounded-full bg-emerald-100 text-sm font-black text-emerald-900">
-                              {initials(memberLocation.member.displayName)}
-                            </span>
-                          )}
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-black text-stone-950">
-                              {memberLocation.member.displayName}
-                              {isMe ? ` · ${t("map.currentUser")}` : ""}
-                            </p>
-                            <p className="mt-1 text-xs font-bold text-stone-500">
-                              {statusLabel(memberLocation.status, t)} ·{" "}
-                              {relativeLabel(memberLocation.location?.recordedAt ?? null, t)}
-                            </p>
-                          </div>
-                          <span
-                            className={`rounded-full px-3 py-1 text-xs font-black ${
-                              memberLocation.status === "live"
-                                ? "bg-emerald-100 text-emerald-800"
-                                : memberLocation.status === "stale"
-                                  ? "bg-amber-100 text-amber-800"
-                                  : "bg-stone-100 text-stone-500"
-                            }`}
-                          >
-                            {statusLabel(memberLocation.status, t)}
-                          </span>
-                        </div>
-                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-bold text-stone-500">
-                          <span className="rounded-2xl bg-white px-3 py-2">
-                            {memberLocation.distance === null
-                              ? t("map.distanceUnavailable")
-                              : formatDistance(memberLocation.distance)}
-                          </span>
-                          <span className="rounded-2xl bg-white px-3 py-2">
-                            {coordinates
-                              ? `${coordinates.latitude.toFixed(4)}, ${coordinates.longitude.toFixed(4)}`
-                              : t("map.noCoordinates")}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })
-                ) : (
-                  <p className="rounded-3xl bg-stone-50 p-4 text-sm font-semibold text-stone-500">
-                    {t("map.noLiveMembers")}
-                  </p>
-                )}
-              </div>
-            ) : (
-              <div className="mt-4 grid gap-3">
-                {relevantObjects.length ? (
-                  relevantObjects.map((object) => {
-                    const coordinates = getCoordinates(object);
-                    return (
-                      <div key={object.id} className="rounded-3xl bg-stone-50 p-4">
-                        <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-800">
-                          {object.type}
-                        </p>
-                        <h3 className="mt-1 text-base font-black text-stone-950">
-                          {object.title}
-                        </h3>
-                        {object.description ? (
-                          <p className="mt-2 text-sm leading-6 text-stone-600">
-                            {object.description}
-                          </p>
-                        ) : null}
-                        {coordinates ? (
-                          <a
-                            href={navigationHref(coordinates, object.title)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="mt-3 inline-flex rounded-full bg-emerald-700 px-4 py-2 text-xs font-black text-white"
-                          >
-                            {t("map.openNavigation")}
-                          </a>
-                        ) : (
-                          <p className="mt-3 text-xs font-bold text-stone-400">
-                            {t("map.noCoordinates")}
-                          </p>
-                        )}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <p className="rounded-3xl bg-stone-50 p-4 text-sm font-semibold text-stone-500">
-                    {t("map.noObjects")}
-                  </p>
-                )}
-              </div>
-            )}
           </div>
-        </aside>
-      </div>
+        ) : null}
 
-      {selectedMemberLocation ? (
-        <div className="fixed inset-x-4 bottom-24 z-30 rounded-[28px] border border-emerald-100 bg-white p-5 shadow-2xl md:bottom-6 md:left-auto md:right-6 md:w-96">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-800">
-                {statusLabel(selectedMemberLocation.status, t)}
-              </p>
-              <h2 className="mt-1 text-xl font-black text-stone-950">
-                {selectedMemberLocation.member.displayName}
-              </h2>
-              <p className="mt-2 text-sm font-semibold text-stone-500">
-                {t("map.lastUpdate")}:{" "}
-                {relativeLabel(selectedMemberLocation.location?.recordedAt ?? null, t)}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setSelectedUserId(null)}
-              className="rounded-full bg-stone-100 px-4 py-2 text-sm font-black text-stone-600"
-            >
-              {t("common.close")}
-            </button>
-          </div>
-          {selectedMemberLocation.location?.accuracy ? (
-            <p className="mt-3 text-sm font-semibold text-stone-500">
-              {t("map.accuracy")}: {Math.round(selectedMemberLocation.location.accuracy)} m
-            </p>
-          ) : null}
-          {getCoordinates(selectedMemberLocation.location) ? (
-            <a
-              href={navigationHref(
-                getCoordinates(selectedMemberLocation.location) as Coordinates,
-                selectedMemberLocation.member.displayName,
-              )}
-              target="_blank"
-              rel="noreferrer"
-              className="mt-4 inline-flex rounded-full bg-emerald-700 px-5 py-3 text-sm font-black text-white"
-            >
-              {t("map.openNavigation")}
-            </a>
-          ) : null}
+        <div className="pointer-events-auto mt-3 inline-flex rounded-full bg-white/90 px-4 py-2 text-xs font-black text-stone-600 shadow-lg backdrop-blur">
+          {selectedDay ? t("map.dayRoute") : t("map.hotelRoute")} ·{" "}
+          {mapMarkers.length}
         </div>
-      ) : null}
+      </div>
     </section>
   );
 }

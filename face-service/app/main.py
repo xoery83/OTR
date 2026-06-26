@@ -1,18 +1,25 @@
 import os
-from functools import lru_cache
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 import cv2
 import numpy as np
 import requests
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from insightface.app import FaceAnalysis
 from pydantic import BaseModel, Field
 
 
-MODEL_NAME = os.getenv("INSIGHTFACE_MODEL", "buffalo_l")
+MODEL_NAME = os.getenv("INSIGHTFACE_MODEL_NAME") or os.getenv(
+    "INSIGHTFACE_MODEL",
+    "buffalo_l",
+)
+MODEL_ROOT = os.getenv("INSIGHTFACE_HOME", "/tmp/insightface")
 EMBEDDING_VERSION = f"insightface-{MODEL_NAME}-512"
 MAX_IMAGE_BYTES = int(os.getenv("FACE_SERVICE_MAX_IMAGE_BYTES", str(12 * 1024 * 1024)))
+DEFAULT_MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.42"))
+
+face_app: FaceAnalysis | None = None
 
 
 class DetectRequest(BaseModel):
@@ -39,19 +46,67 @@ class DetectResponse(BaseModel):
     faces: list[FaceResult]
 
 
-app = FastAPI(title="OTR Face Service", version="0.1.0")
+class EmbedResponse(BaseModel):
+    model_name: str
+    embedding_version: str
+    faces: list[FaceResult]
 
 
-@lru_cache(maxsize=1)
+class CompareRequest(BaseModel):
+    embedding_a: list[float] | None = None
+    embedding_b: list[float] | None = None
+    image_url_a: str | None = None
+    image_url_b: str | None = None
+    threshold: float = Field(default=DEFAULT_MATCH_THRESHOLD, ge=-1.0, le=1.0)
+
+
+class CompareResponse(BaseModel):
+    model_name: str
+    embedding_version: str
+    similarity: float
+    is_match: bool
+    threshold: float
+
+
+def load_face_app() -> FaceAnalysis:
+    analyzer = FaceAnalysis(
+        name=MODEL_NAME,
+        root=MODEL_ROOT,
+        providers=["CPUExecutionProvider"],
+    )
+    analyzer.prepare(ctx_id=-1, det_size=(640, 640))
+    return analyzer
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    global face_app
+    face_app = load_face_app()
+    yield
+
+
+app = FastAPI(title="OTR Face Service", version="0.2.0", lifespan=lifespan)
+
+
 def get_face_app() -> FaceAnalysis:
-    face_app = FaceAnalysis(name=MODEL_NAME, providers=["CPUExecutionProvider"])
-    face_app.prepare(ctx_id=-1, det_size=(640, 640))
+    if face_app is None:
+        raise HTTPException(status_code=503, detail="Face model is not loaded.")
     return face_app
 
 
-def require_secret(secret: str | None) -> None:
+def require_secret(
+    x_face_service_secret: Annotated[
+        str | None,
+        Header(alias="x-face-service-secret"),
+    ] = None,
+) -> None:
     expected = os.getenv("FACE_SERVICE_SECRET")
-    if expected and secret != expected:
+    if not expected:
+        raise HTTPException(
+            status_code=500,
+            detail="FACE_SERVICE_SECRET is not configured.",
+        )
+    if x_face_service_secret != expected:
         raise HTTPException(status_code=401, detail="Invalid face service secret.")
 
 
@@ -86,18 +141,8 @@ def face_quality(face) -> float | None:
     return round((area_score * 0.6) + (keypoint_score * 0.4), 4)
 
 
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "model": MODEL_NAME}
-
-
-@app.post("/detect", response_model=DetectResponse)
-def detect_faces(
-    payload: DetectRequest,
-    x_face_service_secret: Annotated[str | None, Header()] = None,
-) -> DetectResponse:
-    require_secret(x_face_service_secret)
-    image = fetch_image(payload.image_url)
+def analyze_faces(image_url: str) -> list[FaceResult]:
+    image = fetch_image(image_url)
     faces = get_face_app().get(image)
 
     results: list[FaceResult] = []
@@ -123,8 +168,115 @@ def detect_faces(
             )
         )
 
+    return results
+
+
+def cosine_similarity(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right) or not left:
+        raise HTTPException(
+            status_code=400,
+            detail="Embeddings must have the same non-zero length.",
+        )
+
+    left_vector = np.array(left, dtype=np.float32)
+    right_vector = np.array(right, dtype=np.float32)
+    denominator = float(np.linalg.norm(left_vector) * np.linalg.norm(right_vector))
+    if denominator == 0.0:
+        raise HTTPException(status_code=400, detail="Embeddings must not be zero vectors.")
+
+    return float(np.dot(left_vector, right_vector) / denominator)
+
+
+def first_embedding_from_image(image_url: str) -> list[float]:
+    faces = analyze_faces(image_url)
+    if not faces:
+        raise HTTPException(status_code=400, detail="No face found in image.")
+    return faces[0].embedding
+
+
+def resolve_compare_embedding(
+    embedding: list[float] | None,
+    image_url: str | None,
+    label: str,
+) -> list[float]:
+    if embedding is not None:
+        return embedding
+    if image_url:
+        return first_embedding_from_image(image_url)
+    raise HTTPException(
+        status_code=400,
+        detail=f"{label} embedding or image_url is required.",
+    )
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "model": MODEL_NAME}
+
+
+@app.post(
+    "/faces/detect",
+    response_model=DetectResponse,
+    dependencies=[Depends(require_secret)],
+)
+def detect_faces(
+    payload: DetectRequest,
+) -> DetectResponse:
     return DetectResponse(
         model_name=MODEL_NAME,
         embedding_version=EMBEDDING_VERSION,
-        faces=results,
+        faces=analyze_faces(payload.image_url),
+    )
+
+
+@app.post(
+    "/faces/embed",
+    response_model=EmbedResponse,
+    dependencies=[Depends(require_secret)],
+)
+def embed_faces(payload: DetectRequest) -> EmbedResponse:
+    return EmbedResponse(
+        model_name=MODEL_NAME,
+        embedding_version=EMBEDDING_VERSION,
+        faces=analyze_faces(payload.image_url),
+    )
+
+
+@app.post(
+    "/faces/compare",
+    response_model=CompareResponse,
+    dependencies=[Depends(require_secret)],
+)
+def compare_faces(payload: CompareRequest) -> CompareResponse:
+    embedding_a = resolve_compare_embedding(
+        payload.embedding_a,
+        payload.image_url_a,
+        "embedding_a",
+    )
+    embedding_b = resolve_compare_embedding(
+        payload.embedding_b,
+        payload.image_url_b,
+        "embedding_b",
+    )
+    similarity = round(cosine_similarity(embedding_a, embedding_b), 8)
+
+    return CompareResponse(
+        model_name=MODEL_NAME,
+        embedding_version=EMBEDDING_VERSION,
+        similarity=similarity,
+        is_match=similarity >= payload.threshold,
+        threshold=payload.threshold,
+    )
+
+
+@app.post(
+    "/detect",
+    response_model=DetectResponse,
+    dependencies=[Depends(require_secret)],
+)
+def legacy_detect_faces(payload: DetectRequest) -> DetectResponse:
+    return DetectResponse(
+        model_name=MODEL_NAME,
+        embedding_version=EMBEDDING_VERSION,
+        faces=analyze_faces(payload.image_url),
     )

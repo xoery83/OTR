@@ -258,6 +258,8 @@ export type CreateTripInput = {
   destination: string;
   startDate: string;
   endDate: string;
+  coverImageUrl?: string | null;
+  photoStorageProvider?: PhotoStorageProvider | null;
 };
 
 export type JourneyStatus = "upcoming" | "active" | "completed";

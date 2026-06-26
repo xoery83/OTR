@@ -80,6 +80,9 @@ export async function createTrip(input: CreateTripInput) {
       destination: input.destination || null,
       start_date: input.startDate || null,
       end_date: input.endDate || null,
+      cover_image_url: input.coverImageUrl || null,
+      photo_storage_provider: input.photoStorageProvider ?? null,
+      photo_storage_status: "not_connected",
       created_by: user.id,
     });
 
@@ -93,7 +96,9 @@ export async function createTrip(input: CreateTripInput) {
     destination: input.destination,
     startDate: input.startDate || null,
     endDate: input.endDate || null,
-    coverImageUrl: null,
+    coverImageUrl: input.coverImageUrl || null,
+    photoStorageProvider: input.photoStorageProvider ?? null,
+    photoStorageStatus: "not_connected",
     createdBy: user.id,
     createdAt,
   } satisfies Trip;
