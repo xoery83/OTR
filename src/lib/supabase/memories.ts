@@ -28,6 +28,13 @@ export type CreateMemoryBaseInput = {
   itineraryReservationId?: string | null;
 };
 
+export type UpdateMemoryInput = {
+  memoryId: string;
+  content?: string;
+  locationName?: string | null;
+  capturedAt?: string;
+};
+
 function mapMemory(row: MemoryRow): MemoryEntry {
   return {
     id: row.id,
@@ -203,6 +210,79 @@ export async function createTextMemory(
     contributorAvatarUrl:
       user.user_metadata?.avatar_url || user.user_metadata?.picture || null,
   } satisfies MemoryEntry;
+}
+
+export async function updateMemoryEntry(input: UpdateMemoryInput) {
+  const user = await getCurrentUser();
+
+  if (!user) {
+    throw new Error("You must be logged in to update a memory.");
+  }
+
+  const patch: Partial<MemoryRow> = {};
+  if (input.content !== undefined) patch.content = input.content.trim();
+  if (input.locationName !== undefined) {
+    patch.location_name = input.locationName?.trim() || null;
+  }
+  if (input.capturedAt !== undefined) {
+    patch.captured_at = new Date(input.capturedAt).toISOString();
+  }
+
+  const { data, error } = await supabase
+    .from("memory_entries")
+    .update(patch)
+    .eq("id", input.memoryId)
+    .eq("user_id", user.id)
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return mapMemory(data as MemoryRow);
+}
+
+export async function deleteMemoryEntry(memoryId: string) {
+  const user = await getCurrentUser();
+
+  if (!user) {
+    throw new Error("You must be logged in to delete a memory.");
+  }
+
+  const { data, error } = await supabase.rpc(
+    "delete_memory_entry_for_current_user",
+    { target_memory_id: memoryId },
+  );
+
+  if (error) {
+    if (error.code === "PGRST202" || error.message.includes("function")) {
+      await deleteMemoryEntryDirect(memoryId, user.id);
+      return;
+    }
+    throw error;
+  }
+
+  if (!data) {
+    throw new Error("Could not delete this memory.");
+  }
+}
+
+async function deleteMemoryEntryDirect(memoryId: string, userId: string) {
+  const { data, error } = await supabase
+    .from("memory_entries")
+    .delete()
+    .eq("id", memoryId)
+    .eq("user_id", userId)
+    .select("id");
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data || data.length === 0) {
+    throw new Error("Could not delete this memory. It may belong to another user.");
+  }
 }
 
 export async function createPhotoMemory(

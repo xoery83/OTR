@@ -33,10 +33,21 @@ function mapTrip(row: TripRow): Trip {
   };
 }
 
+function isMissingEmailClaimFunction(error: { code?: string; message?: string }) {
+  return (
+    error.code === "42883" ||
+    /claim_email_invited_journeys/i.test(error.message ?? "")
+  );
+}
+
 export async function getTripsForCurrentUser() {
+  const { error: claimError } = await supabase.rpc("claim_email_invited_journeys");
+  if (claimError && !isMissingEmailClaimFunction(claimError)) throw claimError;
+
   const { data, error } = await supabase
     .from("trips")
     .select("*")
+    .order("start_date", { ascending: true, nullsFirst: false })
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -120,12 +131,19 @@ export async function deleteTrip(tripId: string) {
 
 export type UpdateTripSettingsInput = {
   tripId: string;
+  name?: string;
   coverImageUrl?: string | null;
   photoStorageProvider?: PhotoStorageProvider | null;
 };
 
 export async function updateTripSettings(input: UpdateTripSettingsInput) {
   const updates: Record<string, string | null> = {};
+
+  if ("name" in input) {
+    const name = input.name?.trim();
+    if (!name) throw new Error("Journey name is required.");
+    updates.name = name;
+  }
 
   if ("coverImageUrl" in input) {
     updates.cover_image_url = input.coverImageUrl || null;

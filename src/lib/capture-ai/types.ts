@@ -176,9 +176,35 @@ export type CaptureIntentDetection = {
   rawResponse?: unknown;
 };
 
+export type CaptureSessionState = {
+  id: string;
+  status: "idle" | "collecting_fields" | "ready_to_confirm" | "completed";
+  currentIntent?: CaptureIntentKey;
+  currentFields: Record<string, unknown>;
+  missingFields: string[];
+  lastQuestion?: {
+    field: string;
+    question: string;
+  };
+  pendingChoices?: {
+    type: string;
+    options: unknown[];
+  };
+  targetObject?: Record<string, unknown>;
+  actionGraph?: CaptureActionGraph;
+  confidence?: number;
+  completedActions: {
+    intent: CaptureIntentKey;
+    actionGraph: CaptureActionGraph;
+    completedAt: string;
+  }[];
+};
+
 export type CaptureIntentTestInput = {
   tripId?: string;
   text: string;
   inputTypes?: CaptureInputType[];
   engineOptions?: CaptureEngineOptions;
+  sessionContext?: CaptureSessionState;
+  exampleOnly?: boolean;
 };

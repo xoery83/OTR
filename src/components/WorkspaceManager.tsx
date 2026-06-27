@@ -2,6 +2,10 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef } from "react";
+import {
+  isTodayTimestamp,
+  writeTodayScopedValue,
+} from "@/lib/day-view-storage";
 import { getTrip } from "@/lib/supabase/trips";
 import {
   clearSavedWorkspace,
@@ -29,6 +33,13 @@ function restoreScroll(scrollY: number) {
       window.scrollTo({ top: Math.max(0, scrollY), behavior: "instant" });
     }, 120);
   });
+}
+
+function removeDateSearchParam(search: string) {
+  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  params.delete("date");
+  const next = params.toString();
+  return next ? `?${next}` : "";
 }
 
 export function WorkspaceManager() {
@@ -92,17 +103,21 @@ export function WorkspaceManager() {
       if (!shouldSaveWorkspacePath(saved.pathname)) return;
 
       try {
+        const savedToday = isTodayTimestamp(saved.timestamp);
         if (saved.tripId) {
           await getTrip(saved.tripId);
-          if (saved.day) {
-            window.localStorage.setItem(`otr:planner-day:${saved.tripId}`, saved.day);
+          if (saved.day && savedToday) {
+            writeTodayScopedValue(`otr:planner-day:${saved.tripId}`, saved.day);
           }
         }
 
         if (!isMounted) return;
         isRestoringRef.current = true;
         restoreScrollYRef.current = saved.scrollY;
-        router.replace(`${saved.pathname}${saved.search ?? ""}`);
+        const restoreSearch = savedToday
+          ? saved.search ?? ""
+          : removeDateSearchParam(saved.search ?? "");
+        router.replace(`${saved.pathname}${restoreSearch}`);
       } catch {
         clearSavedWorkspace();
       }

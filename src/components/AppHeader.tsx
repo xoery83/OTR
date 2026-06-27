@@ -6,10 +6,18 @@ import { useEffect, useState } from "react";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import { logout } from "@/lib/supabase/auth";
-import { getTrip } from "@/lib/supabase/trips";
+import { getTrip, getTripsForCurrentUser } from "@/lib/supabase/trips";
+import type { Trip } from "@/types";
 
 function getActiveTripId(pathname: string) {
-  return pathname.match(/^\/trips\/([^/]+)/)?.[1] ?? null;
+  const segment = pathname.match(/^\/trips\/([^/]+)/)?.[1] ?? null;
+  return segment && segment !== "new" ? segment : null;
+}
+
+function getJourneySwitchHref(pathname: string, tripId: string) {
+  return pathname.match(/^\/trips\/[^/]+/)
+    ? pathname.replace(/^\/trips\/[^/]+/, `/trips/${tripId}`)
+    : `/trips/${tripId}`;
 }
 
 export function AppHeader() {
@@ -20,7 +28,10 @@ export function AppHeader() {
   const tripId = getActiveTripId(pathname);
   const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isJourneyMenuOpen, setIsJourneyMenuOpen] = useState(false);
   const [journeyName, setJourneyName] = useState<string | null>(null);
+  const [journeyCoverImageUrl, setJourneyCoverImageUrl] = useState<string | null>(null);
+  const [journeys, setJourneys] = useState<Trip[]>([]);
 
   useEffect(() => {
     let isMounted = true;
@@ -28,14 +39,21 @@ export function AppHeader() {
     async function loadJourneyName() {
       if (!tripId) {
         setJourneyName(null);
+        setJourneyCoverImageUrl(null);
         return;
       }
 
       try {
         const trip = await getTrip(tripId);
-        if (isMounted) setJourneyName(trip.name);
+        if (isMounted) {
+          setJourneyName(trip.name);
+          setJourneyCoverImageUrl(trip.coverImageUrl);
+        }
       } catch {
-        if (isMounted) setJourneyName(t("common.journey"));
+        if (isMounted) {
+          setJourneyName(t("common.journey"));
+          setJourneyCoverImageUrl(null);
+        }
       }
     }
 
@@ -45,15 +63,47 @@ export function AppHeader() {
     };
   }, [tripId, t]);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadJourneys() {
+      try {
+        const data = await getTripsForCurrentUser();
+        if (isMounted) setJourneys(data);
+      } catch {
+        if (isMounted) setJourneys([]);
+      }
+    }
+
+    loadJourneys();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   async function handleLogout() {
     await logout();
     setIsMenuOpen(false);
     router.push("/login");
   }
 
+  const journeyHeaderStyle =
+    !isMapPage && tripId && journeyCoverImageUrl
+      ? {
+          backgroundImage: [
+            "linear-gradient(90deg, rgba(255, 253, 248, 0.96) 0%, rgba(255, 253, 248, 0.7) 22%, rgba(255, 253, 248, 0.72) 78%, rgba(255, 253, 248, 0.97) 100%)",
+            "linear-gradient(180deg, rgba(255, 253, 248, 0.55), rgba(255, 253, 248, 0.88))",
+            `url("${journeyCoverImageUrl}")`,
+          ].join(", "),
+          backgroundPosition: "center",
+          backgroundSize: "cover",
+        }
+      : undefined;
+
   return (
     <>
       <header
+        style={journeyHeaderStyle}
         className={
           isMapPage
             ? "fixed left-3 top-3 z-[650] md:hidden"
@@ -94,12 +144,73 @@ export function AppHeader() {
               <p className="pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-sm font-black text-stone-900">
                 {tripId ? journeyName || t("common.journey") : "OTR"}
               </p>
-              <Link
-                href="/trips"
-                className="shrink-0 rounded-full bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm"
-              >
-                {t("nav.journeys")}
-              </Link>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsJourneyMenuOpen((current) => !current)}
+                  className="flex shrink-0 items-center gap-1.5 rounded-full bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm"
+                  aria-expanded={isJourneyMenuOpen}
+                >
+                  <span>{t("nav.journeys")}</span>
+                  <span
+                    className={`text-[10px] leading-none transition-transform ${
+                      isJourneyMenuOpen ? "rotate-180" : ""
+                    }`}
+                    aria-hidden="true"
+                  >
+                    ▼
+                  </span>
+                </button>
+                {isJourneyMenuOpen ? (
+                  <div className="absolute right-0 top-12 z-50 w-72 max-w-[82vw] overflow-hidden rounded-2xl border border-emerald-100 bg-white shadow-xl">
+                    <div className="border-b border-stone-100 px-4 py-3">
+                      <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">
+                        Journeys
+                      </p>
+                    </div>
+                    <div className="max-h-80 overflow-y-auto p-2">
+                      {journeys.length > 0 ? (
+                        journeys.map((journey) => {
+                          const active = journey.id === tripId;
+
+                          return (
+                            <Link
+                              key={journey.id}
+                              href={getJourneySwitchHref(pathname, journey.id)}
+                              onClick={() => setIsJourneyMenuOpen(false)}
+                              className={`block rounded-xl px-3 py-3 text-sm font-bold ${
+                                active
+                                  ? "bg-emerald-50 text-emerald-800"
+                                  : "text-stone-800 hover:bg-stone-50"
+                              }`}
+                            >
+                              <span className="block truncate">{journey.name}</span>
+                              {journey.destination ? (
+                                <span className="mt-1 block truncate text-xs font-semibold text-stone-500">
+                                  {journey.destination}
+                                </span>
+                              ) : null}
+                            </Link>
+                          );
+                        })
+                      ) : (
+                        <p className="px-3 py-4 text-sm font-semibold text-stone-500">
+                          No journeys yet.
+                        </p>
+                      )}
+                    </div>
+                    <div className="border-t border-stone-100 p-2">
+                      <Link
+                        href="/trips"
+                        onClick={() => setIsJourneyMenuOpen(false)}
+                        className="block rounded-xl px-3 py-3 text-sm font-black text-emerald-700 hover:bg-emerald-50"
+                      >
+                        {t("nav.journeys")}
+                      </Link>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </>
           ) : null}
         </div>

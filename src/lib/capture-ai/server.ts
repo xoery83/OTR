@@ -308,7 +308,11 @@ function actionGraphValidationWarnings(
       if (!payload.payerMemberId && !payload.payer) {
         missing.add("payer");
       }
-      if (participantIds.length === 0 && !payload.splitMembers) {
+      if (
+        payload.accountingMode !== "stats_only" &&
+        participantIds.length === 0 &&
+        !payload.splitMembers
+      ) {
         missing.add("splitMembers");
       }
 
@@ -577,6 +581,8 @@ const currencyAliases: Record<string, string> = {
   "￥": "CNY",
   usd: "USD",
   nzd: "NZD",
+  aud: "AUD",
+  chf: "CHF",
   eur: "EUR",
   isk: "ISK",
   dkk: "DKK",
@@ -585,6 +591,11 @@ const currencyAliases: Record<string, string> = {
   cny: "CNY",
   纽币: "NZD",
   新西兰元: "NZD",
+  澳币: "AUD",
+  澳元: "AUD",
+  澳大利亚元: "AUD",
+  瑞郎: "CHF",
+  瑞士法郎: "CHF",
   美元: "USD",
   欧元: "EUR",
   人民币: "CNY",
@@ -605,9 +616,19 @@ function localPreparse(
   inputTypes: string[] = ["text"],
 ): CaptureLocalPreparseResult {
   const lower = text.toLocaleLowerCase();
-  const amountMatch = text.match(
-    /([¥￥€$]|isk|dkk|nzd|usd|eur|gbp|rmb|cny)?\s*(\d+(?:[,.]\d{1,2})?)\s*(isk|dkk|nzd|usd|eur|gbp|rmb|cny|冰岛克朗|纽币|人民币|美元|欧元)?/i,
-  );
+  const amountMatches = [
+    ...text.matchAll(
+      /([¥￥€$]|isk|dkk|nzd|usd|eur|gbp|rmb|cny)?\s*(\d+(?:[,.]\d{1,2})?)\s*(isk|dkk|nzd|usd|eur|gbp|rmb|cny|冰岛克朗|纽币|人民币|美元|欧元)?/gi,
+    ),
+  ];
+  const amountMatch = amountMatches.find((match) => {
+    const index = match.index ?? 0;
+    const before = text.slice(Math.max(0, index - 4), index);
+    const after = text.slice(index + match[0].length, index + match[0].length + 2);
+    const hasCurrency = Boolean(match[1] || match[3]);
+    if (hasCurrency) return true;
+    return !/(上午|早上|中午|下午|晚上|今晚)$/.test(before) && !/^\s*(点|时)/.test(after);
+  });
   const keywordPatterns: [string, RegExp][] = [
     ["hotel", /hotel|住宿|入住|accommodation|airbnb|酒店|旅馆|民宿/],
     ["fuel", /fuel|gas|petrol|加油|汽油|油费/],
@@ -674,6 +695,196 @@ function wordNumber(value: string | undefined) {
   return map[value] ?? Number(value);
 }
 
+function parseExplicitMonthDay(text: string) {
+  const match = text.match(/(\d{1,2})[./月](\d{1,2})\s*(?:日|号)?/);
+  if (!match) return null;
+  const year = new Date().getFullYear();
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  if (!Number.isFinite(month) || !Number.isFinite(day)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return {
+    value: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+    label: `${month}.${day}`,
+    evidence: match[0],
+  };
+}
+
+function parseAccommodationLocation(text: string, skyTowerMatch: boolean) {
+  if (skyTowerMatch) {
+    return {
+      value: "Sky Tower附近",
+      payloadValue: "Sky Tower area",
+      evidence: text.match(/sky\s*tower|skytower|天空塔/i)?.[0],
+    };
+  }
+
+  const patterns = [
+    /(?:住在|住到|入住|住宿地址是|住宿地址在|地址是|地址在)\s*([^，。,；;]+)/,
+    /(?:在)\s*([^，。,；;]+?)\s*(?:住|住宿|入住)/,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const value = match?.[1]?.trim();
+    if (value && match) {
+      return {
+        value,
+        payloadValue: value,
+        evidence: match[0],
+      };
+    }
+  }
+
+  return {
+    value: "住宿地点待确认",
+    payloadValue: "",
+    evidence: undefined,
+  };
+}
+
+function localAccommodationPlannerDetection(input: {
+  text: string;
+  preparse: CaptureLocalPreparseResult;
+  confidence: number;
+  nights: number | undefined;
+  nightsMatch?: RegExpMatchArray | null;
+  skyTowerMatch: boolean;
+  reason: string;
+}): Partial<CaptureIntentDetection> {
+  const { text, preparse, confidence, nights, nightsMatch, skyTowerMatch, reason } =
+    input;
+  const explicitDate = parseExplicitMonthDay(text);
+  const isTonight = /今晚|tonight/i.test(text);
+  const isEvening = /今晚|晚上|evening|night/i.test(text);
+  const location = parseAccommodationLocation(text, skyTowerMatch);
+  const nightsText = nights ? String(nights) : "";
+  const staySummaryParts = [
+    "新增住宿",
+    explicitDate ? `${explicitDate.label}${isEvening ? " 晚上" : ""}` : isTonight ? "今晚" : "",
+    location.value !== "住宿地点待确认" ? location.value : "",
+    nightsText ? `住${nightsText}晚` : "",
+  ].filter(Boolean);
+
+  return {
+    intent: "planner_update",
+    confidence,
+    entities: {
+      preparse,
+      sourceText: text,
+      accommodation: {
+        area: location.payloadValue || null,
+        date: explicitDate?.value ?? (isTonight ? "tonight" : null),
+        nights: nights ?? null,
+      },
+    },
+    missingInformation: location.payloadValue ? [] : ["location"],
+    clarificationQuestions: location.payloadValue
+      ? []
+      : [{ id: "location", question: "住宿地点在哪里？" }],
+    reason,
+    proposedAction: {
+      type: "planner_update",
+      label: "Add accommodation",
+      description: "Create a hotel/accommodation planner item.",
+    },
+    actionGraph: {
+      nodes: [
+        {
+          id: "hotel_stay",
+          intent: "planner_update",
+          type: "hotel_stay",
+          icon: "🏨",
+          title: "新增住宿",
+          summary: staySummaryParts.join("，") || "新增住宿安排",
+          details: [
+            {
+              label: "类型",
+              value: "住宿",
+              source: "explicit",
+              evidence: "住宿",
+            },
+            {
+              label: "入住",
+              value: explicitDate
+                ? `${explicitDate.label}${isEvening ? " 晚上" : ""}`
+                : isTonight
+                  ? "今晚"
+                  : "待确认",
+              source: explicitDate || isTonight ? "explicit" : "default",
+              evidence: explicitDate?.evidence ?? (isTonight ? "今晚" : undefined),
+            },
+            {
+              label: "地点",
+              value: location.value,
+              source: location.payloadValue ? "explicit" : "default",
+              evidence: location.evidence,
+            },
+            ...(nightsText
+              ? [
+                  {
+                    label: "时长",
+                    value: `${nightsText}晚`,
+                    source: "explicit" as const,
+                    evidence: nightsMatch?.[0],
+                  },
+                ]
+              : []),
+          ],
+          facts: [
+            {
+              key: "itemType",
+              label: "类型",
+              value: "住宿",
+              source: "explicit",
+              evidence: "住宿",
+            },
+            {
+              key: "checkInDate",
+              label: "入住",
+              value: explicitDate
+                ? `${explicitDate.label}${isEvening ? " 晚上" : ""}`
+                : isTonight
+                  ? "今晚"
+                  : "待确认",
+              source: explicitDate || isTonight ? "explicit" : "default",
+              evidence: explicitDate?.evidence ?? (isTonight ? "今晚" : undefined),
+            },
+            {
+              key: "location",
+              label: "地点",
+              value: location.value,
+              source: location.payloadValue ? "explicit" : "default",
+              evidence: location.evidence,
+            },
+            ...(nightsText
+              ? [
+                  {
+                    key: "nights",
+                    label: "时长",
+                    value: `${nightsText}晚`,
+                    source: "explicit" as const,
+                    evidence: nightsMatch?.[0],
+                  },
+                ]
+              : []),
+          ],
+          mandatoryMissing: location.payloadValue ? [] : ["location"],
+          optionalMissing: ["bookingReference", "participants"],
+          payload: {
+            title: location.payloadValue ? `${location.value}住宿` : null,
+            date: explicitDate?.value ?? (isTonight ? "tonight" : null),
+            time: isEvening ? "18:00" : null,
+            area: location.payloadValue || null,
+            locationName: location.payloadValue || null,
+            nights: nights ?? null,
+          },
+        },
+      ],
+      relations: [],
+    },
+  };
+}
+
 function localIntentEngine(
   text: string,
   preparse: CaptureLocalPreparseResult,
@@ -718,6 +929,19 @@ function localIntentEngine(
   if (lockedIntent === "planner_update" || biasedIntent === "planner_update") {
     const hasExplicitExpense = preparse.possibleActions.includes("expense");
     const hasExplicitNavigation = preparse.possibleActions.includes("navigation");
+    if (isAccommodation && !hasExplicitExpense && !hasExplicitNavigation) {
+      return localAccommodationPlannerDetection({
+        text,
+        preparse,
+        confidence: lockedIntent === "planner_update" ? 0.98 : 0.9,
+        nights,
+        nightsMatch,
+        skyTowerMatch,
+        reason: lockedIntent
+          ? "Entry point locked this accommodation capture to Planner."
+          : "Entry point biased this accommodation capture toward Planner.",
+      });
+    }
     if (lockedIntent === "planner_update" || (!hasExplicitExpense && !hasExplicitNavigation)) {
       return {
         intent: "planner_update",
@@ -898,6 +1122,18 @@ function localIntentEngine(
     };
   }
 
+  if (isAccommodation) {
+    return localAccommodationPlannerDetection({
+      text,
+      preparse,
+      confidence: 0.88,
+      nights,
+      nightsMatch,
+      skyTowerMatch,
+      reason: "Detected an accommodation planner item.",
+    });
+  }
+
   if (
     amountText &&
     /fuel|gas|parking|dinner|lunch|hotel|receipt|invoice|paid|cost|费用|花了|付款|停车|油|加油|晚餐|午餐|发票|收据/.test(
@@ -1059,6 +1295,13 @@ function evaluateComplexity(input: {
     reasons.push("Capture likely needs Journey context or itinerary lookup.");
   }
   if (
+    context?.captureSession &&
+    /再|继续|顺便|补充|加上|改成|改为|上一个|刚才|这个|那个|它|previous|same|also|add|change|update/i.test(text)
+  ) {
+    score += 0.45;
+    reasons.push("Capture references previous session context.");
+  }
+  if (
     typeof localCandidate?.confidence === "number" &&
     localCandidate.confidence < config.routing.localConfidenceThreshold
   ) {
@@ -1189,6 +1432,7 @@ Supported intents:
 
 Capture input types: ${(input.inputTypes ?? ["text"]).join(", ")}
 Capture Engine options JSON: ${JSON.stringify(input.engineOptions ?? {})}
+Capture session context JSON: ${JSON.stringify(input.context?.captureSession ?? null)}
 Context JSON: ${JSON.stringify(input.context ?? {})}
 Local pre-parser JSON: ${JSON.stringify(preparse)}
 Local candidate JSON: ${JSON.stringify(localCandidate ?? null)}

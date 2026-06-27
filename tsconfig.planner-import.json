@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "noEmit": false,
+    "outDir": ".planner-import-test-build"
+  },
+  "include": [
+    "src/lib/planner-import.ts",
+    "src/lib/planner-import-local.ts",
+    "tests/run-planner-import-local-tests.ts"
+  ]
+}

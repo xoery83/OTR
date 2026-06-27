@@ -2,6 +2,8 @@ import type {
   ItineraryEvent,
   ItineraryEventType,
   ItineraryReservationType,
+  JourneyMember,
+  LedgerCategory,
   TripMember,
 } from "@/types";
 
@@ -57,6 +59,34 @@ export type ParsedReservationDraft = {
   location_name: string | null;
   starts_at: string | null;
   ends_at: string | null;
+  participant_names: string[];
+  matched_participant_user_ids: string[];
+  unmatched_participant_names: string[];
+  source_excerpt: string | null;
+  confidence: number | null;
+  needs_review: boolean;
+};
+
+export type ParsedExpenseDraft = {
+  clientId: string;
+  title: string;
+  category: LedgerCategory;
+  accounting_mode: "shared" | "stats_only";
+  expense_date: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  original_amount: number | null;
+  original_currency: string;
+  payer_name: string | null;
+  payer_member_id: string | null;
+  participant_names: string[];
+  participant_member_ids: string[];
+  unmatched_participant_names: string[];
+  address_text: string | null;
+  linked_stay_title: string | null;
+  linked_stay_location: string | null;
+  linked_stay_start_date: string | null;
+  linked_stay_end_date: string | null;
   source_excerpt: string | null;
   confidence: number | null;
   needs_review: boolean;
@@ -65,6 +95,7 @@ export type ParsedReservationDraft = {
 export type ParsedItineraryResponse = {
   events: ParsedItineraryDraft[];
   reservations: ParsedReservationDraft[];
+  expenses: ParsedExpenseDraft[];
   warnings: string[];
 };
 
@@ -103,6 +134,27 @@ export type AiItineraryResponse = {
     location_name?: string | null;
     starts_at?: string | null;
     ends_at?: string | null;
+    participant_names?: string[] | null;
+    source_excerpt?: string | null;
+    confidence?: number | null;
+    needs_review?: boolean | null;
+  }[] | null;
+  expenses?: {
+    title?: string | null;
+    category?: string | null;
+    accounting_mode?: "shared" | "stats_only" | null;
+    expense_date?: string | null;
+    start_date?: string | null;
+    end_date?: string | null;
+    original_amount?: number | null;
+    original_currency?: string | null;
+    payer_name?: string | null;
+    participant_names?: string[] | null;
+    address_text?: string | null;
+    linked_stay_title?: string | null;
+    linked_stay_location?: string | null;
+    linked_stay_start_date?: string | null;
+    linked_stay_end_date?: string | null;
     source_excerpt?: string | null;
     confidence?: number | null;
     needs_review?: boolean | null;
@@ -132,6 +184,19 @@ const validEventTypes: ItineraryEventType[] = [
   "other",
 ];
 
+const validLedgerCategories: LedgerCategory[] = [
+  "flight",
+  "hotel",
+  "car",
+  "fuel",
+  "food",
+  "ticket",
+  "shopping",
+  "transport",
+  "insurance",
+  "other",
+];
+
 function normalizeName(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -140,23 +205,98 @@ function buildMemberLookup(members: TripMember[]) {
   return new Map(members.map((member) => [normalizeName(member.name), member]));
 }
 
+const commonJourneyMemberAliases: Record<string, string[]> = {
+  "leon li": ["yang li", "li yang", "李旸"],
+  "caroline": ["qianyu li", "li qianyu", "caroline li", "李芊羽", "李千羽"],
+  "tx": ["tian xin", "xin tian", "田欣"],
+  "tian xin": ["tx", "xin tian", "田欣"],
+};
+
+function aliasVariants(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  return [
+    trimmed,
+    ...(parts.length === 2 ? [[...parts].reverse().join(" ")] : []),
+  ];
+}
+
+function journeyMemberAliases(member: JourneyMember) {
+  const displayParts = member.displayName.split(/\s+/).filter(Boolean);
+  const noteAliases = (member.notes ?? "")
+    .split(/[,，、/;]/)
+    .flatMap(aliasVariants);
+  const aliases = [
+    member.displayName,
+    ...displayParts,
+    ...(displayParts.length === 2 ? [[...displayParts].reverse().join(" ")] : []),
+    ...noteAliases,
+    ...(commonJourneyMemberAliases[normalizeName(member.displayName)] ?? []),
+  ].filter(Boolean);
+
+  return [...new Set(aliases)];
+}
+
+function buildKnownJourneyMemberLookup(journeyMembers: JourneyMember[]) {
+  const lookup = new Set<string>();
+  journeyMembers.forEach((member) => {
+    journeyMemberAliases(member).forEach((alias) => {
+      lookup.add(normalizeName(alias));
+    });
+  });
+  return lookup;
+}
+
+function buildJourneyMemberAliasLookup(journeyMembers: JourneyMember[]) {
+  const lookup = new Map<string, JourneyMember>();
+  journeyMembers.forEach((member) => {
+    journeyMemberAliases(member).forEach((alias) => {
+      lookup.set(normalizeName(alias), member);
+    });
+  });
+  return lookup;
+}
+
 export function toPlannerDrafts(
   aiResponse: AiItineraryResponse,
   members: TripMember[],
+  journeyMembers: JourneyMember[] = [],
 ): ParsedItineraryResponse {
   const memberLookup = buildMemberLookup(members);
+  const knownJourneyMemberLookup = buildKnownJourneyMemberLookup(journeyMembers);
+  const journeyMemberAliasLookup = buildJourneyMemberAliasLookup(journeyMembers);
+  const isKnownParticipant = (name: string) =>
+    memberLookup.has(normalizeName(name)) ||
+    knownJourneyMemberLookup.has(normalizeName(name));
+  const canonicalParticipantName = (name: string) =>
+    journeyMemberAliasLookup.get(normalizeName(name))?.displayName ?? name.trim();
+  const participantUserId = (name: string) =>
+    memberLookup.get(normalizeName(name))?.userId ??
+    journeyMemberAliasLookup.get(normalizeName(name))?.userId ??
+    null;
+  const participantMemberId = (name: string) =>
+    journeyMemberAliasLookup.get(normalizeName(name))?.id ?? null;
+  const categoryFor = (value: string | null | undefined): LedgerCategory => {
+    const normalized = normalizeName(value ?? "");
+    if (/accommodation|hotel|住宿|酒店/.test(normalized)) return "hotel";
+    if (validLedgerCategories.includes(normalized as LedgerCategory)) {
+      return normalized as LedgerCategory;
+    }
+    return "other";
+  };
 
   return {
     events: (aiResponse.events ?? []).map((event, index) => {
-      const participantNames = (event.participant_names ?? [])
-        .map((name) => name.trim())
-        .filter(Boolean);
+      const participantNames = [
+        ...new Set(
+          (event.participant_names ?? []).map(canonicalParticipantName).filter(Boolean),
+        ),
+      ];
       const matched = participantNames
-        .map((name) => memberLookup.get(normalizeName(name))?.userId)
+        .map(participantUserId)
         .filter((userId): userId is string => Boolean(userId));
-      const unmatched = participantNames.filter(
-        (name) => !memberLookup.has(normalizeName(name)),
-      );
+      const unmatched = participantNames.filter((name) => !isKnownParticipant(name));
       const eventType = validEventTypes.includes(event.event_type ?? "other")
         ? (event.event_type ?? "other")
         : "other";
@@ -194,6 +334,17 @@ export function toPlannerDrafts(
       )
         ? (reservation.reservation_type as ItineraryReservationType)
         : "other";
+      const participantNames = [
+        ...new Set(
+          (reservation.participant_names ?? [])
+            .map(canonicalParticipantName)
+            .filter(Boolean),
+        ),
+      ];
+      const matched = participantNames
+        .map(participantUserId)
+        .filter((userId): userId is string => Boolean(userId));
+      const unmatched = participantNames.filter((name) => !isKnownParticipant(name));
 
       return {
         clientId: crypto.randomUUID(),
@@ -203,9 +354,60 @@ export function toPlannerDrafts(
         location_name: reservation.location_name?.trim() || null,
         starts_at: reservation.starts_at || null,
         ends_at: reservation.ends_at || null,
+        participant_names: participantNames,
+        matched_participant_user_ids: [...new Set(matched)],
+        unmatched_participant_names: unmatched,
         source_excerpt: reservation.source_excerpt?.trim() || null,
         confidence: reservation.confidence ?? null,
         needs_review: reservation.needs_review ?? true,
+      };
+    }),
+    expenses: (aiResponse.expenses ?? []).map((expense, index) => {
+      const participantNames = [
+        ...new Set(
+          (expense.participant_names ?? [])
+            .map(canonicalParticipantName)
+            .filter(Boolean),
+        ),
+      ];
+      const participantMemberIds = participantNames
+        .map(participantMemberId)
+        .filter((memberId): memberId is string => Boolean(memberId));
+      const payerName = expense.payer_name
+        ? canonicalParticipantName(expense.payer_name)
+        : null;
+      const payerMemberId = payerName ? participantMemberId(payerName) : null;
+      const unmatched = participantNames.filter(
+        (name) => !participantMemberId(name),
+      );
+
+      return {
+        clientId: crypto.randomUUID(),
+        title: expense.title?.trim() || `Imported expense ${index + 1}`,
+        category: categoryFor(expense.category),
+        accounting_mode: expense.accounting_mode ?? "shared",
+        expense_date: expense.expense_date || expense.start_date || null,
+        start_date: expense.start_date || expense.expense_date || null,
+        end_date: expense.end_date || expense.start_date || expense.expense_date || null,
+        original_amount: expense.original_amount ?? null,
+        original_currency: expense.original_currency?.trim().toUpperCase() || "NZD",
+        payer_name: payerName,
+        payer_member_id: payerMemberId,
+        participant_names: participantNames,
+        participant_member_ids: [...new Set(participantMemberIds)],
+        unmatched_participant_names: unmatched,
+        address_text: expense.address_text?.trim() || null,
+        linked_stay_title: expense.linked_stay_title?.trim() || null,
+        linked_stay_location: expense.linked_stay_location?.trim() || null,
+        linked_stay_start_date: expense.linked_stay_start_date || expense.start_date || null,
+        linked_stay_end_date: expense.linked_stay_end_date || expense.end_date || null,
+        source_excerpt: expense.source_excerpt?.trim() || null,
+        confidence: expense.confidence ?? null,
+        needs_review:
+          expense.needs_review ??
+          (!expense.original_amount ||
+            !payerMemberId ||
+            participantMemberIds.length === 0),
       };
     }),
     warnings: aiResponse.warnings ?? [],

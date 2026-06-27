@@ -5,6 +5,7 @@ import type { User } from "@supabase/supabase-js";
 import { useEffect, useState } from "react";
 import { exchangeCodeForSession, getCurrentUser } from "@/lib/supabase/auth";
 import { supabase } from "@/lib/supabase/client";
+import { claimEmailInvitedJourneys } from "@/lib/supabase/journey-members";
 import { upsertProfileForUser } from "@/lib/supabase/profiles";
 import { persistAuthSession } from "@/lib/supabase/session-fallback";
 
@@ -70,6 +71,8 @@ export function AuthCallback() {
 
         setStatus("Setting up profile...");
         await upsertProfileForUser(user);
+        setStatus("Checking journey access...");
+        await claimEmailInvitedJourneys();
         if (isMounted) {
           router.replace(next);
         }

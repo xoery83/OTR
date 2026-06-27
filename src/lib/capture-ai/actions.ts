@@ -95,6 +95,12 @@ function ledgerCategory(value: unknown): LedgerCategory {
   return "other";
 }
 
+function stringArrayValue(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
 function lockedMemoryContext(input: ExecuteCaptureActionInput) {
   const context = input.engineOptions?.lockedContext ?? {};
   return {
@@ -143,6 +149,7 @@ async function executeActionGraph(input: ExecuteCaptureActionInput, capturedAt: 
       const lockedContext = lockedMemoryContext(input);
       const date = resolveDate(payload.date || lockedContext.dayDate, capturedAt);
       const nights = numberValue(payload.nights) ?? 1;
+      const startTime = stringValue(payload.time) || "18:00";
       const location =
         stringValue(payload.locationName) ||
         stringValue(payload.location) ||
@@ -166,7 +173,7 @@ async function executeActionGraph(input: ExecuteCaptureActionInput, capturedAt: 
           title,
           provider: stringValue(payload.provider),
           locationName: location,
-          startsAt: isoAt(date, "18:00"),
+          startsAt: isoAt(date, startTime),
           endsAt: addDays(date, nights, "10:00"),
           confirmationCode: stringValue(payload.bookingReference),
           url: stringValue(payload.url),
@@ -235,7 +242,10 @@ async function executeActionGraph(input: ExecuteCaptureActionInput, capturedAt: 
         (category === "hotel" ? "Accommodation expense" : "Capture expense"),
       description: node.summary || input.text,
       category,
-      accountingMode: "shared",
+      accountingMode:
+        stringValue(payload.accountingMode) === "stats_only"
+          ? "stats_only"
+          : "shared",
       expenseDate: date,
       startDate: date,
       endDate: date,
@@ -243,8 +253,8 @@ async function executeActionGraph(input: ExecuteCaptureActionInput, capturedAt: 
       originalCurrency: currency,
       baseCurrency,
       exchangeRate: rate,
-      payerMemberId: null,
-      participantMemberIds: [],
+      payerMemberId: stringValue(payload.payerMemberId) || null,
+      participantMemberIds: stringArrayValue(payload.participantMemberIds),
       addressText:
         stringValue(payload.locationName) ||
         stringValue(payload.location) ||

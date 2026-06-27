@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".capture-test-build",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "target": "ES2022",
+    "isolatedModules": false,
+    "incremental": false
+  },
+  "include": ["src/capture/stateMachine/**/*.ts", "src/capture/stateMachine/**/*.json"]
+}

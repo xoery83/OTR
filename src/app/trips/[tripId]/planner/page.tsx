@@ -2,11 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
-import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import { PlannerDayCard } from "@/components/PlannerDayCard";
+import {
+  readTodayScopedValue,
+  writeTodayScopedValue,
+} from "@/lib/day-view-storage";
 import { getErrorMessage } from "@/lib/errors";
 import { getActiveJourneyMembers } from "@/lib/journeys/stats";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
@@ -89,7 +92,7 @@ function getDefaultDayId(days: PlannerV2Data["days"]) {
 }
 
 function getStoredDayId(tripId: string, days: PlannerV2Data["days"]) {
-  const storedDate = window.localStorage.getItem(`otr:planner-day:${tripId}`);
+  const storedDate = readTodayScopedValue(`otr:planner-day:${tripId}`);
   if (!storedDate) return null;
   return days.find((day) => day.day.dayDate === storedDate)?.day.id ?? null;
 }
@@ -103,9 +106,9 @@ function PlannerContent() {
   const params = useParams<{ tripId: string }>();
   const searchParams = useSearchParams();
   const tripId = params.tripId;
+  const router = useRouter();
   const requestedDate = searchParams.get("date");
   const { locale, t } = useI18n();
-  const { openCapture } = useCaptureModal();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [members, setMembers] = useState<JourneyMember[]>([]);
   const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
@@ -171,7 +174,7 @@ function PlannerContent() {
     setSelectedDayId(dayId);
     const day = planner.days.find((plannerDay) => plannerDay.day.id === dayId);
     if (day) {
-      window.localStorage.setItem(`otr:planner-day:${tripId}`, day.day.dayDate);
+      writeTodayScopedValue(`otr:planner-day:${tripId}`, day.day.dayDate);
       window.dispatchEvent(
         new CustomEvent("journey:workspace-day-change", {
           detail: { tripId, day: day.day.dayDate },
@@ -275,15 +278,7 @@ function PlannerContent() {
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
-              onClick={() =>
-                openCapture({
-                  tripId,
-                  entryPoint: "planner_import",
-                  intentBias: "planner_import",
-                  mode: "bulk_parse",
-                  lockedContext: { journeyId: tripId },
-                })
-              }
+              onClick={() => router.push(`/trips/${tripId}/planner/import`)}
               className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-bold text-white shadow-sm"
               title={t("planner.import")}
             >

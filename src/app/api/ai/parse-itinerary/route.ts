@@ -1,6 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import type { AiItineraryResponse } from "@/lib/planner-import";
+import { parseLocalItinerary } from "@/lib/planner-import-local";
+import {
+  findExactParserExample,
+  writeParserParseLog,
+} from "@/lib/parser-upgrade";
 import type { TripMember } from "@/types";
 
 type ParseRequest = {
@@ -76,6 +81,7 @@ const eventSchema = {
           location_name: { type: ["string", "null"] },
           starts_at: { type: ["string", "null"] },
           ends_at: { type: ["string", "null"] },
+          participant_names: { type: "array", items: { type: "string" } },
           source_excerpt: { type: ["string", "null"] },
           confidence: { type: ["number", "null"], minimum: 0, maximum: 1 },
           needs_review: { type: "boolean" },
@@ -87,6 +93,7 @@ const eventSchema = {
           "location_name",
           "starts_at",
           "ends_at",
+          "participant_names",
           "source_excerpt",
           "confidence",
           "needs_review",
@@ -156,12 +163,77 @@ const eventSchema = {
         ],
       },
     },
+    expenses: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: ["string", "null"] },
+          category: {
+            type: ["string", "null"],
+            enum: [
+              "flight",
+              "hotel",
+              "car",
+              "fuel",
+              "food",
+              "ticket",
+              "shopping",
+              "transport",
+              "insurance",
+              "other",
+              null,
+            ],
+          },
+          accounting_mode: {
+            type: ["string", "null"],
+            enum: ["shared", "stats_only", null],
+          },
+          expense_date: { type: ["string", "null"] },
+          start_date: { type: ["string", "null"] },
+          end_date: { type: ["string", "null"] },
+          original_amount: { type: ["number", "null"] },
+          original_currency: { type: ["string", "null"] },
+          payer_name: { type: ["string", "null"] },
+          participant_names: { type: "array", items: { type: "string" } },
+          address_text: { type: ["string", "null"] },
+          linked_stay_title: { type: ["string", "null"] },
+          linked_stay_location: { type: ["string", "null"] },
+          linked_stay_start_date: { type: ["string", "null"] },
+          linked_stay_end_date: { type: ["string", "null"] },
+          source_excerpt: { type: ["string", "null"] },
+          confidence: { type: ["number", "null"], minimum: 0, maximum: 1 },
+          needs_review: { type: "boolean" },
+        },
+        required: [
+          "title",
+          "category",
+          "accounting_mode",
+          "expense_date",
+          "start_date",
+          "end_date",
+          "original_amount",
+          "original_currency",
+          "payer_name",
+          "participant_names",
+          "address_text",
+          "linked_stay_title",
+          "linked_stay_location",
+          "linked_stay_start_date",
+          "linked_stay_end_date",
+          "source_excerpt",
+          "confidence",
+          "needs_review",
+        ],
+      },
+    },
     warnings: {
       type: "array",
       items: { type: "string" },
     },
   },
-  required: ["days", "reservations", "events", "warnings"],
+  required: ["days", "reservations", "events", "expenses", "warnings"],
 };
 
 function jsonError(message: string, status: number) {
@@ -328,7 +400,25 @@ function compactWhitespace(value: string | undefined) {
   return value?.replace(/\s+/g, " ").trim();
 }
 
+function isExpenseOnlyImportText(text: string) {
+  const trimmed = text.trim();
+  return (
+    /^\s*(accommodation expense|hotel expense|住宿费用|酒店费用|房费)\b/i.test(
+      trimmed,
+    ) ||
+    (/\b(paid|spent)\b/i.test(trimmed) &&
+      /\b(split|shared|equally|among)\b/i.test(trimmed) &&
+      /\b(hotel|house|stay|stayed|accommodation|airbnb|booking)\b/i.test(
+        trimmed,
+      ) &&
+      /[0-9]+(?:[,，]\d{3})*(?:\.\d+)?\s*(?:[A-Z]{3}|RMB|CNY|NZD|AUD|CHF|USD|EUR|ISK|DKK|GBP)/i.test(
+        trimmed,
+      ))
+  );
+}
+
 function parseChineseHotelStay(text: string, trip: TripRow) {
+  if (isExpenseOnlyImportText(text)) return null;
   if (!/(酒店|住宿|hotel|accommodation)/i.test(text)) return null;
 
   const tripYear = getTripYear(trip);
@@ -381,8 +471,15 @@ function completeReservationDateRanges(
   rawText: string,
   trip: TripRow,
 ) {
-  const fallbackHotelStay = parseChineseHotelStay(rawText, trip);
-  const aiReservations = parsed.reservations ?? [];
+  const shouldSkipHotelFallback =
+    isExpenseOnlyImportText(rawText) && (parsed.expenses?.length ?? 0) > 0;
+  const fallbackHotelStay = shouldSkipHotelFallback
+    ? null
+    : parseChineseHotelStay(rawText, trip);
+  const aiReservations =
+    isExpenseOnlyImportText(rawText) && (parsed.expenses?.length ?? 0) > 0
+      ? []
+      : (parsed.reservations ?? []);
   const reservations =
     aiReservations.length > 0 ? aiReservations : fallbackHotelStay ? [fallbackHotelStay] : [];
 
@@ -443,9 +540,12 @@ async function callOpenAI(prompt: string) {
   const errors: string[] = [];
 
   for (const config of configs) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
     try {
       const response = await fetch(config.endpoint, {
         method: "POST",
+        signal: controller.signal,
         headers: {
           Authorization: `Bearer ${config.apiKey}`,
           "Content-Type": "application/json",
@@ -457,7 +557,7 @@ async function callOpenAI(prompt: string) {
             {
               role: "system",
               content:
-                "You are a travel planning assistant, not a sentence splitter. Return only valid JSON matching the requested shape. First organize the trip by days, then create only high-value planner events under days. Do not create standalone events for minor logistical tasks such as buying SIM cards, grocery shopping, packing, organizing supplies, or ordinary meals; put these in day notes instead. Hotels, flights, car rentals, ferries, and important bookings belong in reservations, not activity events. Standalone events should be major sightseeing, tours, hikes, transfers, or meaningful scheduled activities. Participant detection must be constrained to the provided trip members only; never use emails, organizations, profile metadata, or unknown names as participants. Use ISO 8601 timestamps. If only morning/afternoon/evening is given, use morning 09:00-12:00, afternoon 13:00-17:00, evening 18:00-21:00, set is_estimated_time true, and lower time_confidence. Keep unknown values null and add warnings for uncertainty.",
+                "You are a travel planning assistant, not a sentence splitter. Return only valid JSON matching the requested shape, with all top-level arrays present even when empty: days, reservations, events, expenses, warnings. First organize the trip by days, then create planner events, reservations, and expenses as separate outputs. Hotels, flights, car rentals, ferries, and important bookings belong in reservations. Travel costs, receipts, paid amounts, accommodation expenses, fuel, food, parking, tickets, and shared costs belong in expenses, not reservations. If an expense refers to an existing or imported hotel stay, fill linked_stay_title, linked_stay_location, linked_stay_start_date, and linked_stay_end_date when available. Do not create standalone events for minor logistical tasks such as buying SIM cards, grocery shopping, packing, organizing supplies, or ordinary meals; put these in day notes unless they have an explicit scheduled time. Standalone events should be major sightseeing, tours, hikes, transfers, or meaningful scheduled activities. Participant detection must be constrained to the provided trip members only; never use emails, organizations, profile metadata, or unknown names as participants. Use ISO 8601 timestamps. If only morning/afternoon/evening is given, use morning 09:00-12:00, afternoon 13:00-17:00, evening 18:00-21:00, set is_estimated_time true, and lower time_confidence. Keep unknown values null and add warnings for uncertainty.",
             },
             { role: "user", content: prompt },
           ],
@@ -485,6 +585,8 @@ async function callOpenAI(prompt: string) {
       const message = error instanceof Error ? error.message : "unknown error";
       errors.push(`${config.name}: ${message}`);
       continue;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -535,6 +637,58 @@ export async function POST(request: Request) {
     }
 
     const tripContext = trip as TripRow;
+    const exactExample = await findExactParserExample({
+      supabase,
+      source: "planner_import",
+      journeyId: tripId,
+      originalText: rawText,
+    });
+
+    if (exactExample) {
+      const parsed = completeReservationDateRanges(
+        exactExample.correctedParseResult as AiItineraryResponse,
+        rawText,
+        tripContext,
+      );
+      await writeParserParseLog({
+        supabase,
+        journeyId: tripId,
+        source: "planner_import",
+        originalText: rawText,
+        parseResult: parsed,
+        parseMethod: "example",
+        matchedRuleId: exactExample.id,
+        confidence: exactExample.confidence,
+        userId: userData.user.id,
+      });
+      return NextResponse.json({
+        parsed,
+        members,
+        source: "example",
+        matchedParserExampleId: exactExample.id,
+      });
+    }
+
+    const localParsed = parseLocalItinerary(rawText);
+    if (localParsed) {
+      const parsed = completeReservationDateRanges(localParsed, rawText, tripContext);
+      await writeParserParseLog({
+        supabase,
+        journeyId: tripId,
+        source: "planner_import",
+        originalText: rawText,
+        parseResult: parsed,
+        parseMethod: "local",
+        confidence: 0.9,
+        userId: userData.user.id,
+      });
+      return NextResponse.json({
+        parsed,
+        members,
+        source: "local",
+      });
+    }
+
     const prompt = [
       `Trip name: ${tripContext.name}`,
       `Destination: ${tripContext.destination ?? "unknown"}`,
@@ -553,7 +707,17 @@ export async function POST(request: Request) {
       rawText,
       tripContext,
     );
-    return NextResponse.json({ parsed, members });
+    await writeParserParseLog({
+      supabase,
+      journeyId: tripId,
+      source: "planner_import",
+      originalText: rawText,
+      parseResult: parsed,
+      parseMethod: "llm",
+      confidence: 0.75,
+      userId: userData.user.id,
+    });
+    return NextResponse.json({ parsed, members, source: "ai" });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not parse itinerary.";
     return jsonError(message, 500);

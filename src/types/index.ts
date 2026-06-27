@@ -445,6 +445,8 @@ export type UpdateItineraryReservationInput = {
   confirmationCode?: string | null;
   url?: string | null;
   status?: ItineraryItemStatus;
+  participantUserIds?: string[];
+  sourceText?: string | null;
 };
 
 export type JourneyInviteRole = "member" | "admin";

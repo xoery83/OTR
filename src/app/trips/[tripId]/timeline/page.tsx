@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
@@ -14,8 +14,10 @@ import {
   requestFaceConfirmation,
 } from "@/lib/supabase/media-assets";
 import {
+  deleteMemoryEntry,
   getSignedMemoryImageUrls,
   getTripMemories,
+  updateMemoryEntry,
 } from "@/lib/supabase/memories";
 import { getTrip } from "@/lib/supabase/trips";
 import type {
@@ -135,6 +137,13 @@ function formatShortDateTime(value: string) {
     hour: "numeric",
     minute: "2-digit",
   })}`;
+}
+
+function toDateTimeLocalValue(value: string) {
+  const date = new Date(value);
+  const offset = date.getTimezoneOffset();
+  const localDate = new Date(date.getTime() - offset * 60 * 1000);
+  return localDate.toISOString().slice(0, 16);
 }
 
 function getNearestDate(dates: string[]) {
@@ -288,8 +297,65 @@ function ItemMeta({ item }: { item: TimelineItem }) {
   );
 }
 
-function CompactMemoryCard({ item }: { item: TimelineItem }) {
+function CompactMemoryCard({
+  item,
+  currentUserId,
+  onSave,
+  onDelete,
+}: {
+  item: TimelineItem;
+  currentUserId: string;
+  onSave: (
+    memoryId: string,
+    input: { content: string; locationName: string; capturedAt: string },
+  ) => Promise<void>;
+  onDelete: (memoryId: string) => Promise<void>;
+}) {
   const isPhoto = item.memory.type === "photo" && item.photo?.displayUrl;
+  const canManage = item.memory.userId === currentUserId;
+  const [isEditing, setIsEditing] = useState(false);
+  const [contentDraft, setContentDraft] = useState(item.memory.content);
+  const [locationDraft, setLocationDraft] = useState(item.memory.locationName ?? "");
+  const [capturedAtDraft, setCapturedAtDraft] = useState(
+    toDateTimeLocalValue(item.memory.capturedAt),
+  );
+  const [isWorking, setIsWorking] = useState(false);
+  const [cardError, setCardError] = useState<string | null>(null);
+
+  async function saveEdit() {
+    setIsWorking(true);
+    setCardError(null);
+    try {
+      await onSave(item.memory.id, {
+        content: contentDraft,
+        locationName: locationDraft,
+        capturedAt: capturedAtDraft,
+      });
+      setIsEditing(false);
+    } catch (saveError) {
+      setCardError(
+        saveError instanceof Error ? saveError.message : "Could not save memory.",
+      );
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  async function deleteItem() {
+    const confirmed = window.confirm("Delete this memory?");
+    if (!confirmed) return;
+
+    setIsWorking(true);
+    setCardError(null);
+    try {
+      await onDelete(item.memory.id);
+    } catch (deleteError) {
+      setCardError(
+        deleteError instanceof Error ? deleteError.message : "Could not delete memory.",
+      );
+      setIsWorking(false);
+    }
+  }
 
   return (
     <article className="overflow-hidden rounded-2xl bg-white shadow-sm">
@@ -310,16 +376,82 @@ function CompactMemoryCard({ item }: { item: TimelineItem }) {
           <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">
             {item.memory.type}
           </p>
-          {item.hasUnassignedFaces ? (
-            <span className="rounded-full bg-amber-100 px-2 py-1 text-[11px] font-black text-amber-900">
-              Face check
-            </span>
-          ) : null}
+          <div className="flex shrink-0 items-center gap-2">
+            {item.hasUnassignedFaces ? (
+              <span className="rounded-full bg-amber-100 px-2 py-1 text-[11px] font-black text-amber-900">
+                Face check
+              </span>
+            ) : null}
+            {canManage ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsEditing((current) => !current)}
+                  disabled={isWorking}
+                  className="rounded-full bg-stone-100 px-2 py-1 text-[11px] font-black text-stone-700 disabled:opacity-50"
+                >
+                  {isEditing ? "取消" : "修改"}
+                </button>
+                <button
+                  type="button"
+                  onClick={deleteItem}
+                  disabled={isWorking}
+                  className="rounded-full bg-red-50 px-2 py-1 text-[11px] font-black text-red-700 disabled:opacity-50"
+                >
+                  删除
+                </button>
+              </>
+            ) : null}
+          </div>
         </div>
-        {item.memory.content && isPhoto ? (
+        {isEditing ? (
+          <div className="mt-3 space-y-2">
+            <textarea
+              value={contentDraft}
+              onChange={(event) => setContentDraft(event.target.value)}
+              rows={3}
+              className="w-full resize-none rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-900 outline-none focus:border-emerald-500"
+            />
+            <div className="grid gap-2 sm:grid-cols-2">
+              <input
+                value={locationDraft}
+                onChange={(event) => setLocationDraft(event.target.value)}
+                placeholder="Location"
+                className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-900 outline-none focus:border-emerald-500"
+              />
+              <input
+                type="datetime-local"
+                value={capturedAtDraft}
+                onChange={(event) => setCapturedAtDraft(event.target.value)}
+                className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-900 outline-none focus:border-emerald-500"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={saveEdit}
+                disabled={isWorking}
+                className="rounded-full bg-emerald-700 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
+              >
+                保存
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsEditing(false)}
+                disabled={isWorking}
+                className="rounded-full bg-stone-100 px-3 py-2 text-xs font-black text-stone-700 disabled:opacity-50"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        ) : item.memory.content && isPhoto ? (
           <h3 className="mt-2 text-base font-semibold text-stone-950">
             {item.memory.content}
           </h3>
+        ) : null}
+        {cardError ? (
+          <p className="mt-2 text-xs font-semibold text-red-600">{cardError}</p>
         ) : null}
         <ItemMeta item={item} />
       </div>
@@ -327,7 +459,20 @@ function CompactMemoryCard({ item }: { item: TimelineItem }) {
   );
 }
 
-function UploadFeedView({ items }: { items: TimelineItem[] }) {
+function UploadFeedView({
+  items,
+  currentUserId,
+  onSaveMemory,
+  onDeleteMemory,
+}: {
+  items: TimelineItem[];
+  currentUserId: string;
+  onSaveMemory: (
+    memoryId: string,
+    input: { content: string; locationName: string; capturedAt: string },
+  ) => Promise<void>;
+  onDeleteMemory: (memoryId: string) => Promise<void>;
+}) {
   const sorted = [...items].sort(
     (left, right) =>
       new Date(right.uploadedAt).getTime() - new Date(left.uploadedAt).getTime(),
@@ -337,16 +482,38 @@ function UploadFeedView({ items }: { items: TimelineItem[] }) {
     <section className="columns-1 gap-4 space-y-4 sm:columns-2 xl:columns-3">
       {sorted.map((item) => (
         <div key={item.id} className="break-inside-avoid pb-4">
-          <CompactMemoryCard item={item} />
+          <CompactMemoryCard
+            item={item}
+            currentUserId={currentUserId}
+            onSave={onSaveMemory}
+            onDelete={onDeleteMemory}
+          />
         </div>
       ))}
     </section>
   );
 }
 
-function TrueTimelineView({ items }: { items: TimelineItem[] }) {
-  const dates = [...new Set(items.map((item) => item.dateKey))].sort();
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+function TrueTimelineView({
+  items,
+  currentUserId,
+  initialDate,
+  onSaveMemory,
+  onDeleteMemory,
+}: {
+  items: TimelineItem[];
+  currentUserId: string;
+  initialDate?: string | null;
+  onSaveMemory: (
+    memoryId: string,
+    input: { content: string; locationName: string; capturedAt: string },
+  ) => Promise<void>;
+  onDeleteMemory: (memoryId: string) => Promise<void>;
+}) {
+  const dates = [
+    ...new Set([initialDate, ...items.map((item) => item.dateKey)].filter(Boolean)),
+  ].sort() as string[];
+  const [selectedDate, setSelectedDate] = useState<string | null>(initialDate ?? null);
 
   const activeDate =
     selectedDate && dates.includes(selectedDate)
@@ -399,7 +566,13 @@ function TrueTimelineView({ items }: { items: TimelineItem[] }) {
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {dayItems.map((item) => (
-          <CompactMemoryCard key={item.id} item={item} />
+          <CompactMemoryCard
+            key={item.id}
+            item={item}
+            currentUserId={currentUserId}
+            onSave={onSaveMemory}
+            onDelete={onDeleteMemory}
+          />
         ))}
       </div>
     </section>
@@ -982,7 +1155,10 @@ function PhotoGalleryView({
 
 function TimelineContent({ user }: { user: User }) {
   const params = useParams<{ tripId: string }>();
+  const searchParams = useSearchParams();
   const tripId = params.tripId;
+  const initialTimelineDate = searchParams.get("date");
+  const initialView = searchParams.get("view") === "timeline" ? "timeline" : "feed";
   const [trip, setTrip] = useState<Trip | null>(null);
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [photoAssets, setPhotoAssets] = useState<PhotoAssetWithMemory[]>([]);
@@ -991,7 +1167,7 @@ function TimelineContent({ user }: { user: User }) {
   );
   const [members, setMembers] = useState<JourneyMember[]>([]);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
-  const [view, setView] = useState<TimelineView>("feed");
+  const [view, setView] = useState<TimelineView>(initialView);
   const [query, setQuery] = useState("");
   const [mineOnly, setMineOnly] = useState(false);
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
@@ -1088,6 +1264,39 @@ function TimelineContent({ user }: { user: User }) {
         item.id === face.id ? face : item,
       ),
     }));
+  }
+
+  async function handleSaveMemory(
+    memoryId: string,
+    input: { content: string; locationName: string; capturedAt: string },
+  ) {
+    const updated = await updateMemoryEntry({
+      memoryId,
+      content: input.content,
+      locationName: input.locationName,
+      capturedAt: input.capturedAt,
+    });
+
+    setMemories((current) =>
+      current.map((memory) =>
+        memory.id === memoryId
+          ? {
+              ...memory,
+              ...updated,
+              contributorName: memory.contributorName,
+              contributorAvatarUrl: memory.contributorAvatarUrl,
+            }
+          : memory,
+      ),
+    );
+  }
+
+  async function handleDeleteMemory(memoryId: string) {
+    await deleteMemoryEntry(memoryId);
+    setMemories((current) => current.filter((memory) => memory.id !== memoryId));
+    setPhotoAssets((current) =>
+      current.filter((photo) => photo.memoryEntryId !== memoryId),
+    );
   }
 
   if (isLoading) {
@@ -1218,9 +1427,25 @@ function TimelineContent({ user }: { user: User }) {
         </div>
       ) : null}
 
-      {view === "feed" ? <UploadFeedView items={filteredItems} /> : null}
+      {view === "feed" ? (
+        <UploadFeedView
+          items={filteredItems}
+          currentUserId={user.id}
+          onSaveMemory={handleSaveMemory}
+          onDeleteMemory={handleDeleteMemory}
+        />
+      ) : null}
 
-      {view === "timeline" ? <TrueTimelineView items={filteredItems} /> : null}
+      {view === "timeline" ? (
+        <TrueTimelineView
+          key={initialTimelineDate ?? "nearest"}
+          items={filteredItems}
+          currentUserId={user.id}
+          initialDate={initialTimelineDate}
+          onSaveMemory={handleSaveMemory}
+          onDeleteMemory={handleDeleteMemory}
+        />
+      ) : null}
 
       {view === "album" ? (
         <AlbumView items={filteredItems} onOpenDebug={() => setView("debug")} />

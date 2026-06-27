@@ -1,7 +1,7 @@
 "use client";
 
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
 import { getApproxExchangeRate } from "@/lib/exchange-rates";
@@ -51,7 +51,17 @@ const categoryLabelKeys: Record<LedgerCategory, TranslationKey> = {
   other: "planner.expense.other",
 };
 
-const commonCurrencies = ["NZD", "CNY", "EUR", "DKK", "USD", "ISK", "GBP"];
+const commonCurrencies = [
+  "NZD",
+  "AUD",
+  "CHF",
+  "CNY",
+  "EUR",
+  "DKK",
+  "USD",
+  "ISK",
+  "GBP",
+];
 
 type LedgerFormState = {
   title: string;
@@ -70,6 +80,8 @@ type LedgerFormState = {
 };
 
 type LedgerView = "days" | "expenses" | "people" | "settlement";
+type ExpenseCategoryFilter = LedgerCategory | "all";
+type ExpenseSortMode = "latest" | "date" | "amount";
 
 type MemberLedgerReport = {
   member: JourneyMember;
@@ -127,11 +139,43 @@ function dateLabel(value: string, locale: Locale) {
   }).format(new Date(`${value}T00:00:00`));
 }
 
-function groupedByDate(entries: LedgerEntry[]) {
-  return entries.reduce<Record<string, LedgerEntry[]>>((groups, entry) => {
-    groups[entry.expenseDate] = [...(groups[entry.expenseDate] ?? []), entry];
-    return groups;
-  }, {});
+function timestamp(value: string | null | undefined) {
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
+function buildExpenseSections(entries: LedgerEntry[], sortMode: ExpenseSortMode) {
+  const sortedEntries = [...entries].sort((left, right) => {
+    if (sortMode === "date") {
+      const dateOrder = left.expenseDate.localeCompare(right.expenseDate);
+      return dateOrder || timestamp(right.createdAt) - timestamp(left.createdAt);
+    }
+
+    if (sortMode === "amount") {
+      return (
+        right.baseAmount - left.baseAmount ||
+        timestamp(right.createdAt) - timestamp(left.createdAt)
+      );
+    }
+
+    return (
+      timestamp(right.createdAt) - timestamp(left.createdAt) ||
+      right.expenseDate.localeCompare(left.expenseDate)
+    );
+  });
+
+  const sections = new Map<string, LedgerEntry[]>();
+  sortedEntries.forEach((entry) => {
+    sections.set(entry.expenseDate, [
+      ...(sections.get(entry.expenseDate) ?? []),
+      entry,
+    ]);
+  });
+
+  return [...sections.entries()].map(([date, sectionEntries]) => ({
+    date,
+    entries: sectionEntries,
+  }));
 }
 
 function addDays(date: Date, days: number) {
@@ -243,17 +287,21 @@ function nearestReportDate(reports: DailyLedgerReport[]) {
   })[0].date;
 }
 
-function categoryColor(index: number) {
-  return [
-    "bg-emerald-600",
-    "bg-amber-500",
-    "bg-sky-500",
-    "bg-rose-500",
-    "bg-violet-500",
-    "bg-lime-600",
-    "bg-orange-500",
-    "bg-stone-500",
-  ][index % 8];
+const categoryColorClasses: Record<LedgerCategory, string> = {
+  flight: "bg-emerald-600",
+  hotel: "bg-orange-500",
+  car: "bg-sky-500",
+  fuel: "bg-lime-600",
+  food: "bg-amber-500",
+  ticket: "bg-violet-500",
+  shopping: "bg-rose-500",
+  transport: "bg-cyan-600",
+  insurance: "bg-indigo-500",
+  other: "bg-stone-500",
+};
+
+function categoryColor(category: LedgerCategory) {
+  return categoryColorClasses[category];
 }
 
 function buildMemberReports(
@@ -331,10 +379,12 @@ function StatCard({
   label,
   value,
   tone = "emerald",
+  compact = false,
 }: {
   label: string;
   value: string;
   tone?: "emerald" | "amber" | "stone";
+  compact?: boolean;
 }) {
   const toneClass = {
     emerald: "bg-emerald-50 text-emerald-900",
@@ -343,11 +393,19 @@ function StatCard({
   }[tone];
 
   return (
-    <div className={`rounded-3xl p-4 ${toneClass}`}>
-      <p className="text-xs font-bold uppercase tracking-[0.12em] opacity-70">
+    <div
+      className={`${compact ? "rounded-2xl p-3" : "rounded-3xl p-4"} ${toneClass}`}
+    >
+      <p
+        className={`font-bold uppercase tracking-[0.12em] opacity-70 ${
+          compact ? "text-[11px]" : "text-xs"
+        }`}
+      >
         {label}
       </p>
-      <p className="mt-2 text-2xl font-semibold">{value}</p>
+      <p className={`${compact ? "mt-1 text-lg" : "mt-2 text-2xl"} font-semibold`}>
+        {value}
+      </p>
     </div>
   );
 }
@@ -462,18 +520,22 @@ function PersonReportCard({
 function DailyLedgerAnalysis({
   reports,
   currency,
+  initialDate,
   onEditEntry,
   onDeleteEntry,
   deletingEntryId,
 }: {
   reports: DailyLedgerReport[];
   currency: string;
+  initialDate?: string | null;
   onEditEntry: (entry: LedgerEntry) => void;
   onDeleteEntry: (entry: LedgerEntry) => void;
   deletingEntryId: string | null;
 }) {
   const { locale, t } = useI18n();
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [selectedDate, setSelectedDate] = useState<string | null>(
+    initialDate ?? null,
+  );
   const activeDate =
     selectedDate && reports.some((report) => report.date === selectedDate)
       ? selectedDate
@@ -538,21 +600,26 @@ function DailyLedgerAnalysis({
         </div>
       </div>
 
-      <section className="grid gap-3 sm:grid-cols-3">
-        <StatCard
-          label={t("ledger.dayTotal")}
-          value={money(activeReport.total, currency, locale)}
-        />
-        <StatCard
-          label={t("ledger.shared")}
-          value={money(activeReport.shared, currency, locale)}
-          tone="amber"
-        />
-        <StatCard
-          label={t("ledger.statsOnly")}
-          value={money(activeReport.statsOnly, currency, locale)}
-          tone="stone"
-        />
+      <section className="-mx-1 overflow-x-auto px-1">
+        <div className="grid min-w-[540px] grid-cols-3 gap-2 sm:min-w-0">
+          <StatCard
+            label={t("ledger.dayTotal")}
+            value={money(activeReport.total, currency, locale)}
+            compact
+          />
+          <StatCard
+            label={t("ledger.shared")}
+            value={money(activeReport.shared, currency, locale)}
+            tone="amber"
+            compact
+          />
+          <StatCard
+            label={t("ledger.statsOnly")}
+            value={money(activeReport.statsOnly, currency, locale)}
+            tone="stone"
+            compact
+          />
+        </div>
       </section>
 
       <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
@@ -575,10 +642,10 @@ function DailyLedgerAnalysis({
         {categoryBreakdown.length > 0 ? (
           <div className="mt-4 space-y-3">
             <div className="flex h-4 overflow-hidden rounded-full bg-stone-100">
-              {categoryBreakdown.map(([category, amount], index) => (
+              {categoryBreakdown.map(([category, amount]) => (
                 <div
                   key={category}
-                  className={categoryColor(index)}
+                  className={categoryColor(category)}
                   style={{
                     width: `${Math.max(
                       3,
@@ -594,7 +661,7 @@ function DailyLedgerAnalysis({
               ))}
             </div>
             <div className="grid gap-2 sm:grid-cols-2">
-              {categoryBreakdown.map(([category, amount], index) => {
+              {categoryBreakdown.map(([category, amount]) => {
                 const percent =
                   activeReport.total > 0
                     ? Math.round((amount / activeReport.total) * 100)
@@ -607,7 +674,7 @@ function DailyLedgerAnalysis({
                   >
                     <span className="flex items-center gap-2 font-semibold text-stone-700">
                       <span
-                        className={`size-2.5 rounded-full ${categoryColor(index)}`}
+                        className={`size-2.5 rounded-full ${categoryColor(category)}`}
                       />
                       {t(categoryLabelKeys[category])}
                     </span>
@@ -722,7 +789,11 @@ function DailyLedgerAnalysis({
 
 function LedgerContent() {
   const params = useParams<{ tripId: string }>();
+  const searchParams = useSearchParams();
   const tripId = params.tripId;
+  const initialLedgerView =
+    searchParams.get("view") === "days" ? "days" : undefined;
+  const initialLedgerDate = searchParams.get("date");
   const { locale, t } = useI18n();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [ledgerData, setLedgerData] = useState<LedgerData | null>(null);
@@ -733,7 +804,13 @@ function LedgerContent() {
   const [isSavingCurrency, setIsSavingCurrency] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<LedgerView>("days");
+  const [activeView, setActiveView] = useState<LedgerView>(
+    initialLedgerView ?? "days",
+  );
+  const [expenseCategoryFilter, setExpenseCategoryFilter] =
+    useState<ExpenseCategoryFilter>("all");
+  const [expenseSortMode, setExpenseSortMode] =
+    useState<ExpenseSortMode>("latest");
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [currencyError, setCurrencyError] = useState<string | null>(null);
@@ -785,9 +862,47 @@ function LedgerContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripId]);
 
-  const entryGroups = useMemo(
-    () => groupedByDate(ledgerData?.entries ?? []),
-    [ledgerData?.entries],
+  const expenseCategoryTotals = useMemo(() => {
+    const totals = categories.reduce(
+      (current, category) => ({ ...current, [category]: 0 }),
+      {} as Record<LedgerCategory, number>,
+    );
+
+    (ledgerData?.entries ?? []).forEach((entry) => {
+      totals[entry.category] += entry.baseAmount;
+    });
+
+    return totals;
+  }, [ledgerData?.entries]);
+  const filteredExpenseEntries = useMemo(
+    () =>
+      (ledgerData?.entries ?? []).filter(
+        (entry) =>
+          expenseCategoryFilter === "all" ||
+          entry.category === expenseCategoryFilter,
+      ),
+    [expenseCategoryFilter, ledgerData?.entries],
+  );
+  const expenseSections = useMemo(
+    () => buildExpenseSections(filteredExpenseEntries, expenseSortMode),
+    [expenseSortMode, filteredExpenseEntries],
+  );
+  const expenseFilterSummary = useMemo(
+    () =>
+      filteredExpenseEntries.reduce(
+        (summary, entry) => ({
+          total: summary.total + entry.baseAmount,
+          shared:
+            summary.shared +
+            (entry.accountingMode === "shared" ? entry.baseAmount : 0),
+          statsOnly:
+            summary.statsOnly +
+            (entry.accountingMode === "stats_only" ? entry.baseAmount : 0),
+          count: summary.count + 1,
+        }),
+        { total: 0, shared: 0, statsOnly: 0, count: 0 },
+      ),
+    [filteredExpenseEntries],
   );
 
   const baseCurrency = ledgerData?.ledger.baseCurrency ?? "NZD";
@@ -1075,26 +1190,32 @@ function LedgerContent() {
         ) : null}
       </section>
 
-      <section className="grid gap-3 sm:grid-cols-4">
-        <StatCard
-          label={t("ledger.totalCost")}
-          value={money(ledgerData.summary.totalBase, displayCurrency, locale)}
-        />
-        <StatCard
-          label={t("ledger.shared")}
-          value={money(ledgerData.summary.sharedBase, displayCurrency, locale)}
-          tone="amber"
-        />
-        <StatCard
-          label={t("ledger.statsOnly")}
-          value={money(ledgerData.summary.statsOnlyBase, displayCurrency, locale)}
-          tone="stone"
-        />
-        <StatCard
-          label={t("ledger.needsReview")}
-          value={`${ledgerData.summary.incompleteCount}`}
-          tone="stone"
-        />
+      <section className="-mx-1 overflow-x-auto px-1">
+        <div className="grid min-w-[720px] grid-cols-4 gap-2 sm:min-w-0">
+          <StatCard
+            label={t("ledger.totalCost")}
+            value={money(ledgerData.summary.totalBase, displayCurrency, locale)}
+            compact
+          />
+          <StatCard
+            label={t("ledger.shared")}
+            value={money(ledgerData.summary.sharedBase, displayCurrency, locale)}
+            tone="amber"
+            compact
+          />
+          <StatCard
+            label={t("ledger.statsOnly")}
+            value={money(ledgerData.summary.statsOnlyBase, displayCurrency, locale)}
+            tone="stone"
+            compact
+          />
+          <StatCard
+            label={t("ledger.needsReview")}
+            value={`${ledgerData.summary.incompleteCount}`}
+            tone="stone"
+            compact
+          />
+        </div>
       </section>
 
       {showForm ? (
@@ -1442,8 +1563,10 @@ function LedgerContent() {
 
       {activeView === "days" ? (
         <DailyLedgerAnalysis
+          key={initialLedgerDate ?? "nearest"}
           reports={dailyReports}
           currency={displayCurrency}
+          initialDate={initialLedgerDate}
           onEditEntry={startEditExpense}
           onDeleteEntry={removeExpense}
           deletingEntryId={deletingEntryId}
@@ -1460,12 +1583,97 @@ function LedgerContent() {
               {t("ledger.expensesByDateDescription")}
             </p>
           </div>
+          <div className="overflow-x-auto rounded-3xl bg-white p-2 shadow-sm">
+            <div className="flex min-w-max gap-2">
+              {(["all", ...categories] as ExpenseCategoryFilter[]).map((category) => {
+                const active = expenseCategoryFilter === category;
+                const categoryTotal =
+                  category === "all"
+                    ? ledgerData.summary.totalBase
+                    : expenseCategoryTotals[category];
+
+                return (
+                  <button
+                    key={category}
+                    type="button"
+                    onClick={() => setExpenseCategoryFilter(category)}
+                    className={`rounded-2xl px-3 py-2 text-left text-xs font-bold ${
+                      active
+                        ? "bg-emerald-700 text-white"
+                        : "bg-stone-50 text-stone-700"
+                    }`}
+                  >
+                    <span className="block">
+                      {category === "all"
+                        ? t("ledger.category.all")
+                        : t(categoryLabelKeys[category])}
+                    </span>
+                    <span
+                      className={`mt-1 block text-[11px] ${
+                        active ? "text-white/80" : "text-stone-500"
+                      }`}
+                    >
+                      {money(categoryTotal, displayCurrency, locale)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 overflow-x-auto rounded-3xl bg-white px-3 py-2 shadow-sm">
+            <label className="flex shrink-0 items-center gap-2">
+              <span className="text-xs font-bold text-stone-500">
+                {t("ledger.sort.label")}
+              </span>
+              <select
+                value={expenseSortMode}
+                onChange={(event) =>
+                  setExpenseSortMode(event.target.value as ExpenseSortMode)
+                }
+                className="rounded-2xl border border-stone-200 bg-stone-50 px-3 py-2 text-xs font-bold text-stone-900 outline-none focus:border-emerald-300"
+              >
+                <option value="latest">{t("ledger.sort.latest")}</option>
+                <option value="date">{t("ledger.sort.date")}</option>
+                <option value="amount">{t("ledger.sort.amount")}</option>
+              </select>
+            </label>
+            <div className="h-8 w-px shrink-0 bg-stone-100" />
+            {[
+              [
+                t("ledger.filteredTotal"),
+                money(expenseFilterSummary.total, displayCurrency, locale),
+                "text-emerald-900",
+              ],
+              [
+                t("ledger.shared"),
+                money(expenseFilterSummary.shared, displayCurrency, locale),
+                "text-amber-900",
+              ],
+              [
+                t("ledger.statsOnly"),
+                money(expenseFilterSummary.statsOnly, displayCurrency, locale),
+                "text-stone-900",
+              ],
+              [t("ledger.filteredCount"), `${expenseFilterSummary.count}`, "text-stone-900"],
+            ].map(([label, value, color]) => (
+              <div key={label} className="min-w-[92px] shrink-0">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-stone-400">
+                  {label}
+                </p>
+                <p className={`mt-0.5 text-sm font-black ${color}`}>{value}</p>
+              </div>
+            ))}
+          </div>
           {ledgerData.entries.length === 0 ? (
             <div className="rounded-3xl border border-dashed border-stone-200 bg-white p-5 text-stone-500">
               {t("ledger.empty.expenses")}
             </div>
+          ) : filteredExpenseEntries.length === 0 ? (
+            <div className="rounded-3xl border border-dashed border-stone-200 bg-white p-5 text-stone-500">
+              {t("ledger.empty.filteredExpenses")}
+            </div>
           ) : (
-            Object.entries(entryGroups).map(([date, entries]) => (
+            expenseSections.map(({ date, entries }) => (
               <section
                 key={date}
                 className="overflow-hidden rounded-3xl border border-stone-200 bg-white shadow-sm"

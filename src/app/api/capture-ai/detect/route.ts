@@ -4,9 +4,14 @@ import {
   defaultCaptureIntentConfig,
   detectCaptureIntentOnServer,
 } from "@/lib/capture-ai/server";
+import {
+  findExactParserExample,
+  writeParserParseLog,
+} from "@/lib/parser-upgrade";
 import type {
   CaptureEngineOptions,
   CaptureIntentConfig,
+  CaptureSessionState,
 } from "@/lib/capture-ai/types";
 
 type DetectRequest = {
@@ -14,6 +19,8 @@ type DetectRequest = {
   text?: string;
   inputTypes?: string[];
   engineOptions?: CaptureEngineOptions;
+  sessionContext?: CaptureSessionState;
+  exampleOnly?: boolean;
 };
 
 function jsonError(message: string, status: number) {
@@ -36,6 +43,44 @@ function getSupabaseForRequest(request: Request) {
     global: { headers: { Authorization: authorization } },
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+function normalizeCaptureIntentName(value: unknown) {
+  const intent = String(value ?? "");
+  return intent === "journey_update" ? "planner_update" : intent;
+}
+
+function normalizeExactCaptureExampleResult(result: unknown) {
+  if (!result || typeof result !== "object") return result;
+  const record = structuredClone(result) as Record<string, unknown>;
+
+  if (record.intent) {
+    record.intent = normalizeCaptureIntentName(record.intent);
+  }
+
+  if (record.proposedAction && typeof record.proposedAction === "object") {
+    const proposedAction = record.proposedAction as Record<string, unknown>;
+    if (proposedAction.type) {
+      proposedAction.type = normalizeCaptureIntentName(proposedAction.type);
+    }
+  }
+
+  if (record.actionGraph && typeof record.actionGraph === "object") {
+    const actionGraph = record.actionGraph as Record<string, unknown>;
+    if (Array.isArray(actionGraph.nodes)) {
+      actionGraph.nodes = actionGraph.nodes.map((node) => {
+        if (!node || typeof node !== "object") return node;
+        return {
+          ...(node as Record<string, unknown>),
+          intent: normalizeCaptureIntentName(
+            (node as Record<string, unknown>).intent,
+          ),
+        };
+      });
+    }
+  }
+
+  return record;
 }
 
 async function loadConfig(supabase: ReturnType<typeof getSupabaseForRequest>) {
@@ -130,6 +175,54 @@ export async function POST(request: Request) {
       },
     };
 
+    const exactExample = await findExactParserExample({
+      supabase,
+      source: "capture",
+      journeyId: body.tripId ?? null,
+      originalText: text,
+    });
+    if (exactExample) {
+      const normalizedExampleResult = normalizeExactCaptureExampleResult(
+        exactExample.correctedParseResult,
+      );
+      const result =
+        normalizedExampleResult && typeof normalizedExampleResult === "object"
+          ? {
+              ...(normalizedExampleResult as Record<string, unknown>),
+              provider:
+                (normalizedExampleResult as { provider?: unknown }).provider ??
+                "parser-example",
+              model:
+                (normalizedExampleResult as { model?: unknown }).model ??
+                "exact-match",
+              routing: {
+                ...(((normalizedExampleResult as { routing?: unknown }).routing as
+                  | Record<string, unknown>
+                  | undefined) ?? {}),
+                source: "local",
+                provider: "parser-example",
+                model: "exact-match",
+              },
+            }
+          : normalizedExampleResult;
+      await writeParserParseLog({
+        supabase,
+        journeyId: body.tripId ?? null,
+        source: "capture",
+        originalText: text,
+        parseResult: result,
+        parseMethod: "example",
+        matchedRuleId: exactExample.id,
+        confidence: exactExample.confidence,
+        userId: userData.user.id,
+      });
+      return NextResponse.json({ result, matched: true });
+    }
+
+    if (body.exampleOnly) {
+      return NextResponse.json({ result: null, matched: false });
+    }
+
     const result = await detectCaptureIntentOnServer({
       text,
       inputTypes: body.inputTypes,
@@ -137,8 +230,20 @@ export async function POST(request: Request) {
       context: {
         ...tripContext,
         captureEngine: engineOptions,
+        captureSession: body.sessionContext ?? null,
       },
       engineOptions,
+    });
+
+    await writeParserParseLog({
+      supabase,
+      journeyId: body.tripId ?? null,
+      source: "capture",
+      originalText: text,
+      parseResult: result,
+      parseMethod: result.routing?.source === "llm" ? "llm" : "local",
+      confidence: result.confidence,
+      userId: userData.user.id,
     });
 
     return NextResponse.json({ result });

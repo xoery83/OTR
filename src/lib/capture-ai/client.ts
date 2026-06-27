@@ -70,3 +70,22 @@ export async function detectCaptureIntent(input: CaptureIntentTestInput) {
 
   return payload.result;
 }
+
+export async function findCaptureParserExample(input: CaptureIntentTestInput) {
+  const response = await fetch("/api/capture-ai/detect", {
+    method: "POST",
+    headers: await authHeaders(),
+    body: JSON.stringify({ ...input, exampleOnly: true }),
+  });
+  const payload = (await response.json()) as {
+    result?: CaptureIntentDetection | null;
+    matched?: boolean;
+    error?: string;
+  };
+
+  if (!response.ok) {
+    throw new Error(payload.error || "Could not check parser examples.");
+  }
+
+  return payload.matched && payload.result ? payload.result : null;
+}

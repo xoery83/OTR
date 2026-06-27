@@ -4,13 +4,16 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
+import { useI18n } from "@/components/I18nProvider";
 import { getAppOrigin } from "@/lib/app-url";
 import { getErrorMessage } from "@/lib/errors";
 import { createJourneyInvite } from "@/lib/supabase/invites";
 import {
   createJourneyMember,
+  getJourneyMembers,
   getJourneyMemberSuggestions,
   type JourneyMemberSuggestion,
+  updateJourneyMember,
 } from "@/lib/supabase/journey-members";
 import { createTrip, updateTripSettings } from "@/lib/supabase/trips";
 import type { PhotoStorageProvider, Trip } from "@/types";
@@ -95,6 +98,7 @@ function StepPill({
 
 function NewJourneyTour() {
   const router = useRouter();
+  const { t } = useI18n();
   const [step, setStep] = useState<Step>(1);
   const [name, setName] = useState("");
   const [destination, setDestination] = useState("");
@@ -138,6 +142,23 @@ function NewJourneyTour() {
   const canContinueStepOne = name.trim().length > 0;
   const activeTravelers = travelers.filter((traveler) => traveler.name.trim());
   const coverPreview = coverImageUrl || fallbackCover;
+  const storageOptions = [
+    [
+      "none",
+      t("journeyCreate.storage.none.title"),
+      t("journeyCreate.storage.none.description"),
+    ],
+    [
+      "google_drive",
+      t("journeyCreate.storage.google.title"),
+      t("journeyCreate.storage.google.description"),
+    ],
+    [
+      "onedrive",
+      t("journeyCreate.storage.onedrive.title"),
+      t("journeyCreate.storage.onedrive.description"),
+    ],
+  ] as const;
 
   const matchedSuggestions = useMemo(() => {
     const query = travelers
@@ -210,6 +231,25 @@ function NewJourneyTour() {
         startDate,
         endDate,
       });
+      const currentSuggestions =
+        suggestions.length > 0 ? suggestions : await getJourneyMemberSuggestions();
+      const ownerSuggestion = currentSuggestions.find(
+        (suggestion) => suggestion.isCurrentUser && suggestion.notes.trim(),
+      );
+      if (ownerSuggestion) {
+        const tripMembers = await getJourneyMembers(trip.id);
+        const ownerMember = tripMembers.find(
+          (member) => member.role === "owner" && member.userId === ownerSuggestion.userId,
+        );
+
+        if (ownerMember && !ownerMember.notes?.trim()) {
+          await updateJourneyMember({
+            memberId: ownerMember.id,
+            notes: ownerSuggestion.notes,
+          });
+        }
+      }
+
       const origin = getAppOrigin();
       const createdInvites: InviteLink[] = [];
 
@@ -243,7 +283,7 @@ function NewJourneyTour() {
       setCoverImageUrl(generateAiCoverUrl(name.trim(), destination.trim(), 1));
       setStep(3);
     } catch (createError) {
-      setError(getErrorMessage(createError, "Could not create journey."));
+      setError(getErrorMessage(createError, t("journeyCreate.error.create")));
     } finally {
       setIsCreating(false);
     }
@@ -263,7 +303,9 @@ function NewJourneyTour() {
       });
       router.push(`/trips/${createdTrip.id}`);
     } catch (settingsError) {
-      setError(getErrorMessage(settingsError, "Could not save journey settings."));
+      setError(
+        getErrorMessage(settingsError, t("journeyCreate.error.saveSettings")),
+      );
     } finally {
       setIsSavingSettings(false);
     }
@@ -286,20 +328,21 @@ function NewJourneyTour() {
   return (
     <div className="space-y-6">
       <section>
-        <p className="text-sm font-semibold text-emerald-700">New Journey</p>
+        <p className="text-sm font-semibold text-emerald-700">
+          {t("journeyCreate.eyebrow")}
+        </p>
         <h1 className="mt-1 text-3xl font-semibold text-stone-950">
-          Create a journey
+          {t("journeyCreate.title")}
         </h1>
         <p className="mt-3 max-w-2xl text-base leading-7 text-stone-600">
-          Set the basics, add travelers, then choose the cover and original photo
-          storage.
+          {t("journeyCreate.description")}
         </p>
       </section>
 
       <div className="grid gap-2 sm:grid-cols-3">
-        <StepPill value={1} current={step} label="Basics" />
-        <StepPill value={2} current={step} label="Travelers" />
-        <StepPill value={3} current={step} label="Cover & storage" />
+        <StepPill value={1} current={step} label={t("journeyCreate.step.basics")} />
+        <StepPill value={2} current={step} label={t("journeyCreate.step.travelers")} />
+        <StepPill value={3} current={step} label={t("journeyCreate.step.coverStorage")} />
       </div>
 
       {error ? (
@@ -315,21 +358,25 @@ function NewJourneyTour() {
         >
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="space-y-2">
-              <span className="text-sm font-bold text-stone-800">Name</span>
+              <span className="text-sm font-bold text-stone-800">
+                {t("journeyCreate.field.name")}
+              </span>
               <input
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 required
-                placeholder="Iceland 2026"
+                placeholder={t("journeyCreate.placeholder.name")}
                 className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-stone-950 outline-none focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100"
               />
             </label>
             <label className="space-y-2">
-              <span className="text-sm font-bold text-stone-800">Place</span>
+              <span className="text-sm font-bold text-stone-800">
+                {t("journeyCreate.field.place")}
+              </span>
               <input
                 value={destination}
                 onChange={(event) => setDestination(event.target.value)}
-                placeholder="Reykjavik, South Coast"
+                placeholder={t("journeyCreate.placeholder.place")}
                 className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-stone-950 outline-none focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100"
               />
             </label>
@@ -337,7 +384,9 @@ function NewJourneyTour() {
 
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="space-y-2">
-              <span className="text-sm font-bold text-stone-800">Start date</span>
+              <span className="text-sm font-bold text-stone-800">
+                {t("journeyCreate.field.startDate")}
+              </span>
               <input
                 type="date"
                 value={startDate}
@@ -346,7 +395,9 @@ function NewJourneyTour() {
               />
             </label>
             <label className="space-y-2">
-              <span className="text-sm font-bold text-stone-800">End date</span>
+              <span className="text-sm font-bold text-stone-800">
+                {t("journeyCreate.field.endDate")}
+              </span>
               <input
                 type="date"
                 value={endDate}
@@ -361,7 +412,7 @@ function NewJourneyTour() {
             disabled={!canContinueStepOne}
             className="w-full rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
           >
-            Continue
+            {t("journeyCreate.continue")}
           </button>
         </form>
       ) : null}
@@ -373,11 +424,10 @@ function NewJourneyTour() {
         >
           <div>
             <h2 className="text-xl font-semibold text-stone-950">
-              Who is traveling?
+              {t("journeyCreate.travelers.title")}
             </h2>
             <p className="mt-2 text-sm leading-6 text-stone-600">
-              Type a name to reuse people you have traveled with before. Their
-              previous invite email and AKA will be filled in when available.
+              {t("journeyCreate.travelers.description")}
             </p>
           </div>
 
@@ -401,7 +451,7 @@ function NewJourneyTour() {
                   <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
                     <label className="space-y-1">
                       <span className="text-xs font-bold text-stone-700">
-                        Name
+                        {t("journeyCreate.field.name")}
                       </span>
                       <input
                         value={traveler.name}
@@ -411,13 +461,13 @@ function NewJourneyTour() {
                             suggestionKey: undefined,
                           })
                         }
-                        placeholder="Traveler name"
+                        placeholder={t("journeyCreate.placeholder.travelerName")}
                         className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-stone-950 outline-none focus:border-emerald-600"
                       />
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-bold text-stone-700">
-                        Email
+                        {t("journeyCreate.field.email")}
                       </span>
                       <input
                         value={traveler.email}
@@ -427,7 +477,7 @@ function NewJourneyTour() {
                           })
                         }
                         type="email"
-                        placeholder="friend@example.com"
+                        placeholder={t("journeyCreate.placeholder.email")}
                         className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-stone-950 outline-none focus:border-emerald-600"
                       />
                     </label>
@@ -436,13 +486,13 @@ function NewJourneyTour() {
                       onClick={() => removeTraveler(traveler.id)}
                       className="self-end rounded-2xl bg-white px-4 py-3 text-sm font-bold text-stone-500"
                     >
-                      Remove
+                      {t("journeyCreate.traveler.remove")}
                     </button>
                   </div>
 
                   <label className="space-y-1">
                     <span className="text-xs font-bold text-stone-700">
-                      Nicknames / AKA
+                      {t("journeyCreate.field.aka")}
                     </span>
                     <input
                       value={traveler.notes}
@@ -451,12 +501,11 @@ function NewJourneyTour() {
                           notes: event.target.value,
                         })
                       }
-                      placeholder="Bao 小宝 B, separated by spaces, commas, / or ;"
+                      placeholder={t("journeyCreate.placeholder.aka")}
                       className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-stone-950 outline-none focus:border-emerald-600"
                     />
                     <span className="block text-[11px] leading-5 text-stone-500">
-                      Used by Capture and Planner to recognize this person in notes,
-                      voice and expenses.
+                      {t("journeyCreate.akaHelp")}
                     </span>
                   </label>
 
@@ -477,7 +526,7 @@ function NewJourneyTour() {
                     </div>
                   ) : isLoadingSuggestions ? (
                     <p className="text-xs font-medium text-stone-500">
-                      Loading previous travelers...
+                      {t("journeyCreate.travelers.loading")}
                     </p>
                   ) : null}
                 </section>
@@ -490,7 +539,7 @@ function NewJourneyTour() {
             onClick={addTraveler}
             className="w-full rounded-2xl bg-emerald-50 px-5 py-3 text-sm font-bold text-emerald-900"
           >
-            Add traveler
+            {t("journeyCreate.traveler.add")}
           </button>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -500,14 +549,16 @@ function NewJourneyTour() {
               disabled={isCreating}
               className="rounded-2xl bg-stone-100 px-5 py-3 text-sm font-bold text-stone-700 disabled:text-stone-400"
             >
-              Back
+              {t("journeyCreate.back")}
             </button>
             <button
               type="submit"
               disabled={isCreating || !canContinueStepOne}
               className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
             >
-              {isCreating ? "Creating..." : "Create journey & invites"}
+              {isCreating
+                ? t("journeyCreate.creating")
+                : t("journeyCreate.create")}
             </button>
           </div>
         </form>
@@ -519,10 +570,10 @@ function NewJourneyTour() {
             <section className="space-y-3 rounded-3xl bg-emerald-50 p-4">
               <div>
                 <h2 className="text-xl font-semibold text-stone-950">
-                  Invite links are ready
+                  {t("journeyCreate.invites.title")}
                 </h2>
                 <p className="mt-1 text-sm leading-6 text-stone-600">
-                  Paste these directly to your friends.
+                  {t("journeyCreate.invites.description")}
                 </p>
               </div>
               <div className="space-y-2">
@@ -536,7 +587,7 @@ function NewJourneyTour() {
                         {invite.travelerName}
                       </p>
                       <p className="truncate text-xs text-stone-500">
-                        {invite.email || "Reusable invite link"}
+                        {invite.email || t("journeyCreate.invites.reusable")}
                       </p>
                       <p className="mt-1 truncate text-xs text-emerald-800">
                         {invite.url}
@@ -547,7 +598,9 @@ function NewJourneyTour() {
                       onClick={() => copyInvite(invite.url)}
                       className="rounded-2xl bg-emerald-700 px-4 py-2 text-xs font-bold text-white"
                     >
-                      {copiedUrl === invite.url ? "Copied" : "Copy"}
+                      {copiedUrl === invite.url
+                        ? t("journeyCreate.copied")
+                        : t("journeyCreate.copy")}
                     </button>
                   </div>
                 ))}
@@ -557,10 +610,10 @@ function NewJourneyTour() {
 
           <div>
             <h2 className="text-xl font-semibold text-stone-950">
-              Cover and storage
+              {t("journeyCreate.cover.title")}
             </h2>
             <p className="mt-2 text-sm leading-6 text-stone-600">
-              Use a URL, or generate a cover from the journey name and place.
+              {t("journeyCreate.cover.description")}
             </p>
           </div>
 
@@ -583,35 +636,17 @@ function NewJourneyTour() {
               className="rounded-2xl bg-stone-900 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
             >
               {aiCoverCount >= 3
-                ? "AI limit reached"
-                : `AI generate (${3 - aiCoverCount} left)`}
+                ? t("journeyCreate.ai.limit")
+                : t("journeyCreate.ai.generate", { count: 3 - aiCoverCount })}
             </button>
           </div>
 
           <section className="space-y-3">
             <h3 className="text-sm font-bold uppercase tracking-[0.14em] text-stone-500">
-              Original photo storage
+              {t("journeyCreate.storage.title")}
             </h3>
             <div className="grid gap-3 sm:grid-cols-3">
-              {(
-                [
-                  [
-                    "none",
-                    "Do not upload originals",
-                    "Keep compressed OTR photos only for now.",
-                  ],
-                  [
-                    "google_drive",
-                    "Google Drive",
-                    "Save originals to the journey owner's Drive.",
-                  ],
-                  [
-                    "onedrive",
-                    "Microsoft OneDrive",
-                    "Prepare OneDrive as the original-photo destination.",
-                  ],
-                ] as const
-              ).map(([value, label, description]) => (
+              {storageOptions.map(([value, label, description]) => (
                 <button
                   key={value}
                   type="button"
@@ -638,7 +673,7 @@ function NewJourneyTour() {
               disabled={isSavingSettings}
               className="rounded-2xl bg-stone-100 px-5 py-3 text-sm font-bold text-stone-700 disabled:text-stone-400"
             >
-              Back
+              {t("journeyCreate.back")}
             </button>
             <button
               type="button"
@@ -646,7 +681,9 @@ function NewJourneyTour() {
               disabled={isSavingSettings || !createdTrip}
               className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
             >
-              {isSavingSettings ? "Saving..." : "Open journey"}
+              {isSavingSettings
+                ? t("journeyCreate.saving")
+                : t("journeyCreate.openJourney")}
             </button>
           </div>
 
@@ -655,7 +692,7 @@ function NewJourneyTour() {
               href={`/trips/${createdTrip.id}`}
               className="block rounded-2xl bg-emerald-50 px-5 py-3 text-center text-sm font-bold text-emerald-900"
             >
-              Skip settings and open journey
+              {t("journeyCreate.skipSettings")}
             </Link>
           ) : null}
         </section>

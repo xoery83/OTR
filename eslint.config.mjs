@@ -14,6 +14,7 @@ const eslintConfig = defineConfig([
     "face-service/.venv/**",
     "face-service/__pycache__/**",
     "face-service/app/__pycache__/**",
+    ".capture-test-build/**",
     "next-env.d.ts",
   ]),
 ]);

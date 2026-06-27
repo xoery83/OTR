@@ -18,17 +18,29 @@ function timeRange(start: string | null, end: string | null) {
   return null;
 }
 
+function guestNamesFromSourceText(value: string | null) {
+  if (!value) return [];
+  const match = value.match(/(?:^|\n)\s*Guests?\s*[:：]\s*([^\n]+)/i);
+  if (!match?.[1]) return [];
+
+  return match[1]
+    .split(/\s*(?:,|，|、|\/|和|及|与)\s*/g)
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
 export function ReservationCard({
   reservation,
 }: {
   reservation: ItineraryReservation;
 }) {
   const range = timeRange(reservation.startsAt, reservation.endsAt);
-  const participantNames = reservation.participants
-    .slice(0, 3)
-    .map((participant) => participant.name)
-    .join(", ");
-  const extraCount = Math.max(0, reservation.participants.length - 3);
+  const allParticipantNames =
+    reservation.participants.length > 0
+      ? reservation.participants.map((participant) => participant.name)
+      : guestNamesFromSourceText(reservation.sourceText);
+  const participantNames = allParticipantNames.slice(0, 3).join(", ");
+  const extraCount = Math.max(0, allParticipantNames.length - 3);
 
   return (
     <article className="group rounded-2xl border border-amber-100 bg-amber-50/70 p-3 transition hover:border-amber-200 hover:bg-amber-50">

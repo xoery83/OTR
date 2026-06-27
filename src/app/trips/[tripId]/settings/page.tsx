@@ -4,8 +4,11 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
+import { useI18n } from "@/components/I18nProvider";
 import { getErrorMessage } from "@/lib/errors";
+import { getCurrentUser } from "@/lib/supabase/auth";
 import { supabase } from "@/lib/supabase/client";
+import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import {
   disconnectJourneyStorage,
   getJourneyStorageConnection,
@@ -13,6 +16,7 @@ import {
 import { getTrip, updateTripSettings } from "@/lib/supabase/trips";
 import type {
   JourneyStorageConnection,
+  JourneyMember,
   PhotoStorageProvider,
   Trip,
 } from "@/types";
@@ -35,16 +39,21 @@ const storageProviders: {
 ];
 
 function SettingsContent() {
+  const { t } = useI18n();
   const params = useParams<{ tripId: string }>();
   const searchParams = useSearchParams();
   const tripId = params.tripId;
   const [trip, setTrip] = useState<Trip | null>(null);
+  const [members, setMembers] = useState<JourneyMember[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [storageConnection, setStorageConnection] =
     useState<JourneyStorageConnection | null>(null);
+  const [journeyName, setJourneyName] = useState("");
   const [coverImageUrl, setCoverImageUrl] = useState("");
   const [storageProvider, setStorageProvider] =
     useState<PhotoStorageProvider | "">("");
   const [isLoading, setIsLoading] = useState(true);
+  const [isSavingName, setIsSavingName] = useState(false);
   const [isSavingCover, setIsSavingCover] = useState(false);
   const [isSavingStorage, setIsSavingStorage] = useState(false);
   const [isConnectingStorage, setIsConnectingStorage] = useState(false);
@@ -57,13 +66,18 @@ function SettingsContent() {
 
     async function loadSettings() {
       try {
-        const [tripData, connectionData] = await Promise.all([
+        const [tripData, memberData, user, connectionData] = await Promise.all([
           getTrip(tripId),
+          getJourneyMembers(tripId),
+          getCurrentUser(),
           getJourneyStorageConnection(tripId, "google_drive").catch(() => null),
         ]);
         if (!isMounted) return;
         setTrip(tripData);
+        setMembers(memberData);
+        setCurrentUserId(user?.id ?? null);
         setStorageConnection(connectionData);
+        setJourneyName(tripData.name);
         setCoverImageUrl(tripData.coverImageUrl ?? "");
         setStorageProvider(
           tripData.photoStorageProvider === "google_drive" ||
@@ -92,6 +106,32 @@ function SettingsContent() {
       isMounted = false;
     };
   }, [searchParams, tripId]);
+
+  const currentMember = members.find((member) => member.userId === currentUserId);
+  const canManageJourney =
+    currentMember?.role === "owner" || trip?.createdBy === currentUserId;
+
+  async function saveJourneyName() {
+    const nextName = journeyName.trim();
+    if (!nextName || !canManageJourney) return;
+
+    setIsSavingName(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await updateTripSettings({
+        tripId,
+        name: nextName,
+      });
+      setTrip(updated);
+      setJourneyName(updated.name);
+      setNotice(t("journeySettings.nameSaved"));
+    } catch (saveError) {
+      setError(getErrorMessage(saveError, t("journeySettings.nameSaveError")));
+    } finally {
+      setIsSavingName(false);
+    }
+  }
 
   async function saveCover() {
     setIsSavingCover(true);
@@ -228,6 +268,41 @@ function SettingsContent() {
         <p className="rounded-2xl bg-emerald-50 p-4 text-sm font-bold text-emerald-800">
           {notice}
         </p>
+      ) : null}
+
+      {canManageJourney ? (
+        <section className="rounded-3xl bg-white p-5 shadow-sm">
+          <div>
+            <h2 className="text-xl font-semibold text-stone-950">
+              {t("journeySettings.nameTitle")}
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-stone-600">
+              {t("journeySettings.nameDescription")}
+            </p>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
+            <input
+              value={journeyName}
+              onChange={(event) => setJourneyName(event.target.value)}
+              placeholder={t("journeySettings.namePlaceholder")}
+              className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-600"
+            />
+            <button
+              type="button"
+              onClick={saveJourneyName}
+              disabled={
+                isSavingName ||
+                !journeyName.trim() ||
+                journeyName.trim() === (trip?.name ?? "")
+              }
+              className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
+            >
+              {isSavingName
+                ? t("common.saving")
+                : t("journeySettings.saveName")}
+            </button>
+          </div>
+        </section>
       ) : null}
 
       <section className="overflow-hidden rounded-3xl bg-white shadow-sm">

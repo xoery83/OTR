@@ -13,6 +13,8 @@ const fallbackRatesToNzd: Record<string, number> = {
   RMB: 0.229,
   USD: 1.68,
   GBP: 2.25,
+  AUD: 1.09,
+  CHF: 2.07,
 };
 
 export async function getApproxExchangeRate(

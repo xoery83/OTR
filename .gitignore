@@ -14,6 +14,7 @@ face-service/**/__pycache__/
 
 # testing
 /coverage
+/.capture-test-build
 
 # next.js
 /.next/

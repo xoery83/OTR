@@ -56,9 +56,26 @@ type UpdateJourneyMemberInput = {
   notes?: string;
 };
 
+type EmailInvitedJourneyClaimRow = {
+  claimed_trip_id: string | null;
+  claimed_member_id: string | null;
+  claim_status: string;
+};
+
 function createInviteCode() {
   const bytes = crypto.getRandomValues(new Uint8Array(12));
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function normalizeInviteEmail(value: string | undefined) {
+  return value?.trim().toLowerCase() || null;
+}
+
+function isMissingEmailClaimFunction(error: { code?: string; message?: string }) {
+  return (
+    error.code === "42883" ||
+    /claim_email_invited_journeys/i.test(error.message ?? "")
+  );
 }
 
 function mapJourneyMember(row: JourneyMemberRpcRow | JourneyMemberRow): JourneyMember {
@@ -103,11 +120,23 @@ export async function getJourneyMembers(tripId: string) {
   return ((data ?? []) as JourneyMemberRpcRow[]).map(mapJourneyMember);
 }
 
+export async function claimEmailInvitedJourneys() {
+  const { data, error } = await supabase.rpc("claim_email_invited_journeys");
+
+  if (error) {
+    if (isMissingEmailClaimFunction(error)) return [];
+    throw error;
+  }
+
+  return (data ?? []) as EmailInvitedJourneyClaimRow[];
+}
+
 export async function createJourneyMember(input: CreateJourneyMemberInput) {
   const user = await getCurrentUser();
   if (!user) throw new Error("You must be logged in to add people.");
 
-  const status: JourneyMemberStatus = input.inviteEmail
+  const normalizedInviteEmail = normalizeInviteEmail(input.inviteEmail);
+  const status: JourneyMemberStatus = normalizedInviteEmail
     ? "invite_pending"
     : "unlinked";
 
@@ -118,7 +147,7 @@ export async function createJourneyMember(input: CreateJourneyMemberInput) {
       display_name: input.displayName.trim(),
       role: input.role,
       status,
-      invite_email: input.inviteEmail?.trim() || null,
+      invite_email: normalizedInviteEmail,
       invite_code: createInviteCode(),
       invited_by_user_id: user.id,
       notes: input.notes?.trim() || null,
@@ -140,13 +169,18 @@ export type JourneyMemberSuggestion = {
   userId: string | null;
   avatarUrl: string | null;
   journeysTogether: number;
+  isCurrentUser: boolean;
 };
 
 export async function getJourneyMemberSuggestions() {
+  const user = await getCurrentUser();
   const trips = await getTripsForCurrentUser();
   const members = (await Promise.all(trips.map((trip) => getJourneyMembers(trip.id))))
     .flat()
-    .filter((member) => member.role === "group_member" || member.role === "guest");
+    .filter(
+      (member) =>
+        member.role === "group_member" || member.role === "guest" || member.userId === user?.id,
+    );
   const suggestions = new Map<string, JourneyMemberSuggestion>();
 
   members.forEach((member) => {
@@ -167,6 +201,9 @@ export async function getJourneyMemberSuggestions() {
       if (!existing.notes && member.notes) {
         existing.notes = member.notes;
       }
+      if (member.userId === user?.id) {
+        existing.isCurrentUser = true;
+      }
       return;
     }
 
@@ -178,6 +215,7 @@ export async function getJourneyMemberSuggestions() {
       userId: member.userId,
       avatarUrl: member.avatarUrl,
       journeysTogether: 1,
+      isCurrentUser: member.userId === user?.id,
     });
   });
 
@@ -193,7 +231,7 @@ export async function updateJourneyMember(input: UpdateJourneyMemberInput) {
   if (input.role !== undefined) patch.role = input.role;
   if (input.status !== undefined) patch.status = input.status;
   if (input.inviteEmail !== undefined) {
-    patch.invite_email = input.inviteEmail.trim() || null;
+    patch.invite_email = normalizeInviteEmail(input.inviteEmail);
   }
   if (input.notes !== undefined) patch.notes = input.notes.trim() || null;
 

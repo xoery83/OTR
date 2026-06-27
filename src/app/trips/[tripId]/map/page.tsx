@@ -12,11 +12,16 @@ import {
 import { LiveLocationToggle } from "@/components/LiveLocationToggle";
 import { useI18n } from "@/components/I18nProvider";
 import {
+  readTodayScopedValue,
+  writeTodayScopedValue,
+} from "@/lib/day-view-storage";
+import {
   type Coordinates,
   distanceMeters,
   formatDistance,
   navigationHref,
 } from "@/lib/geo";
+import { geocodePlace } from "@/lib/geocoding";
 import { getErrorMessage } from "@/lib/errors";
 import { getCurrentUser } from "@/lib/supabase/auth";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
@@ -30,6 +35,7 @@ import {
   type PlannerV2Data,
   type PlannerV2Day,
 } from "@/lib/supabase/planner-v2";
+import { getSignedMemoryImageUrls } from "@/lib/supabase/memories";
 import { getTrip } from "@/lib/supabase/trips";
 import type {
   ItineraryEvent,
@@ -62,9 +68,12 @@ type MapStop = {
   sourceId: string | null;
   memoryCount?: number;
   thumbnailUrl?: string | null;
+  memories?: MemoryEntry[];
 };
 
 const DEFAULT_ROUTING_BASE_URL = "https://router.project-osrm.org";
+
+type CoordinateLookup = Record<string, Coordinates>;
 
 function getCoordinates(
   value: JourneyLiveLocation | JourneyMapObject | null,
@@ -248,7 +257,7 @@ function getDefaultDayId(days: PlannerV2Data["days"]) {
 }
 
 function getStoredMapViewId(tripId: string, days: PlannerV2Data["days"]) {
-  const storedValue = window.localStorage.getItem(`otr:map-view:${tripId}`);
+  const storedValue = readTodayScopedValue(`otr:map-view:${tripId}`);
   if (!storedValue) return null;
   if (storedValue === "journey") return "journey";
   return days.find((day) => day.day.dayDate === storedValue)?.day.id ?? null;
@@ -320,6 +329,69 @@ function findObjectForSource(
   });
 }
 
+function coordinateLookupKey(
+  sourceType: string,
+  sourceId: string | null,
+  title: string | null | undefined,
+  locationName: string | null | undefined,
+) {
+  if (sourceId) return `${sourceType}:${sourceId}`;
+  return `${sourceType}:${normalizeText(`${title ?? ""} ${locationName ?? ""}`)}`;
+}
+
+function coordinateLookupValue(
+  lookup: CoordinateLookup,
+  sourceType: string,
+  sourceId: string | null,
+  title: string | null | undefined,
+  locationName: string | null | undefined,
+) {
+  return lookup[coordinateLookupKey(sourceType, sourceId, title, locationName)] ?? null;
+}
+
+function geocodeQuery(
+  title: string | null | undefined,
+  locationName: string | null | undefined,
+) {
+  const location = locationName?.trim();
+  const name = title?.trim();
+  if (location && name && !normalizeText(name).includes(normalizeText(location))) {
+    return `${name}, ${location}`;
+  }
+  return location || name || "";
+}
+
+function shouldGeocodeQuery(query: string) {
+  return /\d/.test(query) || query.includes(",");
+}
+
+function hasKnownCoordinates(
+  objects: JourneyMapObject[],
+  sourceType: string,
+  sourceId: string | null,
+  title: string | null | undefined,
+  locationName: string | null | undefined,
+  geocodedCoordinates: CoordinateLookup,
+) {
+  const object = findObjectForSource(
+    objects,
+    sourceType,
+    sourceId,
+    title ?? "",
+    locationName ?? null,
+  );
+  return Boolean(
+    getCoordinates(object ?? null) ??
+      coordinateLookupValue(
+        geocodedCoordinates,
+        sourceType,
+        sourceId,
+        title,
+        locationName,
+      ),
+  );
+}
+
 function approximatePlaceCoordinates(
   trip: Trip | null,
   title: string | null | undefined,
@@ -328,8 +400,32 @@ function approximatePlaceCoordinates(
   const tripText = normalizeText(`${trip?.name ?? ""} ${trip?.destination ?? ""}`);
   const text = normalizeText(`${title ?? ""} ${locationName ?? ""}`);
 
-  if (!tripText.includes("iceland") && !tripText.includes("reykjavik")) {
-    return null;
+  const aucklandPlaces: Array<{ keys: string[]; coordinates: Coordinates }> = [
+    {
+      keys: ["67 bell road", "bell road", "remuera"],
+      coordinates: { latitude: -36.8799, longitude: 174.806 },
+    },
+    {
+      keys: ["auckland airport", "akl airport"],
+      coordinates: { latitude: -37.0082, longitude: 174.785 },
+    },
+    {
+      keys: ["auckland", "newmarket"],
+      coordinates: { latitude: -36.8485, longitude: 174.7633 },
+    },
+  ];
+
+  if (
+    tripText.includes("auckland") ||
+    tripText.includes("new zealand") ||
+    aucklandPlaces.some((place) =>
+      place.keys.some((key) => text.includes(normalizeText(key))),
+    )
+  ) {
+    const match = aucklandPlaces.find((place) =>
+      place.keys.some((key) => text.includes(normalizeText(key))),
+    );
+    if (match) return match.coordinates;
   }
 
   const icelandPlaces: Array<{ keys: string[]; coordinates: Coordinates }> = [
@@ -435,6 +531,16 @@ function approximatePlaceCoordinates(
     },
   ];
 
+  if (
+    !tripText.includes("iceland") &&
+    !tripText.includes("reykjavik") &&
+    !icelandPlaces.some((place) =>
+      place.keys.some((key) => text.includes(normalizeText(key))),
+    )
+  ) {
+    return null;
+  }
+
   return (
     icelandPlaces.find((place) =>
       place.keys.some((key) => text.includes(normalizeText(key))),
@@ -449,6 +555,7 @@ function reservationStop(
   label: string,
   kind: LeafletMapMarker["kind"],
   trip: Trip | null,
+  geocodedCoordinates: CoordinateLookup,
 ): MapStop | null {
   const object = findObjectForSource(
     objects,
@@ -459,6 +566,13 @@ function reservationStop(
   );
   const coordinates =
     getCoordinates(object ?? null) ??
+    coordinateLookupValue(
+      geocodedCoordinates,
+      "itinerary_reservation",
+      reservation.id,
+      reservation.title,
+      reservation.locationName,
+    ) ??
     approximatePlaceCoordinates(trip, reservation.title, reservation.locationName);
   if (!coordinates) return null;
   const reservationDetails = [
@@ -491,6 +605,7 @@ function eventStop(
   day: PlannerV2Day,
   objects: JourneyMapObject[],
   trip: Trip | null,
+  geocodedCoordinates: CoordinateLookup,
 ): MapStop | null {
   const object = findObjectForSource(
     objects,
@@ -501,6 +616,13 @@ function eventStop(
   );
   const coordinates =
     getCoordinates(object ?? null) ??
+    coordinateLookupValue(
+      geocodedCoordinates,
+      "itinerary_event",
+      event.id,
+      event.title,
+      event.locationName,
+    ) ??
     approximatePlaceCoordinates(trip, event.title, event.locationName);
   if (!coordinates) return null;
 
@@ -519,7 +641,56 @@ function eventStop(
   };
 }
 
-function memoryStop(memory: MemoryEntry, objects: JourneyMapObject[]): MapStop | null {
+function linkedMemoryCoordinates(
+  memory: MemoryEntry,
+  days: PlannerV2Day[],
+  objects: JourneyMapObject[],
+  trip: Trip | null,
+  geocodedCoordinates: CoordinateLookup,
+) {
+  for (const day of days) {
+    if (memory.itineraryReservationId) {
+      const reservation = day.reservations.find(
+        (item) => item.id === memory.itineraryReservationId,
+      );
+      if (reservation) {
+        const stop = reservationStop(
+          reservation,
+          day,
+          objects,
+          timeLabel(reservation.startsAt) || reservation.title,
+          reservation.reservationType === "hotel" ? "hotel" : "place",
+          trip,
+          geocodedCoordinates,
+        );
+        if (stop?.coordinates) return stop.coordinates;
+      }
+    }
+
+    if (memory.itineraryEventId) {
+      const activity = day.activities.find(
+        (item) => item.id === memory.itineraryEventId,
+      );
+      if (activity) {
+        const stop = eventStop(activity, day, objects, trip, geocodedCoordinates);
+        if (stop?.coordinates) return stop.coordinates;
+      }
+    }
+  }
+
+  return null;
+}
+
+function memoryStop(
+  memory: MemoryEntry,
+  objects: JourneyMapObject[],
+  days: PlannerV2Day[],
+  trip: Trip | null,
+  geocodedCoordinates: CoordinateLookup,
+  imageUrls: Record<string, string>,
+): MapStop | null {
+  if (memory.type !== "photo") return null;
+
   const object = findObjectForSource(
     objects,
     "memory",
@@ -527,9 +698,22 @@ function memoryStop(memory: MemoryEntry, objects: JourneyMapObject[]): MapStop |
     memory.content,
     memory.locationName,
   );
-  if (!object) return null;
-  const coordinates = getCoordinates(object);
+  const coordinates =
+    getCoordinates(object ?? null) ??
+    linkedMemoryCoordinates(memory, days, objects, trip, geocodedCoordinates) ??
+    coordinateLookupValue(
+      geocodedCoordinates,
+      "memory",
+      memory.id,
+      memory.content,
+      memory.locationName,
+    ) ??
+    approximatePlaceCoordinates(trip, memory.content, memory.locationName);
   if (!coordinates) return null;
+  const thumbnailUrl =
+    (object ? objectThumbnail(object) : null) ??
+    (memory.mediaUrl ? imageUrls[memory.mediaUrl] : null);
+  if (!thumbnailUrl) return null;
 
   return {
     id: `memory-${memory.id}`,
@@ -544,8 +728,37 @@ function memoryStop(memory: MemoryEntry, objects: JourneyMapObject[]): MapStop |
     sourceType: "memory",
     sourceId: memory.id,
     memoryCount: 1,
-    thumbnailUrl: objectThumbnail(object),
+    thumbnailUrl,
+    memories: [memory],
   };
+}
+
+function groupPhotoMemoryStops(stops: MapStop[]) {
+  const groups = new Map<string, MapStop>();
+
+  stops.forEach((stop) => {
+    const key = `${stop.coordinates.latitude.toFixed(4)},${stop.coordinates.longitude.toFixed(4)}`;
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, { ...stop, memories: stop.memories ?? [] });
+      return;
+    }
+
+    groups.set(key, {
+      ...existing,
+      id: `${existing.id}-group`,
+      label: `${(existing.memoryCount ?? 1) + (stop.memoryCount ?? 1)}`,
+      title: existing.title,
+      description:
+        existing.description && stop.description
+          ? `${existing.description}\n${stop.description}`
+          : existing.description || stop.description,
+      memoryCount: (existing.memoryCount ?? 1) + (stop.memoryCount ?? 1),
+      memories: [...(existing.memories ?? []), ...(stop.memories ?? [])],
+    });
+  });
+
+  return [...groups.values()];
 }
 
 function coordinatesBounds(coordinates: Coordinates[]) {
@@ -676,10 +889,17 @@ function JourneyMapContent() {
   const [showMemories, setShowMemories] = useState(false);
   const [mapViewVersion, setMapViewVersion] = useState(0);
   const [selectedMarker, setSelectedMarker] = useState<LeafletMapMarker | null>(null);
+  const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null);
+  const [memoryImageUrls, setMemoryImageUrls] = useState<Record<string, string>>(
+    {},
+  );
   const [roadRoute, setRoadRoute] = useState<{
     key: string;
     coordinates: Coordinates[];
   } | null>(null);
+  const [geocodedCoordinates, setGeocodedCoordinates] = useState<CoordinateLookup>(
+    {},
+  );
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const dateStripRef = useRef<HTMLDivElement | null>(null);
@@ -718,8 +938,8 @@ function JourneyMapContent() {
           getDefaultDayId(planner.days);
         setSelectedDayId(nextSelectedDayId);
         if (requestedDayId && requestedDate) {
-          window.localStorage.setItem(`otr:map-view:${tripId}`, requestedDate);
-          window.localStorage.setItem(`otr:planner-day:${tripId}`, requestedDate);
+          writeTodayScopedValue(`otr:map-view:${tripId}`, requestedDate);
+          writeTodayScopedValue(`otr:planner-day:${tripId}`, requestedDate);
         }
         setError(null);
       } catch (mapError) {
@@ -754,6 +974,152 @@ function JourneyMapContent() {
     });
   }, [selectedDayId]);
 
+  const photoMemoryPathKey = useMemo(
+    () =>
+      days
+        .flatMap((day) => day.memories)
+        .filter((memory) => memory.type === "photo" && memory.mediaUrl)
+        .map((memory) => memory.mediaUrl)
+        .sort()
+        .join("|"),
+    [days],
+  );
+
+  useEffect(() => {
+    const photoMemories = days
+      .flatMap((day) => day.memories)
+      .filter((memory) => memory.type === "photo" && memory.mediaUrl);
+    if (!photoMemories.length) return;
+
+    let isMounted = true;
+
+    getSignedMemoryImageUrls(photoMemories)
+      .then((urls) => {
+        if (isMounted) setMemoryImageUrls(urls);
+      })
+      .catch(() => {
+        if (isMounted) setMemoryImageUrls({});
+      });
+
+    return () => {
+      isMounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photoMemoryPathKey]);
+
+  const geocodeTargets = useMemo(() => {
+    const targets = new Map<string, string>();
+
+    days.forEach((day) => {
+      day.reservations.forEach((reservation) => {
+        const key = coordinateLookupKey(
+          "itinerary_reservation",
+          reservation.id,
+          reservation.title,
+          reservation.locationName,
+        );
+        if (
+          hasKnownCoordinates(
+            mapObjects,
+            "itinerary_reservation",
+            reservation.id,
+            reservation.title,
+            reservation.locationName,
+            geocodedCoordinates,
+          )
+        ) {
+          return;
+        }
+
+        const query = geocodeQuery(reservation.title, reservation.locationName);
+        if (query.length >= 4 && shouldGeocodeQuery(query)) {
+          targets.set(key, query);
+        }
+      });
+
+      day.activities.forEach((activity) => {
+        const key = coordinateLookupKey(
+          "itinerary_event",
+          activity.id,
+          activity.title,
+          activity.locationName,
+        );
+        if (
+          hasKnownCoordinates(
+            mapObjects,
+            "itinerary_event",
+            activity.id,
+            activity.title,
+            activity.locationName,
+            geocodedCoordinates,
+          )
+        ) {
+          return;
+        }
+
+        const query = geocodeQuery(activity.title, activity.locationName);
+        if (query.length >= 4 && shouldGeocodeQuery(query)) {
+          targets.set(key, query);
+        }
+      });
+
+      day.memories.forEach((memory) => {
+        if (memory.type !== "photo") return;
+        const key = coordinateLookupKey(
+          "memory",
+          memory.id,
+          memory.content,
+          memory.locationName,
+        );
+        if (
+          hasKnownCoordinates(
+            mapObjects,
+            "memory",
+            memory.id,
+            memory.content,
+            memory.locationName,
+            geocodedCoordinates,
+          )
+        ) {
+          return;
+        }
+
+        const query = geocodeQuery(memory.content, memory.locationName);
+        if (query.length >= 4 && shouldGeocodeQuery(query)) {
+          targets.set(key, query);
+        }
+      });
+    });
+
+    return [...targets.entries()].map(([key, query]) => ({ key, query }));
+  }, [days, geocodedCoordinates, mapObjects]);
+
+  useEffect(() => {
+    if (!geocodeTargets.length) return;
+
+    const controller = new AbortController();
+
+    async function resolveCoordinates() {
+      const resolved: CoordinateLookup = {};
+
+      for (const target of geocodeTargets.slice(0, 12)) {
+        if (controller.signal.aborted) return;
+        const coordinates = await geocodePlace(target.query, controller.signal).catch(
+          () => null,
+        );
+        if (coordinates) resolved[target.key] = coordinates;
+      }
+
+      if (!controller.signal.aborted && Object.keys(resolved).length) {
+        setGeocodedCoordinates((current) => ({ ...current, ...resolved }));
+      }
+    }
+
+    resolveCoordinates();
+
+    return () => controller.abort();
+  }, [geocodeTargets]);
+
   const hotelStops = useMemo(
     () =>
       days.flatMap((day) =>
@@ -767,11 +1133,12 @@ function JourneyMapContent() {
               day.dayTag ?? `D${day.dayNumber}`,
               "hotel",
               trip,
+              geocodedCoordinates,
             );
             return stop ? [stop] : [];
           }),
       ),
-    [days, mapObjects, trip],
+    [days, geocodedCoordinates, mapObjects, trip],
   );
 
   const hotelObjectStops = useMemo(
@@ -815,6 +1182,7 @@ function JourneyMapContent() {
                 dayLabel,
                 "hotel",
                 trip,
+                geocodedCoordinates,
               ),
             )
             .find((stop): stop is MapStop => Boolean(stop)) ?? null;
@@ -844,6 +1212,7 @@ function JourneyMapContent() {
             ) || reservation.title,
             reservation.reservationType === "car" ? "place" : "plan",
             trip,
+            geocodedCoordinates,
           );
           return stop ? [stop] : [];
         });
@@ -858,7 +1227,7 @@ function JourneyMapContent() {
             return [];
           }
 
-          const stop = eventStop(activity, day, mapObjects, trip);
+          const stop = eventStop(activity, day, mapObjects, trip, geocodedCoordinates);
           return stop ? [stop] : [];
         });
         const firstLocatedStop = [...reservationStops, ...activityStops].sort(
@@ -876,7 +1245,7 @@ function JourneyMapContent() {
             ]
           : [];
       }),
-    [days, mapObjects, trip],
+    [days, geocodedCoordinates, mapObjects, trip],
   );
 
   const journeyObjectStops = useMemo(
@@ -922,6 +1291,7 @@ function JourneyMapContent() {
             t("map.start"),
             "hotel",
             trip,
+            geocodedCoordinates,
           )
         : null;
 
@@ -947,6 +1317,7 @@ function JourneyMapContent() {
         ) || reservation.title,
         reservation.reservationType === "car" ? "place" : "plan",
         trip,
+        geocodedCoordinates,
       );
       return stop ? [stop] : [];
     });
@@ -960,7 +1331,13 @@ function JourneyMapContent() {
       ) {
         return [];
       }
-      const stop = eventStop(activity, selectedDay, mapObjects, trip);
+      const stop = eventStop(
+        activity,
+        selectedDay,
+        mapObjects,
+        trip,
+        geocodedCoordinates,
+      );
       return stop ? [stop] : [];
     });
     const tonightStayStop =
@@ -974,6 +1351,7 @@ function JourneyMapContent() {
             t("map.tonight"),
             "hotel",
             trip,
+            geocodedCoordinates,
           ),
         )
         .find((stop): stop is MapStop => Boolean(stop)) ?? null;
@@ -996,23 +1374,32 @@ function JourneyMapContent() {
           ...dayStops,
         ]
       : dayStops;
-  }, [days, mapObjects, selectedDay, t, trip]);
+  }, [days, geocodedCoordinates, mapObjects, selectedDay, t, trip]);
 
   const memoryStops = useMemo(
     () =>
       days.flatMap((day) =>
         day.memories.flatMap((memory) => {
-          const stop = memoryStop(memory, mapObjects);
+          const stop = memoryStop(
+            memory,
+            mapObjects,
+            days,
+            trip,
+            geocodedCoordinates,
+            memoryImageUrls,
+          );
           return stop ? [stop] : [];
         }),
       ),
-    [days, mapObjects],
+    [days, geocodedCoordinates, mapObjects, memoryImageUrls, trip],
   );
 
   const visibleMemoryStops = useMemo(() => {
     if (!showMemories) return [];
-    if (!selectedDay) return memoryStops;
-    return memoryStops.filter((stop) => stop.date === selectedDay.day.dayDate);
+    const scopedStops = selectedDay
+      ? memoryStops.filter((stop) => stop.date === selectedDay.day.dayDate)
+      : memoryStops;
+    return groupPhotoMemoryStops(scopedStops);
   }, [memoryStops, selectedDay, showMemories]);
 
   const liveByUserId = useMemo(
@@ -1114,9 +1501,12 @@ function JourneyMapContent() {
 
   const memoryMarkers = visibleMemoryStops.map((stop) => ({
     id: stop.id,
-    label: stop.label,
+    label: stop.memoryCount && stop.memoryCount > 1 ? `${stop.memoryCount}` : "",
     subtitle: stop.subtitle,
-    title: stop.title,
+    title:
+      stop.memoryCount && stop.memoryCount > 1
+        ? t("map.photoGroupTitle", { count: stop.memoryCount })
+        : stop.title,
     locationLabel: stop.subtitle,
     description: stop.description,
     coordinates: stop.coordinates,
@@ -1124,6 +1514,7 @@ function JourneyMapContent() {
     icon: stop.icon,
     thumbnailUrl: stop.thumbnailUrl,
     count: stop.memoryCount,
+    memories: stop.memories,
   }));
 
   const mapMarkers: LeafletMapMarker[] = [
@@ -1212,6 +1603,7 @@ function JourneyMapContent() {
 
   function handleMarkerClick(marker: LeafletMapMarker) {
     setSelectedMarker(marker);
+    setSelectedMemoryId(marker.memories?.[0]?.id ?? null);
   }
 
   function handleOutsideMemberClick(memberLocation: MemberLocation) {
@@ -1232,22 +1624,24 @@ function JourneyMapContent() {
       kind: "live",
       icon: "live",
     });
+    setSelectedMemoryId(null);
   }
 
   function selectMapView(dayId: string) {
     setSelectedDayId(dayId);
     setSelectedMarker(null);
+    setSelectedMemoryId(null);
     setMapViewVersion((value) => value + 1);
 
     if (dayId === "journey") {
-      window.localStorage.setItem(`otr:map-view:${tripId}`, "journey");
+      writeTodayScopedValue(`otr:map-view:${tripId}`, "journey");
       return;
     }
 
     const day = days.find((plannerDay) => plannerDay.day.id === dayId);
     if (day) {
-      window.localStorage.setItem(`otr:map-view:${tripId}`, day.day.dayDate);
-      window.localStorage.setItem(`otr:planner-day:${tripId}`, day.day.dayDate);
+      writeTodayScopedValue(`otr:map-view:${tripId}`, day.day.dayDate);
+      writeTodayScopedValue(`otr:planner-day:${tripId}`, day.day.dayDate);
       window.dispatchEvent(
         new CustomEvent("journey:workspace-day-change", {
           detail: { tripId, day: day.day.dayDate },
@@ -1256,16 +1650,30 @@ function JourneyMapContent() {
     }
   }
 
+  const selectedMemory =
+    selectedMarker?.kind === "memory" && selectedMarker.memories?.length
+      ? selectedMarker.memories.find((memory) => memory.id === selectedMemoryId) ??
+        selectedMarker.memories[0]
+      : null;
+  const selectedMemoryImageUrl =
+    selectedMemory?.mediaUrl && memoryImageUrls[selectedMemory.mediaUrl]
+      ? memoryImageUrls[selectedMemory.mediaUrl]
+      : selectedMarker?.thumbnailUrl;
+
   return (
     <section className="fixed inset-0 z-10 bg-stone-100 md:left-20">
-      <LeafletMapCanvas
-        markers={mapMarkers}
-        routes={mapRoutes}
-        fitCoordinates={focusCoordinates}
-        fitVersion={`${selectedDayId}-${mapViewVersion}-${showMemories ? "memories" : "base"}`}
-        fallbackCenter={fallbackCenter}
-        onMarkerClick={handleMarkerClick}
-      />
+      {isLoading ? (
+        <div className="h-full w-full bg-gradient-to-br from-emerald-50 via-sky-50 to-stone-100" />
+      ) : (
+        <LeafletMapCanvas
+          markers={mapMarkers}
+          routes={mapRoutes}
+          fitCoordinates={focusCoordinates}
+          fitVersion={`${selectedDayId}-${mapViewVersion}-${showMemories ? "memories" : "base"}`}
+          fallbackCenter={fallbackCenter}
+          onMarkerClick={handleMarkerClick}
+        />
+      )}
 
       <div className="pointer-events-none absolute left-16 right-2 top-2 z-[500] md:inset-x-0 md:top-0 md:p-5">
         <div className="pointer-events-auto rounded-2xl border border-white/60 bg-white/[0.62] p-2 shadow-lg backdrop-blur-md md:rounded-[28px] md:bg-white/[0.88] md:p-3">
@@ -1454,12 +1862,58 @@ function JourneyMapContent() {
               </div>
               <button
                 type="button"
-                onClick={() => setSelectedMarker(null)}
+                onClick={() => {
+                  setSelectedMarker(null);
+                  setSelectedMemoryId(null);
+                }}
                 className="rounded-full bg-stone-100 px-4 py-2 text-xs font-black text-stone-600"
               >
                 {t("common.close")}
               </button>
             </div>
+            {selectedMarker.kind === "memory" && selectedMemoryImageUrl ? (
+              <div className="mt-4 overflow-hidden rounded-3xl bg-stone-100">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={selectedMemoryImageUrl}
+                  alt=""
+                  className="max-h-72 w-full object-cover"
+                />
+                {selectedMarker.memories?.length ? (
+                  <div className="grid grid-cols-4 gap-1 p-2">
+                    {selectedMarker.memories.slice(0, 8).map((memory) => {
+                      const imageUrl = memory.mediaUrl
+                        ? memoryImageUrls[memory.mediaUrl]
+                        : null;
+                      return (
+                        <button
+                          type="button"
+                          key={memory.id}
+                          onClick={() => setSelectedMemoryId(memory.id)}
+                          className={`relative aspect-square overflow-hidden rounded-xl bg-white text-left ring-offset-2 ${
+                            selectedMemory?.id === memory.id
+                              ? "ring-2 ring-emerald-700"
+                              : "ring-0"
+                          }`}
+                        >
+                          {imageUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={imageUrl}
+                              alt=""
+                              className="size-full object-cover"
+                            />
+                          ) : null}
+                          <span className="absolute left-1 top-1 rounded-full bg-white/85 px-1.5 py-0.5 text-[10px] font-black text-stone-700 shadow-sm">
+                            {timeLabel(memory.capturedAt)}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <div className="mt-4 flex flex-wrap gap-2">
               <a
                 href={navigationHref(selectedMarker.coordinates, selectedMarker.label)}
@@ -1471,7 +1925,11 @@ function JourneyMapContent() {
               </a>
               {selectedMarker.kind === "memory" ? (
                 <Link
-                  href={`/trips/${tripId}/timeline`}
+                  href={`/trips/${tripId}/timeline${
+                    selectedMarker.memories?.[0]
+                      ? `?date=${dateKey(selectedMarker.memories[0].capturedAt)}`
+                      : ""
+                  }`}
                   className="rounded-full bg-stone-100 px-4 py-2 text-xs font-black text-stone-700"
                 >
                   {t("map.openTimeline")}

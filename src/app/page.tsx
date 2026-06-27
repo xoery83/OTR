@@ -3,7 +3,11 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { TripCard } from "@/components/TripCard";
-import { getJourneyDayNumber, getJourneyStatus } from "@/lib/journeys/status";
+import {
+  compareTripsByStartDateAsc,
+  getJourneyDayNumber,
+  getJourneyStatus,
+} from "@/lib/journeys/status";
 import {
   getJourneyParticipantCount,
   getMemoryStats,
@@ -123,11 +127,15 @@ function HomeDashboard() {
 
   const groups = useMemo(
     () => ({
-      active: items.filter((item) => getJourneyStatus(item.trip) === "active"),
-      upcoming: items.filter((item) => getJourneyStatus(item.trip) === "upcoming"),
+      active: items
+        .filter((item) => getJourneyStatus(item.trip) === "active")
+        .sort((a, b) => compareTripsByStartDateAsc(a.trip, b.trip)),
+      upcoming: items
+        .filter((item) => getJourneyStatus(item.trip) === "upcoming")
+        .sort((a, b) => compareTripsByStartDateAsc(a.trip, b.trip)),
       completed: items.filter(
         (item) => getJourneyStatus(item.trip) === "completed",
-      ),
+      ).sort((a, b) => compareTripsByStartDateAsc(a.trip, b.trip)),
     }),
     [items],
   );

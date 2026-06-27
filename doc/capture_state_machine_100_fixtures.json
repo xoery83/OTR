@@ -1,0 +1,2259 @@
+{
+  "version": "0.1.0",
+  "name": "OTR Capture State Machine Fixture Library - Batch 001",
+  "description": "100 bilingual fixtures for Capture local intent routing, state updates, and regression testing.",
+  "importTarget": "src/capture/stateMachine/fixtures/capture-fixtures-batch-001.json",
+  "recommendedUse": [
+    "Use these fixtures as local parser matching targets and regression tests.",
+    "Do not call LLM for fixtures that have action other than needs_llm.",
+    "If a fixture fails, Codex should update local resolver rules or state machine logic.",
+    "When real user testing finds a new failure, add it as a new fixture before fixing code."
+  ],
+  "fixtures": [
+    {
+      "id": "query_001",
+      "lang": "zh",
+      "category": "query",
+      "description": "今天后面还有哪些行程？",
+      "input": "今天后面还有哪些行程？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "timeFilter": "after_now"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_002",
+      "lang": "zh",
+      "category": "query",
+      "description": "今天剩下干嘛？",
+      "input": "今天剩下干嘛？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "timeFilter": "after_now"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_003",
+      "lang": "zh",
+      "category": "query",
+      "description": "今天还有什么安排？",
+      "input": "今天还有什么安排？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "timeFilter": "after_now"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_004",
+      "lang": "zh",
+      "category": "query",
+      "description": "明天几点出发？",
+      "input": "明天几点出发？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "tomorrow",
+          "target": "first_planner_item"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_005",
+      "lang": "zh",
+      "category": "query",
+      "description": "明天早上第一个行程是什么？",
+      "input": "明天早上第一个行程是什么？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "tomorrow",
+          "target": "first_planner_item",
+          "timePeriod": "morning"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_006",
+      "lang": "zh",
+      "category": "query",
+      "description": "今晚住哪里？",
+      "input": "今晚住哪里？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_lodging",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "lodgingNight": "tonight"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_007",
+      "lang": "zh",
+      "category": "query",
+      "description": "今天住哪个酒店？",
+      "input": "今天住哪个酒店？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_lodging",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "lodgingNight": "tonight"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_008",
+      "lang": "zh",
+      "category": "query",
+      "description": "明晚酒店在哪里？",
+      "input": "明晚酒店在哪里？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_lodging",
+        "action": "answer",
+        "fields": {
+          "date": "tomorrow",
+          "lodgingNight": "tomorrow_night"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_009",
+      "lang": "zh",
+      "category": "query",
+      "description": "今天有几个景点？",
+      "input": "今天有几个景点？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "itemType": "attraction",
+          "aggregate": "count"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_010",
+      "lang": "zh",
+      "category": "query",
+      "description": "今天有没有开车？",
+      "input": "今天有没有开车？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "itemType": "transport",
+          "transportMode": "drive"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_011",
+      "lang": "zh",
+      "category": "query",
+      "description": "今天花了多少钱？",
+      "input": "今天花了多少钱？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_ledger",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "aggregate": "sum"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_012",
+      "lang": "zh",
+      "category": "query",
+      "description": "谁现在垫付最多？",
+      "input": "谁现在垫付最多？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_ledger",
+        "action": "answer",
+        "fields": {
+          "scope": "journey",
+          "aggregate": "payer_balance"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_013",
+      "lang": "en",
+      "category": "query",
+      "description": "What do we still have today?",
+      "input": "What do we still have today?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "timeFilter": "after_now"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_014",
+      "lang": "en",
+      "category": "query",
+      "description": "What's left for today?",
+      "input": "What's left for today?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "timeFilter": "after_now"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_015",
+      "lang": "en",
+      "category": "query",
+      "description": "What are we doing next?",
+      "input": "What are we doing next?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "timeFilter": "next_item"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_016",
+      "lang": "en",
+      "category": "query",
+      "description": "What time do we leave tomorrow?",
+      "input": "What time do we leave tomorrow?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "tomorrow",
+          "target": "first_planner_item"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_017",
+      "lang": "en",
+      "category": "query",
+      "description": "Where are we staying tonight?",
+      "input": "Where are we staying tonight?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_lodging",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "lodgingNight": "tonight"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_018",
+      "lang": "en",
+      "category": "query",
+      "description": "Which hotel are we in today?",
+      "input": "Which hotel are we in today?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_lodging",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "lodgingNight": "tonight"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_019",
+      "lang": "en",
+      "category": "query",
+      "description": "Where is tomorrow night's hotel?",
+      "input": "Where is tomorrow night's hotel?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_lodging",
+        "action": "answer",
+        "fields": {
+          "date": "tomorrow",
+          "lodgingNight": "tomorrow_night"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_020",
+      "lang": "en",
+      "category": "query",
+      "description": "How many stops do we have today?",
+      "input": "How many stops do we have today?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "aggregate": "count"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_021",
+      "lang": "en",
+      "category": "query",
+      "description": "Are we driving today?",
+      "input": "Are we driving today?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "itemType": "transport",
+          "transportMode": "drive"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_022",
+      "lang": "en",
+      "category": "query",
+      "description": "How much did we spend today?",
+      "input": "How much did we spend today?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_ledger",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "aggregate": "sum"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_023",
+      "lang": "en",
+      "category": "query",
+      "description": "Who paid the most so far?",
+      "input": "Who paid the most so far?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_ledger",
+        "action": "answer",
+        "fields": {
+          "scope": "journey",
+          "aggregate": "payer_balance"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_024",
+      "lang": "zh",
+      "category": "query",
+      "description": "今天后面离我最近的安排是什么？",
+      "input": "今天后面离我最近的安排是什么？",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "timeFilter": "next_item"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_025",
+      "lang": "en",
+      "category": "query",
+      "description": "What's our next stop?",
+      "input": "What's our next stop?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "timeFilter": "next_item"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "ledger_026",
+      "lang": "zh",
+      "category": "ledger",
+      "description": "刚才加油100欧",
+      "input": "刚才加油100欧",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "加油",
+          "category": "fuel",
+          "amount": 100,
+          "currency": "EUR",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_027",
+      "lang": "zh",
+      "category": "ledger",
+      "description": "停车费20欧",
+      "input": "停车费20欧",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "停车费",
+          "category": "parking",
+          "amount": 20,
+          "currency": "EUR",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_028",
+      "lang": "zh",
+      "category": "ledger",
+      "description": "午饭80欧",
+      "input": "午饭80欧",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "午饭",
+          "category": "food",
+          "amount": 80,
+          "currency": "EUR",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_029",
+      "lang": "zh",
+      "category": "ledger",
+      "description": "Mary付了晚饭120欧",
+      "input": "Mary付了晚饭120欧",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "晚饭",
+          "category": "food",
+          "amount": 120,
+          "currency": "EUR",
+          "payer": "Mary",
+          "date": "today"
+        },
+        "missingFields": [
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_030",
+      "lang": "zh",
+      "category": "ledger",
+      "description": "租车800欧，大家平摊",
+      "input": "租车800欧，大家平摊",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "租车",
+          "category": "car_rental",
+          "amount": 800,
+          "currency": "EUR",
+          "splitMethod": "all_members",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_031",
+      "lang": "zh",
+      "category": "ledger",
+      "description": "我自己买的机票3000纽币，只统计",
+      "input": "我自己买的机票3000纽币，只统计",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "机票",
+          "category": "flight",
+          "amount": 3000,
+          "currency": "NZD",
+          "splitMethod": "stats_only",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_032",
+      "lang": "zh",
+      "category": "ledger",
+      "description": "蓝湖门票一共500欧",
+      "input": "蓝湖门票一共500欧",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "蓝湖门票",
+          "category": "ticket",
+          "amount": 500,
+          "currency": "EUR",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_033",
+      "lang": "zh",
+      "category": "ledger",
+      "description": "今天超市买菜90欧",
+      "input": "今天超市买菜90欧",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "超市买菜",
+          "category": "grocery",
+          "amount": 90,
+          "currency": "EUR",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_034",
+      "lang": "zh",
+      "category": "ledger",
+      "description": "这笔不分摊，只统计",
+      "input": "这笔不分摊，只统计",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "splitMethod": "stats_only"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_035",
+      "lang": "zh",
+      "category": "ledger",
+      "description": "我们五个人平摊",
+      "input": "我们五个人平摊",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "splitMethod": "selected_members",
+          "memberHint": "active_five"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_036",
+      "lang": "en",
+      "category": "ledger",
+      "description": "Fuel was 100 euros",
+      "input": "Fuel was 100 euros",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "fuel",
+          "category": "fuel",
+          "amount": 100,
+          "currency": "EUR",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_037",
+      "lang": "en",
+      "category": "ledger",
+      "description": "Parking cost 20 euros",
+      "input": "Parking cost 20 euros",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "parking",
+          "category": "parking",
+          "amount": 20,
+          "currency": "EUR",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_038",
+      "lang": "en",
+      "category": "ledger",
+      "description": "Lunch was 80 euros",
+      "input": "Lunch was 80 euros",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "lunch",
+          "category": "food",
+          "amount": 80,
+          "currency": "EUR",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_039",
+      "lang": "en",
+      "category": "ledger",
+      "description": "Mary paid 120 euros for dinner",
+      "input": "Mary paid 120 euros for dinner",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "dinner",
+          "category": "food",
+          "amount": 120,
+          "currency": "EUR",
+          "payer": "Mary",
+          "date": "today"
+        },
+        "missingFields": [
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_040",
+      "lang": "en",
+      "category": "ledger",
+      "description": "Rental car was 800 euros, split by everyone",
+      "input": "Rental car was 800 euros, split by everyone",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "rental car",
+          "category": "car_rental",
+          "amount": 800,
+          "currency": "EUR",
+          "splitMethod": "all_members",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_041",
+      "lang": "en",
+      "category": "ledger",
+      "description": "My flight was 3000 NZD, just for stats",
+      "input": "My flight was 3000 NZD, just for stats",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "flight",
+          "category": "flight",
+          "amount": 3000,
+          "currency": "NZD",
+          "splitMethod": "stats_only",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_042",
+      "lang": "en",
+      "category": "ledger",
+      "description": "Blue Lagoon tickets were 500 euros total",
+      "input": "Blue Lagoon tickets were 500 euros total",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "Blue Lagoon tickets",
+          "category": "ticket",
+          "amount": 500,
+          "currency": "EUR",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_043",
+      "lang": "en",
+      "category": "ledger",
+      "description": "Groceries today were 90 euros",
+      "input": "Groceries today were 90 euros",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "title": "groceries",
+          "category": "grocery",
+          "amount": 90,
+          "currency": "EUR",
+          "date": "today"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_044",
+      "lang": "en",
+      "category": "ledger",
+      "description": "Don't split this, just track it",
+      "input": "Don't split this, just track it",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "splitMethod": "stats_only"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "ledger_045",
+      "lang": "en",
+      "category": "ledger",
+      "description": "Split it between the five of us",
+      "input": "Split it between the five of us",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_expense",
+        "action": "show_form",
+        "fields": {
+          "splitMethod": "selected_members",
+          "memberHint": "active_five"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "followup_correction_051",
+      "lang": "zh",
+      "category": "followup_correction",
+      "description": "Mary",
+      "input": "Mary",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "amount": 100,
+          "currency": "EUR",
+          "category": "fuel"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "lastQuestion": {
+          "field": "payer"
+        }
+      },
+      "expected": {
+        "intentType": "create_expense",
+        "action": "update_state",
+        "fields": {
+          "payer": "Mary"
+        },
+        "missingFields": [
+          "splitMethod"
+        ],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_052",
+      "lang": "zh",
+      "category": "followup_correction",
+      "description": "我付的",
+      "input": "我付的",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "amount": 100,
+          "currency": "EUR",
+          "category": "fuel"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "lastQuestion": {
+          "field": "payer"
+        }
+      },
+      "expected": {
+        "intentType": "create_expense",
+        "action": "update_state",
+        "fields": {
+          "payer": "current_user"
+        },
+        "missingFields": [
+          "splitMethod"
+        ],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_053",
+      "lang": "zh",
+      "category": "followup_correction",
+      "description": "祥哥付的",
+      "input": "祥哥付的",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "amount": 100,
+          "currency": "EUR",
+          "category": "fuel"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "lastQuestion": {
+          "field": "payer"
+        }
+      },
+      "expected": {
+        "intentType": "create_expense",
+        "action": "update_state",
+        "fields": {
+          "payer": "祥哥"
+        },
+        "missingFields": [
+          "splitMethod"
+        ],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_054",
+      "lang": "en",
+      "category": "followup_correction",
+      "description": "Mary",
+      "input": "Mary",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "amount": 100,
+          "currency": "EUR",
+          "category": "fuel"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "lastQuestion": {
+          "field": "payer"
+        }
+      },
+      "expected": {
+        "intentType": "create_expense",
+        "action": "update_state",
+        "fields": {
+          "payer": "Mary"
+        },
+        "missingFields": [
+          "splitMethod"
+        ],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_055",
+      "lang": "en",
+      "category": "followup_correction",
+      "description": "I paid",
+      "input": "I paid",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "amount": 100,
+          "currency": "EUR",
+          "category": "fuel"
+        },
+        "missingFields": [
+          "payer",
+          "splitMethod"
+        ],
+        "lastQuestion": {
+          "field": "payer"
+        }
+      },
+      "expected": {
+        "intentType": "create_expense",
+        "action": "update_state",
+        "fields": {
+          "payer": "current_user"
+        },
+        "missingFields": [
+          "splitMethod"
+        ],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_056",
+      "lang": "zh",
+      "category": "followup_correction",
+      "description": "不是100，是120",
+      "input": "不是100，是120",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "amount": 100,
+          "currency": "EUR"
+        }
+      },
+      "expected": {
+        "intentType": "correction",
+        "action": "update_state",
+        "fields": {
+          "amount": 120
+        },
+        "missingFields": [],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_057",
+      "lang": "zh",
+      "category": "followup_correction",
+      "description": "不是欧，是冰岛克朗",
+      "input": "不是欧，是冰岛克朗",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "amount": 100,
+          "currency": "EUR"
+        }
+      },
+      "expected": {
+        "intentType": "correction",
+        "action": "update_state",
+        "fields": {
+          "currency": "ISK"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_058",
+      "lang": "zh",
+      "category": "followup_correction",
+      "description": "改成纽币",
+      "input": "改成纽币",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "currency": "EUR"
+        }
+      },
+      "expected": {
+        "intentType": "correction",
+        "action": "update_state",
+        "fields": {
+          "currency": "NZD"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_059",
+      "lang": "zh",
+      "category": "followup_correction",
+      "description": "日期不是今天，是昨天",
+      "input": "日期不是今天，是昨天",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "date": "today"
+        }
+      },
+      "expected": {
+        "intentType": "correction",
+        "action": "update_state",
+        "fields": {
+          "date": "yesterday"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_060",
+      "lang": "zh",
+      "category": "followup_correction",
+      "description": "不是晚饭，是午饭",
+      "input": "不是晚饭，是午饭",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "title": "晚饭",
+          "category": "food"
+        }
+      },
+      "expected": {
+        "intentType": "correction",
+        "action": "update_state",
+        "fields": {
+          "title": "午饭",
+          "category": "food"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_061",
+      "lang": "en",
+      "category": "followup_correction",
+      "description": "Not 100, 120",
+      "input": "Not 100, 120",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "amount": 100,
+          "currency": "EUR"
+        }
+      },
+      "expected": {
+        "intentType": "correction",
+        "action": "update_state",
+        "fields": {
+          "amount": 120
+        },
+        "missingFields": [],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_062",
+      "lang": "en",
+      "category": "followup_correction",
+      "description": "Not euros, Icelandic krona",
+      "input": "Not euros, Icelandic krona",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "amount": 100,
+          "currency": "EUR"
+        }
+      },
+      "expected": {
+        "intentType": "correction",
+        "action": "update_state",
+        "fields": {
+          "currency": "ISK"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_063",
+      "lang": "en",
+      "category": "followup_correction",
+      "description": "Change it to NZD",
+      "input": "Change it to NZD",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "currency": "EUR"
+        }
+      },
+      "expected": {
+        "intentType": "correction",
+        "action": "update_state",
+        "fields": {
+          "currency": "NZD"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_064",
+      "lang": "en",
+      "category": "followup_correction",
+      "description": "Not today, yesterday",
+      "input": "Not today, yesterday",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "date": "today"
+        }
+      },
+      "expected": {
+        "intentType": "correction",
+        "action": "update_state",
+        "fields": {
+          "date": "yesterday"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "followup_correction_065",
+      "lang": "en",
+      "category": "followup_correction",
+      "description": "Not dinner, lunch",
+      "input": "Not dinner, lunch",
+      "initialState": {
+        "intentType": "create_expense",
+        "fields": {
+          "title": "dinner",
+          "category": "food"
+        }
+      },
+      "expected": {
+        "intentType": "correction",
+        "action": "update_state",
+        "fields": {
+          "title": "lunch",
+          "category": "food"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.9
+      }
+    },
+    {
+      "id": "planner_066",
+      "lang": "zh",
+      "category": "planner",
+      "description": "把今天午饭改到下午两点",
+      "input": "把今天午饭改到下午两点",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "confirm",
+        "fields": {
+          "date": "today",
+          "targetHint": "lunch",
+          "fieldToUpdate": "time",
+          "newTime": "14:00"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_067",
+      "lang": "zh",
+      "category": "planner",
+      "description": "帮我修改今天行程的时间",
+      "input": "帮我修改今天行程的时间",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "show_choices",
+        "fields": {
+          "date": "today",
+          "fieldToUpdate": "time"
+        },
+        "missingFields": [
+          "targetPlannerItem"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_068",
+      "lang": "zh",
+      "category": "planner",
+      "description": "明天早上加一个超市采购",
+      "input": "明天早上加一个超市采购",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_planner_item",
+        "action": "show_form",
+        "fields": {
+          "date": "tomorrow",
+          "timePeriod": "morning",
+          "title": "超市采购",
+          "category": "grocery"
+        },
+        "missingFields": [
+          "time"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_069",
+      "lang": "zh",
+      "category": "planner",
+      "description": "删除下午那个景点",
+      "input": "删除下午那个景点",
+      "initialState": {},
+      "expected": {
+        "intentType": "delete_planner_item",
+        "action": "show_choices",
+        "fields": {
+          "date": "today",
+          "timePeriod": "afternoon",
+          "itemType": "attraction"
+        },
+        "missingFields": [
+          "targetPlannerItem"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_070",
+      "lang": "zh",
+      "category": "planner",
+      "description": "把蓝湖改到下午三点",
+      "input": "把蓝湖改到下午三点",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "confirm",
+        "fields": {
+          "targetHint": "蓝湖",
+          "fieldToUpdate": "time",
+          "newTime": "15:00"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_071",
+      "lang": "zh",
+      "category": "planner",
+      "description": "酒店入住时间改成四点",
+      "input": "酒店入住时间改成四点",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "confirm",
+        "fields": {
+          "targetHint": "hotel_checkin",
+          "fieldToUpdate": "time",
+          "newTime": "16:00"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_072",
+      "lang": "zh",
+      "category": "planner",
+      "description": "今天这个地方取消",
+      "input": "今天这个地方取消",
+      "initialState": {},
+      "expected": {
+        "intentType": "delete_planner_item",
+        "action": "show_choices",
+        "fields": {
+          "date": "today",
+          "targetHint": "current_place"
+        },
+        "missingFields": [
+          "targetPlannerItem"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_073",
+      "lang": "zh",
+      "category": "planner",
+      "description": "给明天加一个早餐",
+      "input": "给明天加一个早餐",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_planner_item",
+        "action": "show_form",
+        "fields": {
+          "date": "tomorrow",
+          "title": "早餐",
+          "category": "food",
+          "timePeriod": "morning"
+        },
+        "missingFields": [
+          "time",
+          "location"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_074",
+      "lang": "zh",
+      "category": "planner",
+      "description": "把这个移动到明天",
+      "input": "把这个移动到明天",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "confirm",
+        "fields": {
+          "targetHint": "current_item",
+          "fieldToUpdate": "date",
+          "newDate": "tomorrow"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_075",
+      "lang": "zh",
+      "category": "planner",
+      "description": "明天午饭改到这家餐厅",
+      "input": "明天午饭改到这家餐厅",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "confirm",
+        "fields": {
+          "date": "tomorrow",
+          "targetHint": "lunch",
+          "fieldToUpdate": "location",
+          "newLocationHint": "current_place"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_076",
+      "lang": "en",
+      "category": "planner",
+      "description": "Move today's lunch to 2pm",
+      "input": "Move today's lunch to 2pm",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "confirm",
+        "fields": {
+          "date": "today",
+          "targetHint": "lunch",
+          "fieldToUpdate": "time",
+          "newTime": "14:00"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_077",
+      "lang": "en",
+      "category": "planner",
+      "description": "Change today's plan time",
+      "input": "Change today's plan time",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "show_choices",
+        "fields": {
+          "date": "today",
+          "fieldToUpdate": "time"
+        },
+        "missingFields": [
+          "targetPlannerItem"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_078",
+      "lang": "en",
+      "category": "planner",
+      "description": "Add grocery shopping tomorrow morning",
+      "input": "Add grocery shopping tomorrow morning",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_planner_item",
+        "action": "show_form",
+        "fields": {
+          "date": "tomorrow",
+          "timePeriod": "morning",
+          "title": "grocery shopping",
+          "category": "grocery"
+        },
+        "missingFields": [
+          "time"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_079",
+      "lang": "en",
+      "category": "planner",
+      "description": "Delete the afternoon stop",
+      "input": "Delete the afternoon stop",
+      "initialState": {},
+      "expected": {
+        "intentType": "delete_planner_item",
+        "action": "show_choices",
+        "fields": {
+          "date": "today",
+          "timePeriod": "afternoon"
+        },
+        "missingFields": [
+          "targetPlannerItem"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_080",
+      "lang": "en",
+      "category": "planner",
+      "description": "Move Blue Lagoon to 3pm",
+      "input": "Move Blue Lagoon to 3pm",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "confirm",
+        "fields": {
+          "targetHint": "Blue Lagoon",
+          "fieldToUpdate": "time",
+          "newTime": "15:00"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_081",
+      "lang": "en",
+      "category": "planner",
+      "description": "Change hotel check-in to 4pm",
+      "input": "Change hotel check-in to 4pm",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "confirm",
+        "fields": {
+          "targetHint": "hotel_checkin",
+          "fieldToUpdate": "time",
+          "newTime": "16:00"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_082",
+      "lang": "en",
+      "category": "planner",
+      "description": "Cancel this place today",
+      "input": "Cancel this place today",
+      "initialState": {},
+      "expected": {
+        "intentType": "delete_planner_item",
+        "action": "show_choices",
+        "fields": {
+          "date": "today",
+          "targetHint": "current_place"
+        },
+        "missingFields": [
+          "targetPlannerItem"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_083",
+      "lang": "en",
+      "category": "planner",
+      "description": "Add breakfast tomorrow",
+      "input": "Add breakfast tomorrow",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_planner_item",
+        "action": "show_form",
+        "fields": {
+          "date": "tomorrow",
+          "title": "breakfast",
+          "category": "food",
+          "timePeriod": "morning"
+        },
+        "missingFields": [
+          "time",
+          "location"
+        ],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_084",
+      "lang": "en",
+      "category": "planner",
+      "description": "Move this to tomorrow",
+      "input": "Move this to tomorrow",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "confirm",
+        "fields": {
+          "targetHint": "current_item",
+          "fieldToUpdate": "date",
+          "newDate": "tomorrow"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "planner_085",
+      "lang": "en",
+      "category": "planner",
+      "description": "Move tomorrow's lunch to this restaurant",
+      "input": "Move tomorrow's lunch to this restaurant",
+      "initialState": {},
+      "expected": {
+        "intentType": "update_planner_item",
+        "action": "confirm",
+        "fields": {
+          "date": "tomorrow",
+          "targetHint": "lunch",
+          "fieldToUpdate": "location",
+          "newLocationHint": "current_place"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.86
+      }
+    },
+    {
+      "id": "memory_mixed_086",
+      "lang": "zh",
+      "category": "memory_mixed",
+      "description": "今天这个餐馆真不错，就是挺贵",
+      "input": "今天这个餐馆真不错，就是挺贵",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "ask_followup",
+        "fields": {
+          "memoryType": "food",
+          "sentiment": "positive",
+          "possibleExpense": true
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_087",
+      "lang": "zh",
+      "category": "memory_mixed",
+      "description": "这个瀑布比昨天那个震撼",
+      "input": "这个瀑布比昨天那个震撼",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "highlight",
+          "topic": "waterfall",
+          "comparison": "yesterday"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_088",
+      "lang": "zh",
+      "category": "memory_mixed",
+      "description": "Mary今天笑了一路",
+      "input": "Mary今天笑了一路",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "people",
+          "person": "Mary",
+          "sentiment": "positive"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_089",
+      "lang": "zh",
+      "category": "memory_mixed",
+      "description": "这段路特别适合做视频",
+      "input": "这段路特别适合做视频",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "video_idea",
+          "topic": "road"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_090",
+      "lang": "zh",
+      "category": "memory_mixed",
+      "description": "今天风太大了",
+      "input": "今天风太大了",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "weather",
+          "condition": "windy"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_091",
+      "lang": "zh",
+      "category": "memory_mixed",
+      "description": "这个地方以后一定要推荐",
+      "input": "这个地方以后一定要推荐",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "recommendation",
+          "recommend": true
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_092",
+      "lang": "zh",
+      "category": "memory_mixed",
+      "description": "这个酒店一般，房间有点小",
+      "input": "这个酒店一般，房间有点小",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "lodging_review",
+          "sentiment": "mixed",
+          "issue": "small_room"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_093",
+      "lang": "en",
+      "category": "memory_mixed",
+      "description": "This restaurant was really good but expensive",
+      "input": "This restaurant was really good but expensive",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "ask_followup",
+        "fields": {
+          "memoryType": "food",
+          "sentiment": "positive",
+          "possibleExpense": true
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_094",
+      "lang": "en",
+      "category": "memory_mixed",
+      "description": "This waterfall was more impressive than yesterday's",
+      "input": "This waterfall was more impressive than yesterday's",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "highlight",
+          "topic": "waterfall",
+          "comparison": "yesterday"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_095",
+      "lang": "en",
+      "category": "memory_mixed",
+      "description": "Mary laughed the whole way today",
+      "input": "Mary laughed the whole way today",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "people",
+          "person": "Mary",
+          "sentiment": "positive"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_096",
+      "lang": "en",
+      "category": "memory_mixed",
+      "description": "This road is great for video footage",
+      "input": "This road is great for video footage",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "video_idea",
+          "topic": "road"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_097",
+      "lang": "en",
+      "category": "memory_mixed",
+      "description": "It was so windy today",
+      "input": "It was so windy today",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "weather",
+          "condition": "windy"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_098",
+      "lang": "en",
+      "category": "memory_mixed",
+      "description": "We should recommend this place later",
+      "input": "We should recommend this place later",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "recommendation",
+          "recommend": true
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_099",
+      "lang": "en",
+      "category": "memory_mixed",
+      "description": "This hotel was okay, but the room was small",
+      "input": "This hotel was okay, but the room was small",
+      "initialState": {},
+      "expected": {
+        "intentType": "create_memory",
+        "action": "update_state",
+        "fields": {
+          "memoryType": "lodging_review",
+          "sentiment": "mixed",
+          "issue": "small_room"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_100",
+      "lang": "zh",
+      "category": "memory_mixed",
+      "description": "今天蓝湖很好玩，不过门票太贵了，记账一下",
+      "input": "今天蓝湖很好玩，不过门票太贵了，记账一下",
+      "initialState": {},
+      "expected": {
+        "intentType": "mixed_intent",
+        "action": "needs_llm",
+        "fields": {
+          "intents": [
+            "create_memory",
+            "create_expense"
+          ],
+          "memoryType": "highlight",
+          "expenseCategory": "ticket",
+          "possibleExpense": true
+        },
+        "missingFields": [
+          "amount",
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_101",
+      "lang": "zh",
+      "category": "memory_mixed",
+      "description": "这顿饭Mary付了120欧，大家都觉得不错",
+      "input": "这顿饭Mary付了120欧，大家都觉得不错",
+      "initialState": {},
+      "expected": {
+        "intentType": "mixed_intent",
+        "action": "needs_llm",
+        "fields": {
+          "intents": [
+            "create_memory",
+            "create_expense"
+          ],
+          "amount": 120,
+          "currency": "EUR",
+          "payer": "Mary",
+          "category": "food"
+        },
+        "missingFields": [
+          "splitMethod"
+        ],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_102",
+      "lang": "zh",
+      "category": "memory_mixed",
+      "description": "今天这个餐馆不错，就是贵了点，记一下，顺便记录账单",
+      "input": "今天这个餐馆不错，就是贵了点，记一下，顺便记录账单",
+      "initialState": {},
+      "expected": {
+        "intentType": "mixed_intent",
+        "action": "needs_llm",
+        "fields": {
+          "intents": [
+            "create_memory",
+            "create_expense"
+          ],
+          "memoryType": "food",
+          "possibleExpense": true
+        },
+        "missingFields": [
+          "amount",
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_103",
+      "lang": "en",
+      "category": "memory_mixed",
+      "description": "Mary paid 120 euros for this meal and everyone liked it",
+      "input": "Mary paid 120 euros for this meal and everyone liked it",
+      "initialState": {},
+      "expected": {
+        "intentType": "mixed_intent",
+        "action": "needs_llm",
+        "fields": {
+          "intents": [
+            "create_memory",
+            "create_expense"
+          ],
+          "amount": 120,
+          "currency": "EUR",
+          "payer": "Mary",
+          "category": "food"
+        },
+        "missingFields": [
+          "splitMethod"
+        ],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_104",
+      "lang": "en",
+      "category": "memory_mixed",
+      "description": "Blue Lagoon was fun today but the tickets were expensive, record the expense",
+      "input": "Blue Lagoon was fun today but the tickets were expensive, record the expense",
+      "initialState": {},
+      "expected": {
+        "intentType": "mixed_intent",
+        "action": "needs_llm",
+        "fields": {
+          "intents": [
+            "create_memory",
+            "create_expense"
+          ],
+          "memoryType": "highlight",
+          "expenseCategory": "ticket",
+          "possibleExpense": true
+        },
+        "missingFields": [
+          "amount",
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "memory_mixed_105",
+      "lang": "en",
+      "category": "memory_mixed",
+      "description": "Restaurant memory plus possible bill",
+      "input": "This place was great but really expensive, save it and ask me about the bill",
+      "initialState": {},
+      "expected": {
+        "intentType": "mixed_intent",
+        "action": "needs_llm",
+        "fields": {
+          "intents": [
+            "create_memory",
+            "create_expense"
+          ],
+          "memoryType": "food",
+          "sentiment": "positive",
+          "possibleExpense": true
+        },
+        "missingFields": [
+          "amount",
+          "payer",
+          "splitMethod"
+        ],
+        "confidenceMin": 0.78
+      }
+    },
+    {
+      "id": "query_106",
+      "lang": "zh",
+      "category": "query",
+      "description": "显式日期查询当天安排",
+      "input": "7月8日有什么安排",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "2026-07-08"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_107",
+      "lang": "zh",
+      "category": "query",
+      "description": "今晚住宿查询",
+      "input": "今晚住在哪里",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_lodging",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "lodgingNight": "tonight"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_108",
+      "lang": "zh",
+      "category": "query",
+      "description": "显式日期查询住宿",
+      "input": "7月8日住在哪里",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_lodging",
+        "action": "answer",
+        "fields": {
+          "date": "2026-07-08",
+          "lodgingNight": "specified_night"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_109",
+      "lang": "zh",
+      "category": "query",
+      "description": "住宿查询后的日期省略追问",
+      "input": "7月8日呢?",
+      "initialState": {
+        "intentType": "query_lodging",
+        "fields": {
+          "date": "today",
+          "lodgingNight": "tonight"
+        },
+        "missingFields": []
+      },
+      "expected": {
+        "intentType": "query_lodging",
+        "action": "answer",
+        "fields": {
+          "date": "2026-07-08",
+          "lodgingNight": "specified_night"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_110",
+      "lang": "zh",
+      "category": "query",
+      "description": "基于上一轮查询日期的明天行程追问",
+      "input": "明天有行程吗?",
+      "initialState": {
+        "intentType": "query_lodging",
+        "fields": {
+          "date": "2026-07-09",
+          "lodgingNight": "specified_night"
+        },
+        "missingFields": []
+      },
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "2026-07-10"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
+      "id": "query_111",
+      "lang": "zh",
+      "category": "query",
+      "description": "今天花了多少钱无标点版本",
+      "input": "今天花了多少钱",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_ledger",
+        "action": "answer",
+        "fields": {
+          "date": "today",
+          "aggregate": "sum"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    }
+  ]
+}

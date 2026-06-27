@@ -6,7 +6,9 @@
     "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "planner-import:test": "rm -rf .planner-import-test-build && tsc -p tsconfig.planner-import.json && node .planner-import-test-build/tests/run-planner-import-local-tests.js",
+    "capture:test": "rm -rf .capture-test-build && tsc -p tsconfig.capture.json && node .capture-test-build/tests/run-capture-fixtures.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.108.2",

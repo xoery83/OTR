@@ -15,7 +15,7 @@ import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import { enqueueMediaProcessingJobs } from "@/lib/background-jobs/client";
 import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
-import type { PlannerV2Day } from "@/lib/supabase/planner-v2";
+import { updateTripDayTitle, type PlannerV2Day } from "@/lib/supabase/planner-v2";
 import { getApproxExchangeRate } from "@/lib/exchange-rates";
 import { formatTime, toDateTimeLocalValue } from "@/lib/format";
 import { getErrorMessage } from "@/lib/errors";
@@ -112,6 +112,9 @@ type EditingItem = {
   secondary: string;
   url: string;
   status: ItineraryItemStatus;
+  participantUserIds: string[];
+  participantNames: string[];
+  sourceText: string;
 };
 
 type DraftPlanItem = {
@@ -166,7 +169,17 @@ const expenseCategories: LedgerCategory[] = [
   "other",
 ];
 
-const expenseCurrencies = ["ISK", "NZD", "DKK", "EUR", "CNY", "USD", "GBP"];
+const expenseCurrencies = [
+  "ISK",
+  "NZD",
+  "AUD",
+  "CHF",
+  "DKK",
+  "EUR",
+  "CNY",
+  "USD",
+  "GBP",
+];
 const eventTypes: ItineraryEventType[] = [
   "flight",
   "hotel",
@@ -240,10 +253,88 @@ function dayLocation(plannerDay: PlannerV2Day) {
   return [...new Set(locations)][0] ?? null;
 }
 
-function tonightStay(plannerDay: PlannerV2Day) {
-  return plannerDay.reservations.find(
+function tonightStays(plannerDay: PlannerV2Day) {
+  return plannerDay.reservations.filter(
     (reservation) => reservation.reservationType === "hotel",
   );
+}
+
+function guestNamesFromSourceText(value: string | null) {
+  if (!value) return [];
+  const match = value.match(/(?:^|\n)\s*Guests?\s*[:：]\s*([^\n]+)/i);
+  if (!match?.[1]) return [];
+
+  return match[1]
+    .split(/\s*(?:,|，|、|\/|和|及|与)\s*/g)
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
+function reservationParticipantNames(
+  participants: { name: string }[],
+  sourceText: string | null,
+) {
+  const names = participants.map((participant) => participant.name).filter(Boolean);
+  return [...new Set([...names, ...guestNamesFromSourceText(sourceText)])];
+}
+
+function normalizePersonKey(value: string) {
+  return value.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+}
+
+function journeyMemberNameCandidates(member: JourneyMember) {
+  return [
+    member.displayName,
+    ...member.displayName.split(/\s+/).filter(Boolean),
+    ...(member.notes ?? "")
+      .split(/[\s,，、/|;；]+/)
+      .map((value) => value.trim()),
+  ].filter(Boolean);
+}
+
+function canonicalParticipantName(name: string, journeyMembers: JourneyMember[]) {
+  const normalizedName = normalizePersonKey(name);
+  const matchedMember = journeyMembers.find((member) =>
+    journeyMemberNameCandidates(member).some(
+      (candidate) => normalizePersonKey(candidate) === normalizedName,
+    ),
+  );
+  return matchedMember?.displayName ?? name.trim();
+}
+
+function normalizeParticipantNames(
+  names: string[],
+  journeyMembers: JourneyMember[],
+) {
+  const normalized = names
+    .map((name) => canonicalParticipantName(name, journeyMembers))
+    .filter(Boolean);
+  return [...new Set(normalized)];
+}
+
+function isAllJourneyMembers(names: string[], journeyMembers: JourneyMember[]) {
+  if (journeyMembers.length === 0 || names.length === 0) return false;
+  const normalizedNames = new Set(names.map((name) => name.trim().toLowerCase()));
+  return journeyMembers.every((member) =>
+    normalizedNames.has(member.displayName.trim().toLowerCase()),
+  );
+}
+
+function setGuestsInSourceText(value: string | null, names: string[]) {
+  const uniqueNames = [...new Set(names.map((name) => name.trim()).filter(Boolean))];
+  const guestLine = uniqueNames.length > 0 ? `Guests: ${uniqueNames.join(", ")}` : "";
+  const text = (value ?? "").trim();
+
+  if (/(^|\n)\s*Guests?\s*[:：]/i.test(text)) {
+    return (
+      text
+        .replace(/(?:^|\n)\s*Guests?\s*[:：]\s*[^\n]*/i, guestLine ? `\n${guestLine}` : "")
+        .replace(/^\n+/, "")
+        .trim() || null
+    );
+  }
+
+  return [text, guestLine].filter(Boolean).join("\n") || null;
 }
 
 function shouldShowInStory(
@@ -270,6 +361,7 @@ function storyItems(plannerDay: PlannerV2Day): StoryItem[] {
       .filter(
         (item) =>
           item.reservationType !== "hotel" &&
+          item.reservationType !== "car" &&
           shouldShowInStory(dayDate, item.startsAt, item.endsAt),
       )
       .map((item) => ({
@@ -289,7 +381,10 @@ function storyItems(plannerDay: PlannerV2Day): StoryItem[] {
         endsAt: item.endsAt,
         secondary: item.provider || item.confirmationCode || "",
         url: item.url,
-        participantNames: item.participants.map((participant) => participant.name),
+        participantNames: reservationParticipantNames(
+          item.participants,
+          item.sourceText,
+        ),
       })),
     ...plannerDay.activities
       .filter((item) =>
@@ -322,25 +417,52 @@ function storyItems(plannerDay: PlannerV2Day): StoryItem[] {
   });
 }
 
-function groupedBookings(plannerDay: PlannerV2Day) {
-  return Object.entries(
-    plannerDay.reservations
-      .filter((reservation) => {
-        if (reservation.reservationType === "hotel") return true;
-        return shouldShowInStory(
+function coversPlannerDay(
+  dayDate: string,
+  startValue: string | null | undefined,
+  endValue: string | null | undefined,
+) {
+  if (dayDate === "unscheduled") return true;
+  const startDate = dateOnly(startValue) ?? dateOnly(endValue);
+  const endDate = dateOnly(endValue) ?? startDate;
+
+  if (!startDate) return false;
+  return startDate <= dayDate && (!endDate || endDate >= dayDate);
+}
+
+function carRentalItems(plannerDay: PlannerV2Day): StoryItem[] {
+  return plannerDay.reservations
+    .filter(
+      (reservation) =>
+        reservation.reservationType === "car" &&
+        coversPlannerDay(
           plannerDay.day.dayDate,
           reservation.startsAt,
           reservation.endsAt,
-        );
-      })
-      .reduce<Record<string, typeof plannerDay.reservations>>((groups, reservation) => {
-        groups[reservation.reservationType] = [
-          ...(groups[reservation.reservationType] ?? []),
-          reservation,
-        ];
-        return groups;
-      }, {}),
-  );
+        ),
+    )
+    .map((reservation) => ({
+      id: `reservation-${reservation.id}`,
+      time: reservation.startsAt,
+      title: reservation.title,
+      detail: reservation.provider || reservation.confirmationCode || null,
+      location: reservation.locationName,
+      kind: reservation.reservationType,
+      note: reservation.sourceText,
+      itineraryEventId: null,
+      itineraryReservationId: reservation.id,
+      itemType: "reservation" as const,
+      status: reservation.status,
+      typeValue: reservation.reservationType,
+      startsAt: reservation.startsAt,
+      endsAt: reservation.endsAt,
+      secondary: reservation.provider || reservation.confirmationCode || "",
+      url: reservation.url,
+      participantNames: reservationParticipantNames(
+        reservation.participants,
+        reservation.sourceText,
+      ),
+    }));
 }
 
 function SectionTitle({ title }: { title: string }) {
@@ -402,6 +524,18 @@ function dateOnly(value: string | null | undefined) {
   return value ? value.slice(0, 10) : null;
 }
 
+function looksLikeFlightItem(item: StoryItem) {
+  const text = `${item.title} ${item.detail ?? ""} ${item.location ?? ""} ${
+    item.note ?? ""
+  }`;
+
+  return (
+    /\b(?:flight|航班)\b/i.test(text) ||
+    /\b[A-Z0-9]{2,3}\s?-?\s?\d{2,5}\b/.test(text) ||
+    /\([A-Z]{3}\)\s*(?:→|->|to|到)\s*[^()]*\([A-Z]{3}\)/i.test(text)
+  );
+}
+
 function allocatedAmountForDay(
   entry: LedgerEntry,
   dayDate: string,
@@ -451,6 +585,8 @@ function normalizeCurrency(value: string, fallbackCurrency: string) {
     return "CNY";
   }
   if (normalized.includes("纽") || normalized === "nzd") return "NZD";
+  if (normalized.includes("澳") || normalized === "aud") return "AUD";
+  if (normalized.includes("瑞士") || normalized === "chf") return "CHF";
   if (normalized.includes("英镑") || normalized === "gbp") return "GBP";
   if (normalized.includes("本地")) return fallbackCurrency;
 
@@ -494,7 +630,7 @@ function detectExpense(
   "title" | "category" | "amount" | "currency" | "description"
 > | null {
   const amountMatch = text.match(
-    /(?:^|[^\d])([¥￥€$]|冰岛本地货币|冰岛克朗|冰岛币|本地货币|丹麦克朗|人民币|纽币|美元|欧元|英镑|ISK|DKK|CNY|RMB|NZD|USD|EUR|GBP|kr)?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(冰岛本地货币|冰岛克朗|冰岛币|本地货币|丹麦克朗|人民币|纽币|美元|欧元|英镑|ISK|DKK|CNY|RMB|NZD|USD|EUR|GBP|kr)?/i,
+    /(?:^|[^\d])([¥￥€$]|冰岛本地货币|冰岛克朗|冰岛币|本地货币|丹麦克朗|人民币|纽币|澳币|澳元|瑞郎|瑞士法郎|美元|欧元|英镑|ISK|DKK|CNY|RMB|NZD|AUD|CHF|USD|EUR|GBP|kr)?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(冰岛本地货币|冰岛克朗|冰岛币|本地货币|丹麦克朗|人民币|纽币|澳币|澳元|瑞郎|瑞士法郎|美元|欧元|英镑|ISK|DKK|CNY|RMB|NZD|AUD|CHF|USD|EUR|GBP|kr)?/i,
   );
 
   if (!amountMatch) return null;
@@ -562,7 +698,12 @@ function addHours(value: string, hours: number) {
 
 function inferEventType(text: string): ItineraryEventType {
   const lower = text.toLocaleLowerCase();
-  if (/flight|航班|飞机|机场|arrival|departure/.test(lower)) return "flight";
+  if (
+    /flight|航班|飞机|arrival|departure/.test(lower) ||
+    /\b[A-Z0-9]{2,3}\s?-?\s?\d{2,5}\b/.test(text)
+  ) {
+    return "flight";
+  }
   if (/hotel|住宿|入住|check.?in|accommodation/.test(lower)) return "hotel";
   if (/car|租车|取车|还车|rental|pickup/.test(lower)) return "car";
   if (/晚饭|午饭|早餐|餐|dinner|lunch|meal|restaurant/.test(lower)) return "meal";
@@ -894,10 +1035,9 @@ export function PlannerDayCard({
     day.dayDate === "unscheduled"
       ? t("planner.day.unscheduled")
       : formatPlannerDayLabel(day.dayDate, locale);
-  const stay = tonightStay(plannerDay);
-  const stayMapsHref = mapsHref(stay?.locationName ?? null);
-  const stayItem: StoryItem | null = stay
-    ? {
+  const stayItems = tonightStays(plannerDay).map((stay) => ({
+    stay,
+    stayItem: {
         id: `reservation-${stay.id}`,
         time: stay.startsAt,
         title: stay.title,
@@ -914,13 +1054,47 @@ export function PlannerDayCard({
         endsAt: stay.endsAt,
         secondary: stay.provider || stay.confirmationCode || "",
         url: stay.url,
-        participantNames: stay.participants.map((participant) => participant.name),
-      }
-    : null;
-  const story = storyItems(plannerDay);
-  const bookings = groupedBookings(plannerDay);
-  const nextStory = nextDay ? storyItems(nextDay).slice(0, 2) : [];
+        participantNames: normalizeParticipantNames(
+          reservationParticipantNames(stay.participants, stay.sourceText),
+          journeyMembers ?? [],
+        ),
+      } satisfies StoryItem,
+  }));
+  const story = storyItems(plannerDay).map((item) =>
+    item.itemType === "reservation"
+      ? {
+          ...item,
+          participantNames: normalizeParticipantNames(
+            item.participantNames,
+            journeyMembers ?? [],
+          ),
+        }
+      : item,
+  );
+  const carItems = carRentalItems(plannerDay).map((item) => ({
+    ...item,
+    participantNames: normalizeParticipantNames(
+      item.participantNames,
+      journeyMembers ?? [],
+    ),
+  }));
+  const nextStory = nextDay
+    ? storyItems(nextDay)
+        .map((item) =>
+          item.itemType === "reservation"
+            ? {
+                ...item,
+                participantNames: normalizeParticipantNames(
+                  item.participantNames,
+                  journeyMembers ?? [],
+                ),
+              }
+            : item,
+        )
+        .slice(0, 2)
+    : [];
   const aliases = memberAliases(journeyMembers ?? []);
+  const editableReservationMembers = journeyMembers ?? [];
   const ledgerCurrency = ledgerEntries[0]?.baseCurrency ?? "NZD";
   const reservationsById = new Map(
     plannerDay.reservations.map((reservation) => [reservation.id, reservation]),
@@ -1026,11 +1200,37 @@ export function PlannerDayCard({
   const [draftPlan, setDraftPlan] = useState<DraftPlanItem | null>(null);
   const [isSavingPlan, setIsSavingPlan] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
+  const [isEditingDayTitle, setIsEditingDayTitle] = useState(false);
+  const [dayTitleDraft, setDayTitleDraft] = useState(day.title || "");
+  const [isSavingDayTitle, setIsSavingDayTitle] = useState(false);
+  const [dayTitleError, setDayTitleError] = useState<string | null>(null);
 
   function activeMembers() {
     return (journeyMembers ?? []).filter(
       (member) => member.role === "owner" || member.role === "group_member",
     );
+  }
+
+  async function saveDayTitle() {
+    if (day.dayDate === "unscheduled") return;
+
+    setIsSavingDayTitle(true);
+    setDayTitleError(null);
+    try {
+      await updateTripDayTitle({
+        tripId,
+        date: day.dayDate,
+        title: dayTitleDraft,
+      });
+      setIsEditingDayTitle(false);
+      await onPlannerChanged?.();
+    } catch (titleError) {
+      setDayTitleError(
+        getErrorMessage(titleError, "Could not save day title."),
+      );
+    } finally {
+      setIsSavingDayTitle(false);
+    }
   }
 
   useEffect(() => {
@@ -1072,6 +1272,33 @@ export function PlannerDayCard({
       });
     };
   }, []);
+
+  const photoMemoryPathKey = memories
+    .filter((memory) => memory.type === "photo" && memory.mediaUrl)
+    .map((memory) => memory.mediaUrl)
+    .sort()
+    .join("|");
+
+  useEffect(() => {
+    const photoMemories = memories.filter(
+      (memory) => memory.type === "photo" && memory.mediaUrl,
+    );
+    if (!photoMemories.length) return;
+
+    let isMounted = true;
+
+    getSignedMemoryImageUrls(photoMemories)
+      .then((signedUrls) => {
+        if (!isMounted) return;
+        setImageUrlByMemoryPath((current) => ({ ...current, ...signedUrls }));
+      })
+      .catch(() => undefined);
+
+    return () => {
+      isMounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photoMemoryPathKey]);
 
   const appendMemoryText = useCallback(
     (itemId: string, nextText: string) => {
@@ -1289,6 +1516,9 @@ export function PlannerDayCard({
   const visibleStory = showMineOnly
     ? story.filter((item) => itemRelatesToMe(item))
     : story;
+  const visibleCarItems = showMineOnly
+    ? carItems.filter((item) => itemRelatesToMe(item))
+    : carItems;
 
   function itemSubtitle(item: StoryItem) {
     const total = ledgerTotalForItem(item);
@@ -1358,6 +1588,16 @@ export function PlannerDayCard({
   }
 
   function startEditItem(item: StoryItem) {
+    const reservation =
+      item.itemType === "reservation" && item.itineraryReservationId
+        ? reservationsById.get(item.itineraryReservationId)
+        : null;
+    const participantNames = normalizeParticipantNames(
+      reservation
+        ? reservationParticipantNames(reservation.participants, reservation.sourceText)
+        : item.participantNames,
+      journeyMembers ?? [],
+    );
     setEditingItem({
       id:
         item.itemType === "event"
@@ -1373,6 +1613,10 @@ export function PlannerDayCard({
       secondary: item.secondary ?? "",
       url: item.url ?? "",
       status: item.status,
+      participantUserIds:
+        reservation?.participants.map((participant) => participant.userId) ?? [],
+      participantNames,
+      sourceText: reservation?.sourceText ?? "",
     });
     setPlanError(null);
   }
@@ -1400,6 +1644,18 @@ export function PlannerDayCard({
           status: editingItem.status,
         });
       } else {
+        const participantNameSet = new Set(
+          editingItem.participantNames.map((name) => name.trim().toLowerCase()),
+        );
+        const participantUserIds = editableReservationMembers
+          .filter((member) => {
+            return (
+              member.userId &&
+              participantNameSet.has(member.displayName.trim().toLowerCase())
+            );
+          })
+          .map((member) => member.userId as string);
+
         await updateItineraryReservation({
           id: editingItem.id,
           tripId,
@@ -1412,6 +1668,11 @@ export function PlannerDayCard({
           confirmationCode: "",
           url: editingItem.url,
           status: editingItem.status,
+          participantUserIds,
+          sourceText: setGuestsInSourceText(
+            editingItem.sourceText,
+            editingItem.participantNames,
+          ),
         });
       }
 
@@ -1823,7 +2084,16 @@ export function PlannerDayCard({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-bold text-emerald-800">{dayLabel}</p>
-              {ledgerTotal > 0 ? (
+              {ledgerTotal > 0 && day.dayDate !== "unscheduled" ? (
+                <Link
+                  href={`/trips/${tripId}/ledger?view=days&date=${day.dayDate}`}
+                  className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-900 transition hover:bg-emerald-100"
+                >
+                  {t("planner.day.cost", {
+                    amount: money(ledgerTotal, ledgerCurrency, locale),
+                  })}
+                </Link>
+              ) : ledgerTotal > 0 ? (
                 <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-900">
                   {t("planner.day.cost", {
                     amount: money(ledgerTotal, ledgerCurrency, locale),
@@ -1831,9 +2101,69 @@ export function PlannerDayCard({
                 </span>
               ) : null}
             </div>
-            <h2 className="mt-1 text-xl font-semibold leading-tight text-stone-950">
-              {day.title || t("planner.day.open")}
-            </h2>
+            {isEditingDayTitle ? (
+              <div className="mt-2 space-y-2">
+                <input
+                  value={dayTitleDraft}
+                  onChange={(event) => setDayTitleDraft(event.target.value)}
+                  className="w-full rounded-xl border border-emerald-100 bg-white px-3 py-2 text-base font-semibold text-stone-950 outline-none focus:border-emerald-400"
+                  placeholder={t("planner.day.open")}
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={saveDayTitle}
+                    disabled={isSavingDayTitle}
+                    className="rounded-full bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:bg-stone-300"
+                  >
+                    {isSavingDayTitle ? "..." : t("common.save")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDayTitleDraft(day.title || "");
+                      setIsEditingDayTitle(false);
+                      setDayTitleError(null);
+                    }}
+                    disabled={isSavingDayTitle}
+                    className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-stone-600 disabled:opacity-50"
+                  >
+                    {t("common.cancel")}
+                  </button>
+                </div>
+                {dayTitleError ? (
+                  <p className="text-xs font-semibold text-red-600">
+                    {dayTitleError}
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <div className="mt-1 flex min-w-0 items-center gap-2">
+                <h2 className="truncate text-xl font-semibold leading-tight text-stone-950">
+                  {day.title || t("planner.day.open")}
+                </h2>
+                {canManagePlans && day.dayDate !== "unscheduled" ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDayTitleDraft(day.title || "");
+                      setIsEditingDayTitle(true);
+                    }}
+                    className="grid size-7 shrink-0 place-items-center rounded-full bg-white/80 shadow-sm"
+                    title={t("planner.modify.schedule")}
+                    aria-label={t("planner.modify.schedule")}
+                  >
+                    <Image
+                      src="/icons/modify.png"
+                      alt=""
+                      width={13}
+                      height={13}
+                      className="object-contain opacity-70"
+                    />
+                  </button>
+                ) : null}
+              </div>
+            )}
             <p className="mt-2 truncate text-sm text-stone-600">
               {dayLocation(plannerDay) ?? t("planner.location.tbd")}
             </p>
@@ -1866,8 +2196,16 @@ export function PlannerDayCard({
       </header>
 
       <div className="space-y-5 p-4 sm:p-5">
-        {stay && stayItem ? (
-          <details className="group rounded-2xl border border-amber-200 bg-amber-50 p-3 open:bg-[#fffaf1]">
+        {stayItems.length > 0 ? (
+          <section className="space-y-2">
+            {stayItems.map(({ stay, stayItem }) => {
+              const stayMapsHref = mapsHref(stay.locationName);
+
+              return (
+          <details
+            key={stay.id}
+            className="group rounded-2xl border border-amber-200 bg-amber-50 p-3 open:bg-[#fffaf1]"
+          >
             <summary className="grid cursor-pointer list-none grid-cols-[1fr_auto] gap-3">
               <div className="min-w-0">
                 <p className="text-xs font-bold uppercase tracking-wide text-amber-800">
@@ -1904,6 +2242,32 @@ export function PlannerDayCard({
                       {t("planner.location.tbd")}
                     </span>
                   )}
+                  {stayItem.participantNames.length > 0 ? (
+                    <div className="mt-3">
+                      <p className="text-xs font-bold uppercase tracking-wide text-stone-500">
+                        入住人
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {isAllJourneyMembers(
+                          stayItem.participantNames,
+                          journeyMembers ?? [],
+                        ) ? (
+                          <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800">
+                            全员
+                          </span>
+                        ) : (
+                          stayItem.participantNames.map((name) => (
+                            <span
+                              key={name}
+                              className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800"
+                            >
+                              {name}
+                            </span>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
                 {canManagePlans ? (
                   <button
@@ -2266,6 +2630,9 @@ export function PlannerDayCard({
             ) : null}
             </div>
           </details>
+              );
+            })}
+          </section>
         ) : null}
 
         <section className="space-y-3">
@@ -2309,22 +2676,42 @@ export function PlannerDayCard({
             <div className="relative space-y-2 pl-5 before:absolute before:bottom-4 before:left-2 before:top-4 before:w-px before:bg-emerald-100">
               {visibleStory.map((item) => {
                 const navHref = mapsHref(item.location);
+                const isFlightItem =
+                  (item.kind === "flight" || item.typeValue === "flight") &&
+                  looksLikeFlightItem(item);
                 return (
                   <details
                     key={item.id}
                     className={`group relative rounded-2xl p-3 open:bg-[#fffaf1] ${
                       item.status === "cancelled" || item.status === "skipped"
                         ? "bg-stone-100 opacity-70"
-                        : "bg-stone-50"
+                        : isFlightItem
+                          ? "border border-sky-100 bg-sky-50/80 shadow-sm"
+                          : "bg-stone-50"
                     }`}
                   >
                     <summary className="grid cursor-pointer list-none grid-cols-[48px_1fr] gap-3">
-                      <span className="absolute -left-[17px] top-5 size-3 rounded-full border-2 border-white bg-emerald-700 shadow-sm" />
-                      <span className="text-sm font-bold text-emerald-800">
+                      <span
+                        className={`absolute -left-[18px] top-5 rounded-full border-2 border-white shadow-sm ${
+                          isFlightItem
+                            ? "size-4 bg-sky-600 ring-4 ring-sky-100"
+                            : "size-3 bg-emerald-700"
+                        }`}
+                      />
+                      <span
+                        className={`text-sm font-bold ${
+                          isFlightItem ? "text-sky-800" : "text-emerald-800"
+                        }`}
+                      >
                         {item.time ? formatTime(item.time) : t("planner.anytime")}
                       </span>
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-semibold text-stone-950">
+                          {isFlightItem ? (
+                            <span className="mr-2 rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-black text-sky-800">
+                              {labelForItemKind(item.kind)}
+                            </span>
+                          ) : null}
                           <HighlightedText text={item.title} aliases={aliases} />
                           {item.status !== "planned" ? (
                             <span className="ml-2 rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-bold uppercase text-stone-600">
@@ -2819,47 +3206,239 @@ export function PlannerDayCard({
           )}
         </section>
 
-        {bookings.length > 0 ? (
-          <section className="space-y-3">
-            <SectionTitle title={t("planner.section.keyBookings")} />
-            <div className="grid gap-2 sm:grid-cols-3">
-              {bookings.map(([type, items]) => {
-                const first = items[0];
-                const bookingTotal = items.reduce(
-                  (total, item) =>
-                    total +
-                    ledgerEntries
-                      .filter((entry) => entry.itineraryReservationId === item.id)
-                      .reduce((sum, entry) => sum + entry.baseAmount, 0),
-                  0,
-                );
-                return (
-                  <div
-                    key={type}
-                    className="rounded-2xl border border-stone-100 bg-white p-3 shadow-sm"
-                  >
-                    <p className="text-xs font-bold uppercase tracking-wide text-emerald-800">
-                      {labelForItemKind(type)}
-                    </p>
-                    <h4 className="mt-1 truncate text-sm font-semibold text-stone-950">
-                      {items.length > 1
-                        ? t("planner.items.count", { count: items.length })
-                        : first.title}
-                    </h4>
-                    {first.locationName ? (
+        {visibleCarItems.length > 0 ? (
+          <section className="space-y-2">
+            <SectionTitle title={labelForItemKind("car")} />
+            {visibleCarItems.map((item) => {
+              const navHref = mapsHref(item.location);
+              const itemTotal = ledgerTotalForItem(item);
+              const startDate = dateOnly(item.startsAt);
+              const endDate = dateOnly(item.endsAt);
+
+              return (
+                <details
+                  key={item.id}
+                  className="group rounded-2xl border border-sky-100 bg-sky-50/70 p-3 open:bg-white"
+                >
+                  <summary className="grid cursor-pointer list-none grid-cols-[1fr_auto] gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="truncate text-sm font-semibold text-stone-950">
+                          {item.title}
+                        </h3>
+                        {itemTotal > 0 ? (
+                          <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-bold text-sky-800">
+                            {money(itemTotal, ledgerCurrency, locale)}
+                          </span>
+                        ) : null}
+                      </div>
                       <p className="mt-1 truncate text-xs text-stone-500">
-                        {first.locationName}
+                        {[item.location, startDate && endDate ? `${startDate} → ${endDate}` : null]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </p>
+                    </div>
+                    <span className="pt-1 text-xs font-bold text-sky-800">
+                      <span className="group-open:hidden">{t("common.open")}</span>
+                      <span className="hidden group-open:inline">
+                        {t("common.close")}
+                      </span>
+                    </span>
+                  </summary>
+
+                  <div className="mt-3 rounded-xl bg-white p-3 text-sm leading-6 text-stone-600">
+                    <div className="flex items-start justify-between gap-3 border-b border-sky-50 pb-3">
+                      <div className="min-w-0">
+                        {item.location ? (
+                          <a
+                            href={navHref || "#"}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-semibold text-emerald-800 underline decoration-emerald-200 underline-offset-4"
+                          >
+                            {item.location}
+                          </a>
+                        ) : (
+                          <span className="text-stone-400">
+                            {t("planner.location.tbd")}
+                          </span>
+                        )}
+                        {item.note ? (
+                          <p className="mt-2 line-clamp-2 text-xs text-stone-500">
+                            {item.note}
+                          </p>
+                        ) : null}
+                      </div>
+                      {canManagePlans ? (
+                        <button
+                          type="button"
+                          onClick={() => startEditItem(item)}
+                          className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-50 shadow-sm"
+                          title={t("planner.modify.booking")}
+                        >
+                          <Image
+                            src="/icons/modify.png"
+                            alt=""
+                            width={14}
+                            height={14}
+                            className="object-contain opacity-75"
+                          />
+                        </button>
+                      ) : null}
+                    </div>
+
+                    <form
+                      onSubmit={(event) => addInlineMemory(event, item)}
+                      className="mt-3 flex items-end gap-2"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => openItemCapture(item)}
+                        className="grid size-9 shrink-0 place-items-center rounded-full bg-stone-100 text-lg font-semibold text-stone-500"
+                        title="Capture"
+                      >
+                        +
+                      </button>
+                      <textarea
+                        value={memoryTextByItem[item.id] ?? ""}
+                        onChange={(event) =>
+                          setMemoryTextByItem((current) => ({
+                            ...current,
+                            [item.id]: event.target.value,
+                          }))
+                        }
+                        rows={1}
+                        placeholder={t("planner.memory.placeholder")}
+                        className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm leading-5 text-stone-950 outline-none focus:border-sky-300"
+                      />
+                      <button
+                        type="submit"
+                        disabled={
+                          savingMemoryId === item.id ||
+                          !(memoryTextByItem[item.id] ?? "").trim()
+                        }
+                        className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300"
+                        title={t("planner.memory.save")}
+                      >
+                        {savingMemoryId === item.id ? "..." : t("common.go")}
+                      </button>
+                    </form>
+                    {memoryErrorByItem[item.id] ? (
+                      <p className="mt-2 text-xs font-medium text-red-700">
+                        {memoryErrorByItem[item.id]}
                       </p>
                     ) : null}
-                    {bookingTotal > 0 ? (
-                      <p className="mt-2 text-xs font-bold text-emerald-800">
-                        {money(bookingTotal, ledgerCurrency, locale)}
-                      </p>
+
+                    {memoriesForItem(item).length > 0 ? (
+                      <div className="mt-3 space-y-2 border-t border-sky-50 pt-3">
+                        {memoriesForItem(item).map((memory) => (
+                          <div key={memory.id} className="rounded-2xl bg-sky-50 px-3 py-2">
+                            <p className="text-xs font-semibold text-sky-800">
+                              {memory.contributorName || t("planner.traveler")}
+                            </p>
+                            {memory.content ? (
+                              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
+                                {memory.content}
+                              </p>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {pendingExpense?.itemId === item.id ? (
+                      <section className="mt-3 rounded-3xl border border-amber-200 bg-amber-50 p-3 shadow-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-[0.14em] text-amber-800">
+                              {t("planner.expense.detected")}
+                            </p>
+                            <h4 className="mt-1 font-semibold text-stone-950">
+                              {t("planner.expense.addThis")}
+                            </h4>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setPendingExpense(null)}
+                            className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-stone-500"
+                          >
+                            {t("common.dismiss")}
+                          </button>
+                        </div>
+                        <div className="mt-3 grid grid-cols-[1fr_90px_1fr] gap-2">
+                          <input
+                            value={pendingExpense.amount}
+                            onChange={(event) =>
+                              updatePendingExpense({ amount: event.target.value })
+                            }
+                            min="0"
+                            step="0.01"
+                            type="number"
+                            className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                          />
+                          <select
+                            value={pendingExpense.currency}
+                            onChange={(event) =>
+                              updatePendingExpense({
+                                currency: event.target.value,
+                                exchangeRate:
+                                  event.target.value === ledgerBaseCurrency ? "1" : "",
+                              })
+                            }
+                            className="w-full rounded-2xl border border-amber-100 bg-white px-2 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                          >
+                            {expenseCurrencies.map((currency) => (
+                              <option key={currency} value={currency}>
+                                {currency}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            value={pendingExpense.exchangeRate}
+                            onChange={(event) =>
+                              updatePendingExpense({
+                                exchangeRate: event.target.value,
+                              })
+                            }
+                            min="0"
+                            step="0.0001"
+                            type="number"
+                            placeholder={t("planner.field.rateTo", {
+                              currency: ledgerBaseCurrency,
+                            })}
+                            className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                          />
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-xs font-semibold text-amber-900">
+                            {t("planner.expense.linked")}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={confirmPendingExpense}
+                            disabled={
+                              savingExpenseId === pendingExpense.itemId ||
+                              !pendingExpense.amount ||
+                              !pendingExpense.exchangeRate
+                            }
+                            className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-bold text-white disabled:bg-stone-300"
+                          >
+                            {savingExpenseId === pendingExpense.itemId
+                              ? t("common.adding")
+                              : t("planner.expense.addToLedger")}
+                          </button>
+                        </div>
+                        {expenseError ? (
+                          <p className="mt-2 rounded-2xl bg-red-50 p-2 text-xs font-medium text-red-700">
+                            {expenseError}
+                          </p>
+                        ) : null}
+                      </section>
                     ) : null}
                   </div>
-                );
-              })}
-            </div>
+                </details>
+              );
+            })}
           </section>
         ) : null}
 
@@ -2927,7 +3506,6 @@ export function PlannerDayCard({
           <DayMemoryPreview
             tripId={tripId}
             date={day.dayDate}
-            tripDayId={day.id}
             memories={memories}
           />
         </section>
@@ -3312,6 +3890,74 @@ export function PlannerDayCard({
                   className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
                 />
               </label>
+
+              {editingItem.itemType === "reservation" &&
+              editableReservationMembers.length > 0 ? (
+                <div className="space-y-2 sm:col-span-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-bold text-stone-800">
+                      入住人
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditingItem((current) =>
+                          current
+                            ? {
+                                ...current,
+                                participantNames: editableReservationMembers.map(
+                                  (member) => member.displayName,
+                                ),
+                              }
+                            : current,
+                        )
+                      }
+                      className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-800"
+                    >
+                      全员入住
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-2 rounded-2xl border border-stone-200 bg-[#fffdf8] p-3">
+                    {editableReservationMembers.map((member) => {
+                      const checked = editingItem.participantNames.some(
+                        (name) =>
+                          name.trim().toLowerCase() ===
+                          member.displayName.trim().toLowerCase(),
+                      );
+
+                      return (
+                        <button
+                          key={member.id}
+                          type="button"
+                          onClick={() =>
+                            setEditingItem((current) => {
+                              if (!current) return current;
+                              const nextNames = checked
+                                ? current.participantNames.filter(
+                                    (name) =>
+                                      name.trim().toLowerCase() !==
+                                      member.displayName.trim().toLowerCase(),
+                                  )
+                                : [...current.participantNames, member.displayName];
+                              return {
+                                ...current,
+                                participantNames: [...new Set(nextNames)],
+                              };
+                            })
+                          }
+                          className={`rounded-full px-3 py-2 text-sm font-bold ${
+                            checked
+                              ? "bg-emerald-700 text-white"
+                              : "bg-stone-100 text-stone-700"
+                          }`}
+                        >
+                          {member.displayName}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             {planError ? (

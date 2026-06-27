@@ -8,7 +8,7 @@ import { useI18n } from "@/components/I18nProvider";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
 
 const moreItems = [
-  { labelKey: "nav.ledger", href: "ledger" },
+  { labelKey: "nav.overview", href: "" },
   { labelKey: "nav.people", href: "people" },
   { labelKey: "nav.timeline", href: "timeline" },
   { labelKey: "nav.highlights", href: "highlights" },
@@ -109,8 +109,11 @@ export function BottomNav() {
   const overviewHref = `/trips/${activeTripId}`;
   const plannerHref = `/trips/${activeTripId}/planner`;
   const mapHref = `/trips/${activeTripId}/map`;
+  const ledgerHref = `/trips/${activeTripId}/ledger`;
   const moreActive = moreItems.some(
-    (item) => item.href && pathname === `/trips/${activeTripId}/${item.href}`,
+    (item) =>
+      pathname ===
+      (item.href ? `/trips/${activeTripId}/${item.href}` : overviewHref),
   );
 
   return (
@@ -128,18 +131,18 @@ export function BottomNav() {
           }`}
         >
           <Link
-            href={overviewHref}
-            className={baseItemClass(pathname === overviewHref, isMapPage)}
-          >
-            <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            {t("nav.overview")}
-          </Link>
-          <Link
             href={plannerHref}
             className={baseItemClass(pathname === plannerHref, isMapPage)}
           >
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
             {t("nav.planner")}
+          </Link>
+          <Link
+            href={mapHref}
+            className={baseItemClass(pathname === mapHref, isMapPage)}
+          >
+            <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
+            {t("nav.map")}
           </Link>
           <button
             type="button"
@@ -154,9 +157,12 @@ export function BottomNav() {
             <span className="text-2xl leading-none">+</span>
             {t("nav.capture")}
           </button>
-          <Link href={mapHref} className={baseItemClass(pathname === mapHref, isMapPage)}>
+          <Link
+            href={ledgerHref}
+            className={baseItemClass(pathname === ledgerHref, isMapPage)}
+          >
             <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            {t("nav.map")}
+            {t("nav.ledger")}
           </Link>
           <button
             type="button"
@@ -200,7 +206,9 @@ export function BottomNav() {
               {moreItems.map((item) => (
                 <Link
                   key={item.labelKey}
-                  href={`/trips/${activeTripId}/${item.href}`}
+                  href={
+                    item.href ? `/trips/${activeTripId}/${item.href}` : overviewHref
+                  }
                   onClick={() => setIsMoreOpen(false)}
                   className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-stone-800 shadow-sm"
                 >

@@ -7,6 +7,7 @@ import type {
   Map as LeafletMap,
 } from "leaflet";
 import type { Coordinates } from "@/lib/geo";
+import type { MemoryEntry } from "@/types";
 
 export type LeafletMapMarker = {
   id: string;
@@ -35,6 +36,7 @@ export type LeafletMapMarker = {
   title?: string | null;
   locationLabel?: string | null;
   description?: string | null;
+  memories?: MemoryEntry[];
 };
 
 export type LeafletMapRoute = {
@@ -152,6 +154,8 @@ export function LeafletMapCanvas({
     () => averageCoordinates(fitCoordinates) ?? fallbackCenter,
     [fallbackCenter, fitCoordinates],
   );
+  const initialCenterRef = useRef(center);
+  const initialFitCoordinatesRef = useRef(fitCoordinates);
 
   useEffect(() => {
     let isMounted = true;
@@ -162,10 +166,12 @@ export function LeafletMapCanvas({
       const L = await import("leaflet");
       if (!isMounted || !containerRef.current) return;
 
+      const initialCenter = initialCenterRef.current ?? fallbackCenter;
+      const initialFitCoordinates = initialFitCoordinatesRef.current ?? [];
       const map = L.map(containerRef.current, {
         attributionControl: true,
         zoomControl: true,
-      }).setView([fallbackCenter.latitude, fallbackCenter.longitude], 5);
+      }).setView([initialCenter.latitude, initialCenter.longitude], 5);
 
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution:
@@ -180,6 +186,17 @@ export function LeafletMapCanvas({
       routeLayerRef.current = L.layerGroup().addTo(map);
       layerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
+
+      if (initialFitCoordinates.length) {
+        const bounds = initialFitCoordinates.map(
+          (marker) =>
+            [marker.latitude, marker.longitude] as [
+              number,
+              number,
+            ],
+        ) as LatLngBoundsExpression;
+        map.fitBounds(bounds, { maxZoom: 14, padding: [36, 36] });
+      }
     }
 
     createMap();
@@ -190,7 +207,7 @@ export function LeafletMapCanvas({
       layerRef.current = null;
       routeLayerRef.current = null;
     };
-  }, [fallbackCenter.latitude, fallbackCenter.longitude]);
+  }, [fallbackCenter]);
 
   useEffect(() => {
     let isMounted = true;
@@ -229,13 +246,13 @@ export function LeafletMapCanvas({
         const color = markerColor(marker);
         const label = escapeHtml(marker.label);
         const markerHtml = marker.thumbnailUrl
-          ? `<span class="otr-map-photo-marker"><img src="${escapeHtml(marker.thumbnailUrl)}" alt="" /><b>${marker.count ?? ""}</b></span>`
+          ? `<span class="otr-map-photo-marker ${marker.count && marker.count > 1 ? "otr-map-photo-marker-stack" : ""}"><img src="${escapeHtml(marker.thumbnailUrl)}" alt="" />${marker.count && marker.count > 1 ? `<b>${marker.count}</b>` : ""}</span>`
           : `<span class="otr-map-marker" style="--marker-color:${color}"><span class="otr-map-marker-icon">${markerIconSvg(markerIconName(marker))}</span><span class="otr-map-marker-label">${label}</span></span>`;
         const icon = L.divIcon({
           html: markerHtml,
           className: "otr-leaflet-marker",
-          iconSize: marker.thumbnailUrl ? [54, 54] : [84, 34],
-          iconAnchor: marker.thumbnailUrl ? [27, 27] : [42, 17],
+          iconSize: marker.thumbnailUrl ? [42, 42] : [84, 34],
+          iconAnchor: marker.thumbnailUrl ? [18, 52] : [42, 17],
         });
         const mapMarker = L.marker(
           [marker.coordinates.latitude, marker.coordinates.longitude],

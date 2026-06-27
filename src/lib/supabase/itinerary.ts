@@ -492,6 +492,7 @@ export async function updateItineraryEvent(input: UpdateItineraryEventInput) {
     .eq("trip_id", input.tripId);
 
   if (error) throw error;
+
 }
 
 export async function deleteItineraryEvent(id: string) {
@@ -502,23 +503,53 @@ export async function deleteItineraryEvent(id: string) {
 export async function updateItineraryReservation(
   input: UpdateItineraryReservationInput,
 ) {
+  const updatePayload: Record<string, string | null> = {
+    reservation_type: input.reservationType,
+    title: input.title.trim(),
+    provider: input.provider?.trim() || null,
+    location_name: input.locationName?.trim() || null,
+    starts_at: input.startsAt ? new Date(input.startsAt).toISOString() : null,
+    ends_at: input.endsAt ? new Date(input.endsAt).toISOString() : null,
+    confirmation_code: input.confirmationCode?.trim() || null,
+    url: input.url?.trim() || null,
+    status: input.status ?? "planned",
+  };
+
+  if (input.sourceText !== undefined) {
+    updatePayload.source_text = input.sourceText?.trim() || null;
+  }
+
   const { error } = await supabase
     .from("itinerary_reservations")
-    .update({
-      reservation_type: input.reservationType,
-      title: input.title.trim(),
-      provider: input.provider?.trim() || null,
-      location_name: input.locationName?.trim() || null,
-      starts_at: input.startsAt ? new Date(input.startsAt).toISOString() : null,
-      ends_at: input.endsAt ? new Date(input.endsAt).toISOString() : null,
-      confirmation_code: input.confirmationCode?.trim() || null,
-      url: input.url?.trim() || null,
-      status: input.status ?? "planned",
-    })
+    .update(updatePayload)
     .eq("id", input.id)
     .eq("trip_id", input.tripId);
 
   if (error) throw error;
+
+  if (input.participantUserIds) {
+    const { error: deleteParticipantError } = await supabase
+      .from("itinerary_reservation_participants")
+      .delete()
+      .eq("reservation_id", input.id);
+
+    if (deleteParticipantError) throw deleteParticipantError;
+
+    const uniqueUserIds = [...new Set(input.participantUserIds)].filter(Boolean);
+    if (uniqueUserIds.length > 0) {
+      const { error: participantError } = await supabase
+        .from("itinerary_reservation_participants")
+        .insert(
+          uniqueUserIds.map((userId) => ({
+            reservation_id: input.id,
+            user_id: userId,
+            participation_status: "planned",
+          })),
+        );
+
+      if (participantError) throw participantError;
+    }
+  }
 }
 
 export async function deleteItineraryReservation(id: string) {

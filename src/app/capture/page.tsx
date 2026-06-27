@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { getJourneyStatus } from "@/lib/journeys/status";
+import { compareTripsByStartDateAsc } from "@/lib/journeys/status";
 import { getTripsForCurrentUser } from "@/lib/supabase/trips";
 import type { Trip } from "@/types";
 
@@ -49,9 +50,15 @@ function CaptureContent() {
 
   const groupedTrips = useMemo(
     () => ({
-      active: trips.filter((trip) => getJourneyStatus(trip) === "active"),
-      upcoming: trips.filter((trip) => getJourneyStatus(trip) === "upcoming"),
-      completed: trips.filter((trip) => getJourneyStatus(trip) === "completed"),
+      active: trips
+        .filter((trip) => getJourneyStatus(trip) === "active")
+        .sort(compareTripsByStartDateAsc),
+      upcoming: trips
+        .filter((trip) => getJourneyStatus(trip) === "upcoming")
+        .sort(compareTripsByStartDateAsc),
+      completed: trips
+        .filter((trip) => getJourneyStatus(trip) === "completed")
+        .sort(compareTripsByStartDateAsc),
     }),
     [trips],
   );

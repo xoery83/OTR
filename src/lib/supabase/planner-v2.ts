@@ -189,6 +189,54 @@ export async function upsertTripDay({
   return mapTripDay(data as TripDayRow);
 }
 
+export async function updateTripDayTitle({
+  tripId,
+  date,
+  title,
+}: {
+  tripId: string;
+  date: string;
+  title: string | null;
+}) {
+  const user = await getCurrentUser();
+
+  if (!user) {
+    throw new Error("You must be logged in to update trip days.");
+  }
+
+  const { data: existing, error: existingError } = await supabase
+    .from("trip_days")
+    .select("*")
+    .eq("trip_id", tripId)
+    .eq("day_date", date)
+    .maybeSingle();
+
+  if (existingError) {
+    throw existingError;
+  }
+
+  const { data, error } = await supabase
+    .from("trip_days")
+    .upsert(
+      {
+        trip_id: tripId,
+        day_date: date,
+        title: title?.trim() || null,
+        notes: existing?.notes ?? null,
+        created_by: existing?.created_by ?? user.id,
+      },
+      { onConflict: "trip_id,day_date" },
+    )
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return mapTripDay(data as TripDayRow);
+}
+
 function sortByTime<T>(
   rows: T[],
   getValue: (row: T) => string | null | undefined,

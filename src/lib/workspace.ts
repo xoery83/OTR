@@ -1,3 +1,5 @@
+import { readTodayScopedValue } from "./day-view-storage";
+
 export const LAST_WORKSPACE_KEY = "journey:lastWorkspace";
 
 export type WorkspaceModule =
@@ -72,7 +74,7 @@ export function getWorkspaceDay(pathname: string, search: string, tripId: string
   }
 
   if (tripId && typeof window !== "undefined") {
-    return window.localStorage.getItem(`otr:planner-day:${tripId}`);
+    return readTodayScopedValue(`otr:planner-day:${tripId}`);
   }
 
   return null;

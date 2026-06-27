@@ -4,7 +4,7 @@ function getLocalDate(value: Date) {
   return new Date(value.getFullYear(), value.getMonth(), value.getDate());
 }
 
-function parseDate(value: string | null) {
+export function parseDate(value: string | null) {
   if (!value) {
     return null;
   }
@@ -51,4 +51,32 @@ export function getDaysUntilJourney(trip: Trip, now = new Date()) {
 
   const today = getLocalDate(now);
   return Math.max(0, Math.ceil((start.getTime() - today.getTime()) / 86400000));
+}
+
+function getJourneyStartTime(trip: Trip) {
+  const start = parseDate(trip.startDate);
+  return start instanceof Date && Number.isFinite(start.getTime())
+    ? start.getTime()
+    : null;
+}
+
+export function compareTripsByStartDateAsc(a: Trip, b: Trip) {
+  const aStart = getJourneyStartTime(a);
+  const bStart = getJourneyStartTime(b);
+
+  if (aStart && bStart) {
+    return aStart - bStart;
+  }
+
+  if (aStart) {
+    return -1;
+  }
+
+  if (bStart) {
+    return 1;
+  }
+
+  const aCreatedAt = new Date(a.createdAt).getTime();
+  const bCreatedAt = new Date(b.createdAt).getTime();
+  return aCreatedAt - bCreatedAt;
 }
