@@ -1,5 +1,5 @@
 "use strict";
-var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, _23, _24;
+var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, _23, _24, _25, _26, _27, _28, _29, _30, _31, _32, _33, _34, _35, _36, _37, _38, _39, _40, _41, _42, _43, _44;
 Object.defineProperty(exports, "__esModule", { value: true });
 const planner_import_local_1 = require("../src/lib/planner-import-local");
 const planner_import_1 = require("../src/lib/planner-import");
@@ -246,7 +246,57 @@ const dailyPlanWithParticipantsInput = `# Day 17｜2026-07-24｜格陵兰分队�
 - A组进入格陵兰后，时区比冰岛晚1小时，请注意调整时间。
 - Ilulissat 步行即可游览大部分城区，但天气变化快，请携带保暖、防风外套。
 - B组无需退房，可轻松安排自由活动，为返程做好准备。`;
+const tmbRoutePlanInput = `2026-08-13
+
+抵达法国 Les Houches，TMB 徒步起点。
+
+活动：
+- 队员集合
+- 装备检查
+- 徒步说明会
+- 采购补给
+
+国家：法国
+
+---
+
+2026-08-14
+
+TMB Day 1：Les Houches → Les Contamines
+
+距离：18 km
+累计爬升：1350 m
+累计下降：1250 m
+预计徒步时间：7–8 小时
+难度：★★★★☆
+
+亮点：
+- Bellevue
+- Col de Tricot
+- Miage 山谷
+
+国家：法国
+
+---
+
+2026-08-15
+
+TMB Day 2：Les Contamines → Les Chapieux
+
+距离：19 km
+累计爬升：1450 m
+累计下降：950 m
+预计徒步时间：7.5–8.5 小时
+难度：★★★★★
+
+亮点：
+- Notre-Dame de la Gorge
+- Col du Bonhomme
+- Croix du Bonhomme
+
+国家：法国`;
 const carRentalInput = "添加一个租车预订信息， Lotus Car Rental， 跨越时间 78 - 724";
+const carRentalWithExpenseInput = "帮我添加一个从8月1日到8月9日的租车预订信息，并添加费用为13267DKK";
 const cases = [
     {
         name: "single hotel block",
@@ -406,50 +456,73 @@ if ((carRentalReservation === null || carRentalReservation === void 0 ? void 0 :
 if (((_b = carRentalReservation === null || carRentalReservation === void 0 ? void 0 : carRentalReservation.participant_names) !== null && _b !== void 0 ? _b : []).length > 0) {
     throw new Error("car rental without driver should not default to any participant");
 }
+const carRentalWithExpenseResult = (0, planner_import_local_1.parseLocalItinerary)(carRentalWithExpenseInput);
+const carRentalWithExpenseReservation = (_c = carRentalWithExpenseResult === null || carRentalWithExpenseResult === void 0 ? void 0 : carRentalWithExpenseResult.reservations) === null || _c === void 0 ? void 0 : _c[0];
+const carRentalWithExpense = (_d = carRentalWithExpenseResult === null || carRentalWithExpenseResult === void 0 ? void 0 : carRentalWithExpenseResult.expenses) === null || _d === void 0 ? void 0 : _d[0];
+if (((_e = carRentalWithExpenseResult === null || carRentalWithExpenseResult === void 0 ? void 0 : carRentalWithExpenseResult.reservations) !== null && _e !== void 0 ? _e : []).length !== 1) {
+    throw new Error("car rental with inline expense should still create one reservation draft");
+}
+if (((_f = carRentalWithExpenseResult === null || carRentalWithExpenseResult === void 0 ? void 0 : carRentalWithExpenseResult.expenses) !== null && _f !== void 0 ? _f : []).length !== 1) {
+    throw new Error("car rental with inline expense should create one expense draft");
+}
+if ((carRentalWithExpenseReservation === null || carRentalWithExpenseReservation === void 0 ? void 0 : carRentalWithExpenseReservation.reservation_type) !== "car" ||
+    ((_g = carRentalWithExpenseReservation.title) === null || _g === void 0 ? void 0 : _g.includes("13267")) ||
+    ((_h = carRentalWithExpenseReservation.location_name) === null || _h === void 0 ? void 0 : _h.includes("13267")) ||
+    (carRentalWithExpenseReservation === null || carRentalWithExpenseReservation === void 0 ? void 0 : carRentalWithExpenseReservation.starts_at) !== "2026-08-01T09:00:00" ||
+    (carRentalWithExpenseReservation === null || carRentalWithExpenseReservation === void 0 ? void 0 : carRentalWithExpenseReservation.ends_at) !== "2026-08-09T18:00:00") {
+    throw new Error("car rental reservation should parse cleanly without inline cost text");
+}
+if ((carRentalWithExpense === null || carRentalWithExpense === void 0 ? void 0 : carRentalWithExpense.category) !== "car" ||
+    (carRentalWithExpense === null || carRentalWithExpense === void 0 ? void 0 : carRentalWithExpense.original_amount) !== 13267 ||
+    (carRentalWithExpense === null || carRentalWithExpense === void 0 ? void 0 : carRentalWithExpense.original_currency) !== "DKK" ||
+    (carRentalWithExpense === null || carRentalWithExpense === void 0 ? void 0 : carRentalWithExpense.expense_date) !== "2026-08-01" ||
+    (carRentalWithExpense === null || carRentalWithExpense === void 0 ? void 0 : carRentalWithExpense.end_date) !== "2026-08-09") {
+    throw new Error("car rental inline expense amount, currency, or date range mismatch");
+}
 const multiAccommodationExpenseResult = (0, planner_import_local_1.parseLocalItinerary)(multiAccommodationExpenseInput);
-if (((_c = multiAccommodationExpenseResult === null || multiAccommodationExpenseResult === void 0 ? void 0 : multiAccommodationExpenseResult.reservations) !== null && _c !== void 0 ? _c : []).length > 0) {
+if (((_j = multiAccommodationExpenseResult === null || multiAccommodationExpenseResult === void 0 ? void 0 : multiAccommodationExpenseResult.reservations) !== null && _j !== void 0 ? _j : []).length > 0) {
     throw new Error("multi accommodation expense import should not create reservation drafts");
 }
-const multiAccommodationExpenses = (_d = multiAccommodationExpenseResult === null || multiAccommodationExpenseResult === void 0 ? void 0 : multiAccommodationExpenseResult.expenses) !== null && _d !== void 0 ? _d : [];
+const multiAccommodationExpenses = (_k = multiAccommodationExpenseResult === null || multiAccommodationExpenseResult === void 0 ? void 0 : multiAccommodationExpenseResult.expenses) !== null && _k !== void 0 ? _k : [];
 if (multiAccommodationExpenses.length !== 3) {
     throw new Error(`multi accommodation expense import should create 3 expense drafts, got ${multiAccommodationExpenses.length}`);
 }
-if (((_e = multiAccommodationExpenses[2]) === null || _e === void 0 ? void 0 : _e.title) !==
+if (((_l = multiAccommodationExpenses[2]) === null || _l === void 0 ? void 0 : _l.title) !==
     "Accommodation in a beautiful environment accommodation" ||
-    ((_f = multiAccommodationExpenses[2]) === null || _f === void 0 ? void 0 : _f.original_amount) !== 17326.31 ||
-    ((_g = multiAccommodationExpenses[2]) === null || _g === void 0 ? void 0 : _g.original_currency) !== "CNY") {
+    ((_m = multiAccommodationExpenses[2]) === null || _m === void 0 ? void 0 : _m.original_amount) !== 17326.31 ||
+    ((_o = multiAccommodationExpenses[2]) === null || _o === void 0 ? void 0 : _o.original_currency) !== "CNY") {
     throw new Error("multi accommodation expense import should parse the latest expense fields");
 }
-if (((_h = multiAccommodationExpenses[1]) === null || _h === void 0 ? void 0 : _h.title) !== "Haukaberg House accommodation" ||
-    ((_j = multiAccommodationExpenses[1]) === null || _j === void 0 ? void 0 : _j.original_amount) !== null ||
-    ((_k = multiAccommodationExpenses[1]) === null || _k === void 0 ? void 0 : _k.needs_review) !== true) {
+if (((_p = multiAccommodationExpenses[1]) === null || _p === void 0 ? void 0 : _p.title) !== "Haukaberg House accommodation" ||
+    ((_q = multiAccommodationExpenses[1]) === null || _q === void 0 ? void 0 : _q.original_amount) !== null ||
+    ((_r = multiAccommodationExpenses[1]) === null || _r === void 0 ? void 0 : _r.needs_review) !== true) {
     throw new Error("price unavailable accommodation expense should remain as a review draft");
 }
 const dailyPlanResult = (0, planner_import_local_1.parseLocalItinerary)(dailyPlanInput);
-const dailyPlanEvents = (_l = dailyPlanResult === null || dailyPlanResult === void 0 ? void 0 : dailyPlanResult.events) !== null && _l !== void 0 ? _l : [];
+const dailyPlanEvents = (_s = dailyPlanResult === null || dailyPlanResult === void 0 ? void 0 : dailyPlanResult.events) !== null && _s !== void 0 ? _s : [];
 if (dailyPlanEvents.length !== 10) {
     throw new Error(`daily plan import should create 10 event drafts, got ${dailyPlanEvents.length}`);
 }
-if (((_m = dailyPlanEvents[0]) === null || _m === void 0 ? void 0 : _m.day_date) !== "2026-07-08" ||
-    ((_o = dailyPlanEvents[0]) === null || _o === void 0 ? void 0 : _o.day_title) !== "抵达冰岛" ||
-    ((_p = dailyPlanEvents[0]) === null || _p === void 0 ? void 0 : _p.planned_start) !== "2026-07-08T15:35:00" ||
-    ((_q = dailyPlanEvents[0]) === null || _q === void 0 ? void 0 : _q.event_type) !== "flight" ||
-    !((_s = (_r = dailyPlanEvents[0]) === null || _r === void 0 ? void 0 : _r.participant_names) === null || _s === void 0 ? void 0 : _s.includes("Bao")) ||
-    !((_u = (_t = dailyPlanEvents[0]) === null || _t === void 0 ? void 0 : _t.participant_names) === null || _u === void 0 ? void 0 : _u.includes("Mary"))) {
+if (((_t = dailyPlanEvents[0]) === null || _t === void 0 ? void 0 : _t.day_date) !== "2026-07-08" ||
+    ((_u = dailyPlanEvents[0]) === null || _u === void 0 ? void 0 : _u.day_title) !== "抵达冰岛" ||
+    ((_v = dailyPlanEvents[0]) === null || _v === void 0 ? void 0 : _v.planned_start) !== "2026-07-08T15:35:00" ||
+    ((_w = dailyPlanEvents[0]) === null || _w === void 0 ? void 0 : _w.event_type) !== "flight" ||
+    !((_y = (_x = dailyPlanEvents[0]) === null || _x === void 0 ? void 0 : _x.participant_names) === null || _y === void 0 ? void 0 : _y.includes("Bao")) ||
+    !((_0 = (_z = dailyPlanEvents[0]) === null || _z === void 0 ? void 0 : _z.participant_names) === null || _0 === void 0 ? void 0 : _0.includes("Mary"))) {
     throw new Error("daily plan first arrival event fields mismatch");
 }
-if (((_v = dailyPlanEvents[2]) === null || _v === void 0 ? void 0 : _v.event_type) !== "car" ||
-    !((_x = (_w = dailyPlanEvents[2]) === null || _w === void 0 ? void 0 : _w.participant_names) === null || _x === void 0 ? void 0 : _x.includes("Bao"))) {
+if (((_1 = dailyPlanEvents[2]) === null || _1 === void 0 ? void 0 : _1.event_type) !== "car" ||
+    !((_3 = (_2 = dailyPlanEvents[2]) === null || _2 === void 0 ? void 0 : _2.participant_names) === null || _3 === void 0 ? void 0 : _3.includes("Bao"))) {
     throw new Error("daily plan car rental event should preserve driver as participant");
 }
-if (((_y = dailyPlanEvents[3]) === null || _y === void 0 ? void 0 : _y.event_type) !== "shopping") {
+if (((_4 = dailyPlanEvents[3]) === null || _4 === void 0 ? void 0 : _4.event_type) !== "shopping") {
     throw new Error("daily plan grocery event should be classified as shopping");
 }
-if (!((_0 = (_z = dailyPlanEvents[9]) === null || _z === void 0 ? void 0 : _z.day_notes) === null || _0 === void 0 ? void 0 : _0.includes("提前下载离线地图"))) {
+if (!((_6 = (_5 = dailyPlanEvents[9]) === null || _5 === void 0 ? void 0 : _5.day_notes) === null || _6 === void 0 ? void 0 : _6.includes("提前下载离线地图"))) {
     throw new Error("daily plan notes should be attached to event day notes");
 }
 const dailyPlanWithAddressesResult = (0, planner_import_local_1.parseLocalItinerary)(dailyPlanWithAddressesInput);
-const dailyPlanWithAddressesEvents = (_1 = dailyPlanWithAddressesResult === null || dailyPlanWithAddressesResult === void 0 ? void 0 : dailyPlanWithAddressesResult.events) !== null && _1 !== void 0 ? _1 : [];
+const dailyPlanWithAddressesEvents = (_7 = dailyPlanWithAddressesResult === null || dailyPlanWithAddressesResult === void 0 ? void 0 : dailyPlanWithAddressesResult.events) !== null && _7 !== void 0 ? _7 : [];
 if (dailyPlanWithAddressesEvents.length !== 11) {
     throw new Error(`daily plan address import should create 11 event drafts, got ${dailyPlanWithAddressesEvents.length}`);
 }
@@ -469,44 +542,63 @@ if (dailyPlanWithAddressesEvents.length !== 11) {
     }
 });
 const dailyPlanWithParticipantsResult = (0, planner_import_local_1.parseLocalItinerary)(dailyPlanWithParticipantsInput);
-const dailyPlanWithParticipantsEvents = (_2 = dailyPlanWithParticipantsResult === null || dailyPlanWithParticipantsResult === void 0 ? void 0 : dailyPlanWithParticipantsResult.events) !== null && _2 !== void 0 ? _2 : [];
+const dailyPlanWithParticipantsEvents = (_8 = dailyPlanWithParticipantsResult === null || dailyPlanWithParticipantsResult === void 0 ? void 0 : dailyPlanWithParticipantsResult.events) !== null && _8 !== void 0 ? _8 : [];
 if (dailyPlanWithParticipantsEvents.length !== 14) {
     throw new Error(`daily plan participant import should create 14 event drafts, got ${dailyPlanWithParticipantsEvents.length}`);
 }
-if (((_4 = (_3 = dailyPlanWithParticipantsEvents[0]) === null || _3 === void 0 ? void 0 : _3.participant_names) === null || _4 === void 0 ? void 0 : _4.join("|")) !==
+if (((_10 = (_9 = dailyPlanWithParticipantsEvents[0]) === null || _9 === void 0 ? void 0 : _9.participant_names) === null || _10 === void 0 ? void 0 : _10.join("|")) !==
     "Bao|Mary|Yang Li|Guoxiang Chen|Qizhi Chen") {
     throw new Error("daily plan participant line should populate A group participants");
 }
-if (((_6 = (_5 = dailyPlanWithParticipantsEvents[1]) === null || _5 === void 0 ? void 0 : _5.participant_names) === null || _6 === void 0 ? void 0 : _6.join("|")) !==
+if (((_12 = (_11 = dailyPlanWithParticipantsEvents[1]) === null || _11 === void 0 ? void 0 : _11.participant_names) === null || _12 === void 0 ? void 0 : _12.join("|")) !==
     "田欣|Caroline") {
     throw new Error("daily plan participant line should populate B group participants");
 }
-if (((_7 = dailyPlanWithParticipantsEvents[3]) === null || _7 === void 0 ? void 0 : _7.location_name) !==
+if (((_13 = dailyPlanWithParticipantsEvents[3]) === null || _13 === void 0 ? void 0 : _13.location_name) !==
     "Ilulissat Airport Car Rental, Ilulissat, Greenland" ||
-    !((_9 = (_8 = dailyPlanWithParticipantsEvents[3]) === null || _8 === void 0 ? void 0 : _8.participant_names) === null || _9 === void 0 ? void 0 : _9.includes("Guoxiang Chen"))) {
+    !((_15 = (_14 = dailyPlanWithParticipantsEvents[3]) === null || _14 === void 0 ? void 0 : _14.participant_names) === null || _15 === void 0 ? void 0 : _15.includes("Guoxiang Chen"))) {
     throw new Error("daily plan participant/address block should preserve car rental fields");
 }
-if (((_10 = dailyPlanWithParticipantsEvents[4]) === null || _10 === void 0 ? void 0 : _10.location_name) !==
+if (((_16 = dailyPlanWithParticipantsEvents[4]) === null || _16 === void 0 ? void 0 : _16.location_name) !==
     "Hotel Arctic, Mittarfimmut B 1128, 3952 Ilulissat, Greenland" ||
-    ((_12 = (_11 = dailyPlanWithParticipantsEvents[4]) === null || _11 === void 0 ? void 0 : _11.participant_names) === null || _12 === void 0 ? void 0 : _12.includes("Yang Li"))) {
+    ((_18 = (_17 = dailyPlanWithParticipantsEvents[4]) === null || _17 === void 0 ? void 0 : _17.participant_names) === null || _18 === void 0 ? void 0 : _18.includes("Yang Li"))) {
     throw new Error("daily plan first hotel block should keep only listed participants");
 }
-if (((_13 = dailyPlanWithParticipantsEvents[5]) === null || _13 === void 0 ? void 0 : _13.location_name) !==
+if (((_19 = dailyPlanWithParticipantsEvents[5]) === null || _19 === void 0 ? void 0 : _19.location_name) !==
     "HOTEL SØMA Ilulissat, Nuussuattaap Aqq. 2, 3952 Ilulissat, Greenland" ||
-    ((_15 = (_14 = dailyPlanWithParticipantsEvents[5]) === null || _14 === void 0 ? void 0 : _14.participant_names) === null || _15 === void 0 ? void 0 : _15.join("|")) !== "Yang Li") {
+    ((_21 = (_20 = dailyPlanWithParticipantsEvents[5]) === null || _20 === void 0 ? void 0 : _20.participant_names) === null || _21 === void 0 ? void 0 : _21.join("|")) !== "Yang Li") {
     throw new Error("daily plan second hotel block should keep Yang Li only");
 }
-if (((_16 = dailyPlanWithParticipantsEvents[11]) === null || _16 === void 0 ? void 0 : _16.location_name) !==
+if (((_22 = dailyPlanWithParticipantsEvents[11]) === null || _22 === void 0 ? void 0 : _22.location_name) !==
     "Blue Lagoon Iceland, Norðurljósavegur 9, 240 Grindavík, Iceland" ||
-    ((_18 = (_17 = dailyPlanWithParticipantsEvents[11]) === null || _17 === void 0 ? void 0 : _17.participant_names) === null || _18 === void 0 ? void 0 : _18.join("|")) !==
+    ((_24 = (_23 = dailyPlanWithParticipantsEvents[11]) === null || _23 === void 0 ? void 0 : _23.participant_names) === null || _24 === void 0 ? void 0 : _24.join("|")) !==
         "田欣|Caroline") {
     throw new Error("daily plan optional Blue Lagoon block should keep B group participants and address");
 }
-const parsedDrafts = (0, planner_import_1.toPlannerDrafts)((_19 = (0, planner_import_local_1.parseLocalItinerary)(`Hotel stay
+const tmbRoutePlanResult = (0, planner_import_local_1.parseLocalItinerary)(tmbRoutePlanInput);
+const tmbRouteEvents = (_25 = tmbRoutePlanResult === null || tmbRoutePlanResult === void 0 ? void 0 : tmbRoutePlanResult.events) !== null && _25 !== void 0 ? _25 : [];
+if (tmbRouteEvents.length !== 2) {
+    throw new Error(`TMB route plan should create 2 route events, got ${tmbRouteEvents.length}`);
+}
+if (((_26 = tmbRouteEvents[0]) === null || _26 === void 0 ? void 0 : _26.title) !== "TMB Day 1：Les Houches → Les Contamines" ||
+    ((_27 = tmbRouteEvents[0]) === null || _27 === void 0 ? void 0 : _27.day_date) !== "2026-08-14" ||
+    ((_28 = tmbRouteEvents[0]) === null || _28 === void 0 ? void 0 : _28.planned_start) !== "2026-08-14T09:00:00" ||
+    ((_29 = tmbRouteEvents[0]) === null || _29 === void 0 ? void 0 : _29.planned_end) !== "2026-08-14T17:00:00" ||
+    ((_30 = tmbRouteEvents[0]) === null || _30 === void 0 ? void 0 : _30.location_name) !== "Les Houches → Les Contamines" ||
+    ((_31 = tmbRouteEvents[0]) === null || _31 === void 0 ? void 0 : _31.event_type) !== "activity" ||
+    ((_32 = tmbRouteEvents[0]) === null || _32 === void 0 ? void 0 : _32.is_estimated_time) !== true) {
+    throw new Error("TMB route event should preserve date, estimated time, type, and route location");
+}
+if (!((_34 = (_33 = tmbRouteEvents[0]) === null || _33 === void 0 ? void 0 : _33.description) === null || _34 === void 0 ? void 0 : _34.includes("距离：18 km")) ||
+    !((_36 = (_35 = tmbRouteEvents[0]) === null || _35 === void 0 ? void 0 : _35.description) === null || _36 === void 0 ? void 0 : _36.includes("• Bellevue")) ||
+    !((_38 = (_37 = tmbRouteEvents[0]) === null || _37 === void 0 ? void 0 : _37.description) === null || _38 === void 0 ? void 0 : _38.includes("国家：法国"))) {
+    throw new Error("TMB route description should include distance, highlights, and country");
+}
+const parsedDrafts = (0, planner_import_1.toPlannerDrafts)((_39 = (0, planner_import_local_1.parseLocalItinerary)(`Hotel stay
 Guests: Yang Li, Guoxiang Chen, Qizhi Chen, Bao, Mary
 Dates: 2026-07-27 to 2026-07-31
 Location: Kuunnguarsuup Qaava 1, 3952 Ilulissat, Greenland
-Hotel: Apartment in Ilulissat - by Pilu & Kaali`)) !== null && _19 !== void 0 ? _19 : {}, [], [
+Hotel: Apartment in Ilulissat - by Pilu & Kaali`)) !== null && _39 !== void 0 ? _39 : {}, [], [
     {
         id: "jm-yang",
         tripId: "trip",
@@ -586,7 +678,7 @@ Hotel: Apartment in Ilulissat - by Pilu & Kaali`)) !== null && _19 !== void 0 ? 
         createdAt: "",
     },
 ]);
-const unmatchedKnownMembers = (_21 = (_20 = parsedDrafts.reservations[0]) === null || _20 === void 0 ? void 0 : _20.unmatched_participant_names) !== null && _21 !== void 0 ? _21 : [];
+const unmatchedKnownMembers = (_41 = (_40 = parsedDrafts.reservations[0]) === null || _40 === void 0 ? void 0 : _40.unmatched_participant_names) !== null && _41 !== void 0 ? _41 : [];
 if (unmatchedKnownMembers.length > 0) {
     throw new Error(`known journey members should not be unmatched: ${unmatchedKnownMembers.join(", ")}`);
 }
@@ -617,10 +709,10 @@ const akaDrafts = (0, planner_import_1.toPlannerDrafts)({
         createdAt: "",
     },
 ]);
-if (((_22 = akaDrafts.reservations[0]) === null || _22 === void 0 ? void 0 : _22.participant_names.join("|")) !== "Tian Xin") {
+if (((_42 = akaDrafts.reservations[0]) === null || _42 === void 0 ? void 0 : _42.participant_names.join("|")) !== "Tian Xin") {
     throw new Error("AKA participant names should be canonicalized to journey member names");
 }
-const expenseDrafts = (0, planner_import_1.toPlannerDrafts)((_23 = (0, planner_import_local_1.parseLocalItinerary)(accommodationExpenseInput)) !== null && _23 !== void 0 ? _23 : {}, [], [
+const expenseDrafts = (0, planner_import_1.toPlannerDrafts)((_43 = (0, planner_import_local_1.parseLocalItinerary)(accommodationExpenseInput)) !== null && _43 !== void 0 ? _43 : {}, [], [
     {
         id: "jm-yang",
         tripId: "trip",
@@ -737,7 +829,7 @@ if (!accommodationExpense.participant_member_ids.includes("jm-tian")) {
 if (!accommodationExpense.participant_member_ids.includes("jm-qianyu")) {
     throw new Error("Qianyu Li should match Caroline as a split participant");
 }
-const naturalExpenseDrafts = (0, planner_import_1.toPlannerDrafts)((_24 = (0, planner_import_local_1.parseLocalItinerary)(naturalAccommodationExpenseInput)) !== null && _24 !== void 0 ? _24 : {}, [], [
+const naturalExpenseDrafts = (0, planner_import_1.toPlannerDrafts)((_44 = (0, planner_import_local_1.parseLocalItinerary)(naturalAccommodationExpenseInput)) !== null && _44 !== void 0 ? _44 : {}, [], [
     {
         id: "jm-bao",
         tripId: "trip",

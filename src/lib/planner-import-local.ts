@@ -344,24 +344,51 @@ function parseCarRentalCompany(blockText: string) {
   if (namedCompany?.[1]) return compactWhitespace(namedCompany[1]);
 
   const commaCompany = blockText.match(/[，,]\s*([^，,\n]+?)(?:\s*[，,]|\n|$)/);
-  if (commaCompany?.[1] && !/(跨越时间|日期|时间|amount|金额)/i.test(commaCompany[1])) {
+  if (
+    commaCompany?.[1] &&
+    !/(跨越时间|日期|时间|amount|金额|费用|花费|price|fee|cost)/i.test(commaCompany[1])
+  ) {
     return compactWhitespace(commaCompany[1]);
   }
 
   return null;
 }
 
+function stripInlineCostClauses(value: string) {
+  return (
+    compactWhitespace(
+      value
+        .replace(
+          /(?:[，,。.]?\s*(?:并|and)?\s*(?:添加|新增|记录|加入)?\s*(?:一笔)?\s*(?:费用|花费|金额|价格|cost|fee|price|amount)\s*(?:为|是|:|：)?\s*[0-9]+(?:[,，]\d{3})*(?:\.\d+)?\s*(?:[A-Z]{3}|RMB|CNY|NZD|AUD|CHF|USD|EUR|ISK|DKK|GBP)?)/gi,
+          "",
+        )
+        .replace(/[，,。.\s]+$/g, ""),
+    ) ?? value.trim()
+  );
+}
+
 function parseCarRentalBlock(blockText: string): LocalReservation | null {
-  const looksLikeCarRental = /(租车|car rental|rental car|rent a car|取车|还车)/i.test(blockText);
+  const reservationText = stripInlineCostClauses(blockText);
+  const looksLikeCarRental = /(租车|car rental|rental car|rent a car|取车|还车)/i.test(
+    reservationText,
+  );
   if (!looksLikeCarRental) return null;
 
-  const range = parseLooseDateRange(blockText);
-  const company = parseCarRentalCompany(blockText);
+  const range = parseLooseDateRange(reservationText);
+  const company = parseCarRentalCompany(reservationText);
   const locationName =
-    fieldValue(blockText, ["Location", "Address", "Pick-up", "Pickup", "取车地点", "地点", "地址"]) ??
+    fieldValue(reservationText, [
+      "Location",
+      "Address",
+      "Pick-up",
+      "Pickup",
+      "取车地点",
+      "地点",
+      "地址",
+    ]) ??
     company;
-  const driver = fieldValue(blockText, ["Driver", "驾驶人", "司机"]);
-  const titleBase = company || "Car rental";
+  const driver = fieldValue(reservationText, ["Driver", "驾驶人", "司机"]);
+  const titleBase = company || (/租车/.test(reservationText) ? "租车预订" : "Car rental");
   const title = /租车|car rental|rental car|rent a car/i.test(titleBase)
     ? titleBase
     : `${titleBase} 租车`;
@@ -376,7 +403,7 @@ function parseCarRentalBlock(blockText: string): LocalReservation | null {
     starts_at: range ? `${range.startDate}T09:00:00` : null,
     ends_at: range ? `${range.endDate}T18:00:00` : null,
     participant_names: splitNames(driver),
-    source_excerpt: blockText,
+    source_excerpt: reservationText,
     confidence: range && company ? 0.92 : 0.78,
     needs_review: true,
   };
@@ -397,6 +424,63 @@ function parseMoney(value: string | undefined) {
   return {
     amount: Number(match[1].replace(/[,，]/g, "")),
     currency: (match[2] ?? "NZD").toUpperCase(),
+  };
+}
+
+function parseInlineCostMoney(value: string) {
+  const match = value.match(
+    /(?:费用|花费|金额|价格|cost|fee|price|amount)\s*(?:为|是|:|：)?\s*([0-9]+(?:[,，]\d{3})*(?:\.\d+)?)\s*([A-Z]{3}|RMB|CNY|NZD|AUD|CHF|USD|EUR|ISK|DKK|GBP)?/i,
+  );
+  return parseMoney(match ? `${match[1]} ${match[2] ?? ""}` : undefined);
+}
+
+function parseInlineReservationExpense(blockText: string): LocalExpense | null {
+  const money = parseInlineCostMoney(blockText);
+  if (!money) return null;
+
+  const range = parseLooseDateRange(blockText);
+  const isCarRental = /(租车|car rental|rental car|rent a car|取车|还车)/i.test(blockText);
+  const isAccommodation = /(住宿|酒店|hotel|accommodation|airbnb|booking|房费)/i.test(
+    blockText,
+  );
+
+  if (!isCarRental && !isAccommodation) return null;
+
+  const category = isCarRental ? "car" : "hotel";
+  const title = isCarRental ? "租车费用" : "住宿费用";
+  const linkedTitle = isAccommodation
+    ? fieldValue(blockText, ["Hotel", "酒店", "住宿", "Accommodation"])
+    : null;
+  const linkedLocation = isAccommodation
+    ? fieldValue(blockText, ["Location", "Address", "地址", "地点"])
+    : null;
+
+  return {
+    title,
+    category,
+    accounting_mode: "shared",
+    expense_date: range?.startDate ?? null,
+    start_date: range?.startDate ?? null,
+    end_date: range?.endDate ?? range?.startDate ?? null,
+    original_amount: money.amount,
+    original_currency: money.currency,
+    payer_name: fieldValue(blockText, ["Paid by", "付款人", "支付人"]) ?? null,
+    participant_names: splitNames(
+      rawMultilineFieldValue(blockText, ["Split with", "分摊人", "Split", "分摊"], [
+        "Category",
+        "分类",
+        "Linked stay",
+        "关联住宿",
+      ]),
+    ),
+    address_text: linkedLocation ?? null,
+    linked_stay_title: linkedTitle ?? null,
+    linked_stay_location: linkedLocation ?? null,
+    linked_stay_start_date: isAccommodation ? range?.startDate ?? null : null,
+    linked_stay_end_date: isAccommodation ? range?.endDate ?? null : null,
+    source_excerpt: blockText,
+    confidence: 0.86,
+    needs_review: true,
   };
 }
 
@@ -569,6 +653,14 @@ function parseExpenseBlocks(rawText: string, blocks: LocalImportBlock[]) {
 
   const fullTextExpense = parseExpenseBlock(rawText);
   if (fullTextExpense) return [fullTextExpense];
+
+  const blockInlineExpenses = blocks
+    .map((block) => parseInlineReservationExpense(block.text))
+    .filter((expense): expense is LocalExpense => expense !== null);
+  if (blockInlineExpenses.length > 0) return blockInlineExpenses;
+
+  const fullInlineExpense = parseInlineReservationExpense(rawText);
+  if (fullInlineExpense) return [fullInlineExpense];
 
   return blocks
     .map((block) => parseExpenseBlock(block.text))
@@ -749,9 +841,103 @@ function parseDailyPlan(rawText: string): LocalEvent[] {
   });
 }
 
+function splitDatedPlanBlocks(rawText: string) {
+  return rawText
+    .replace(/\r\n/g, "\n")
+    .split(/(?:^|\n)\s*---+\s*(?:\n|$)/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => {
+      const match = block.match(/^(\d{4}-\d{2}-\d{2})\s*\n([\s\S]+)$/);
+      if (!match) return null;
+      return {
+        date: match[1],
+        body: match[2].trim(),
+        sourceExcerpt: block,
+      };
+    })
+    .filter(
+      (
+        block,
+      ): block is { date: string; body: string; sourceExcerpt: string } =>
+        block !== null,
+    );
+}
+
+function parseRouteFromTitle(title: string) {
+  const routeMatch = title.match(/[：:]\s*(.+?\s*(?:→|->|至|到)\s*.+)$/);
+  return routeMatch?.[1] ? compactWhitespace(routeMatch[1]) : null;
+}
+
+function parseEstimatedDurationHours(text: string) {
+  const match = text.match(
+    /预计徒步时间\s*[:：]\s*(\d+(?:\.\d+)?)\s*(?:[–—-]\s*(\d+(?:\.\d+)?))?\s*小时/i,
+  );
+  if (!match) return null;
+  return Number(match[2] ?? match[1]);
+}
+
+function buildDatedPlanDescription(lines: string[]) {
+  return lines
+    .map((line) => line.trim())
+    .filter((line) => line && !/^活动\s*[:：]?\s*$/i.test(line))
+    .map((line) => line.replace(/^[-*]\s*/, "• "))
+    .join("\n");
+}
+
+function parseDatedRoutePlans(rawText: string): LocalEvent[] {
+  const blocks = splitDatedPlanBlocks(rawText);
+  if (blocks.length === 0) return [];
+
+  const events: LocalEvent[] = [];
+
+  blocks.forEach((block) => {
+      const lines = block.body
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const title = compactWhitespace(lines[0]?.replace(/[。.]$/, "")) ?? "";
+      const isRoutePlan =
+        /\b(?:TMB|Day|D)\s*\d+/i.test(title) && /(?:→|->|至|到)/.test(title);
+      if (!isRoutePlan) return;
+
+      const description = buildDatedPlanDescription(lines.slice(1));
+      const routeLocation = parseRouteFromTitle(title);
+      const durationHours = parseEstimatedDurationHours(description);
+      const estimatedStart = `${block.date}T09:00:00`;
+      const estimatedEnd = durationHours
+        ? `${block.date}T${String(9 + Math.ceil(durationHours)).padStart(2, "0")}:00:00`
+        : null;
+
+      events.push({
+        day_date: block.date,
+        day_title: title,
+        day_notes: null,
+        title,
+        description: description || null,
+        event_type: "activity",
+        location_name: routeLocation ?? null,
+        planned_start: estimatedStart,
+        planned_end: estimatedEnd,
+        participant_names: [],
+        confidence: 0.88,
+        date_confidence: 0.98,
+        time_confidence: 0.45,
+        participants_confidence: null,
+        location_confidence: routeLocation ? 0.76 : null,
+        is_estimated_time: true,
+        needs_review: false,
+        source_excerpt: block.sourceExcerpt,
+      });
+    });
+
+  return events;
+}
+
 export function parseLocalItinerary(rawText: string): AiItineraryResponse | null {
   const blocks = splitImportBlocks(rawText);
-  const events = parseDailyPlan(rawText);
+  const dailyPlanEvents = parseDailyPlan(rawText);
+  const events = dailyPlanEvents.length > 0 ? dailyPlanEvents : parseDatedRoutePlans(rawText);
   const expenses = parseExpenseBlocks(rawText, blocks);
   const isExpenseOnlyInput =
     /^(accommodation expense|hotel expense|住宿费用|酒店费用|房费)\b/i.test(

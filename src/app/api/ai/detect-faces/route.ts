@@ -42,6 +42,7 @@ type PhotoFaceRow = {
 };
 
 type FaceEmbeddingRow = {
+  trip_id?: string | null;
   journey_member_id: string;
   embedding: number[] | null;
   quality_score: number | null;
@@ -49,6 +50,10 @@ type FaceEmbeddingRow = {
   embedding_version?: string | null;
   journey_members?: {
     display_name?: string | null;
+    user_id?: string | null;
+    invite_email?: string | null;
+    role?: string | null;
+    status?: string | null;
   } | null;
 };
 
@@ -58,7 +63,31 @@ type FaceMatch = {
   similarity: number;
 };
 
+type CurrentJourneyMemberIdentity = {
+  journeyMemberId: string;
+  displayName: string;
+  identityKeys: Set<string>;
+};
+
 const FACE_MATCH_THRESHOLD = 0.42;
+const GLOBAL_FACE_MATCH_THRESHOLD = 0.5;
+
+function normalizeEmail(email?: string | null) {
+  return email?.trim().toLowerCase() || null;
+}
+
+function memberIdentityKeys(member: {
+  user_id?: string | null;
+  invite_email?: string | null;
+}) {
+  const keys = new Set<string>();
+  if (member.user_id) keys.add(`user:${member.user_id}`);
+
+  const email = normalizeEmail(member.invite_email);
+  if (email) keys.add(`email:${email}`);
+
+  return keys;
+}
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
@@ -127,6 +156,7 @@ function cosineSimilarity(left: number[], right: number[]) {
 function findBestFaceMatch(
   embedding: number[],
   samples: FaceEmbeddingRow[],
+  threshold = FACE_MATCH_THRESHOLD,
 ): FaceMatch | null {
   const bestByMember = new Map<string, FaceMatch>();
 
@@ -154,7 +184,7 @@ function findBestFaceMatch(
     (a, b) => b.similarity - a.similarity,
   )[0];
 
-  return best && best.similarity >= FACE_MATCH_THRESHOLD ? best : null;
+  return best && best.similarity >= threshold ? best : null;
 }
 
 async function getFaceSamples(
@@ -175,12 +205,114 @@ async function getFaceSamples(
   return (data ?? []) as FaceEmbeddingRow[];
 }
 
+async function getCurrentJourneyMemberIdentities(
+  supabase: ReturnType<typeof getSupabaseForRequest>,
+  tripId: string,
+) {
+  const { data, error } = await supabase
+    .from("journey_members")
+    .select("id, display_name, user_id, invite_email, role, status")
+    .eq("trip_id", tripId)
+    .neq("role", "guest");
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? [])
+    .map((member) => ({
+      journeyMemberId: member.id as string,
+      displayName: String(member.display_name ?? "").trim(),
+      identityKeys: memberIdentityKeys({
+        user_id: member.user_id as string | null,
+        invite_email: member.invite_email as string | null,
+      }),
+    }))
+    .filter((member) => member.displayName && member.identityKeys.size > 0);
+}
+
+async function getGlobalSameIdentityFaceSamples(
+  supabase: ReturnType<typeof getSupabaseForRequest>,
+  tripId: string,
+) {
+  let currentMembers: CurrentJourneyMemberIdentity[] = [];
+
+  try {
+    currentMembers = await getCurrentJourneyMemberIdentities(supabase, tripId);
+  } catch (error) {
+    console.warn("Global face matching skipped: current members unavailable.", error);
+    return [];
+  }
+
+  if (currentMembers.length === 0) return [];
+
+  const currentMemberByIdentity = new Map<string, CurrentJourneyMemberIdentity>();
+  for (const member of currentMembers) {
+    for (const key of member.identityKeys) {
+      currentMemberByIdentity.set(key, member);
+    }
+  }
+
+  const { data, error } = await supabase.from("journey_member_face_embeddings")
+    .select(
+      "trip_id, journey_member_id, embedding, quality_score, model_name, embedding_version, journey_members(display_name, user_id, invite_email, role, status)",
+    );
+
+  if (error) {
+    console.warn("Global face matching skipped: historical samples unavailable.", error);
+    return [];
+  }
+
+  const samples: FaceEmbeddingRow[] = [];
+
+  for (const sample of (data ?? []) as FaceEmbeddingRow[]) {
+    if (sample.trip_id === tripId) continue;
+    if (!sample.embedding) continue;
+    if (sample.journey_members?.role === "guest") continue;
+
+    const keys = memberIdentityKeys({
+      user_id: sample.journey_members?.user_id ?? null,
+      invite_email: sample.journey_members?.invite_email ?? null,
+    });
+    const matchedCurrentMember = [...keys]
+      .map((key) => currentMemberByIdentity.get(key))
+      .find(Boolean);
+
+    if (!matchedCurrentMember) continue;
+
+    samples.push({
+      ...sample,
+      journey_member_id: matchedCurrentMember.journeyMemberId,
+      journey_members: {
+        ...sample.journey_members,
+        display_name: matchedCurrentMember.displayName,
+      },
+    });
+  }
+
+  return samples;
+}
+
+function findBestFaceMatchWithGlobalFallback(
+  embedding: number[],
+  localSamples: FaceEmbeddingRow[],
+  globalSamples: FaceEmbeddingRow[],
+) {
+  return (
+    findBestFaceMatch(embedding, localSamples) ??
+    findBestFaceMatch(embedding, globalSamples, GLOBAL_FACE_MATCH_THRESHOLD)
+  );
+}
+
 async function recognizeExistingFaces(input: {
   supabase: ReturnType<typeof getSupabaseForRequest>;
   tripId: string;
   faces: PhotoFaceRow[];
 }) {
-  const samples = await getFaceSamples(input.supabase, input.tripId);
+  const [samples, globalSamples] = await Promise.all([
+    getFaceSamples(input.supabase, input.tripId),
+    getGlobalSameIdentityFaceSamples(input.supabase, input.tripId),
+  ]);
   const recognizedRows: PhotoFaceRow[] = [];
 
   for (const face of input.faces) {
@@ -193,7 +325,11 @@ async function recognizeExistingFaces(input: {
       continue;
     }
 
-    const match = findBestFaceMatch(face.embedding, samples);
+    const match = findBestFaceMatchWithGlobalFallback(
+      face.embedding,
+      samples,
+      globalSamples,
+    );
 
     if (!match) {
       recognizedRows.push(face);
@@ -323,13 +459,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ faces: [], reused: false });
     }
 
-    const samples = await getFaceSamples(supabase, tripId);
+    const [samples, globalSamples] = await Promise.all([
+      getFaceSamples(supabase, tripId),
+      getGlobalSameIdentityFaceSamples(supabase, tripId),
+    ]);
 
     const { data: insertedFaces, error: insertError } = await supabase
       .from("photo_faces")
       .insert(
         detected.faces.map((face) => {
-          const match = findBestFaceMatch(face.embedding, samples);
+          const match = findBestFaceMatchWithGlobalFallback(
+            face.embedding,
+            samples,
+            globalSamples,
+          );
 
           return {
             media_asset_id: assetId,

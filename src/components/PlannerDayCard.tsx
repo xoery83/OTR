@@ -1578,6 +1578,7 @@ export function PlannerDayCard({
       tripId,
       entryPoint: "day_planner_add",
       intentBias: "planner_update",
+      intentLock: "planner_update",
       lockedContext: {
         journeyId: tripId,
         dayId: day.id.startsWith("synthetic-") ? null : day.id,
@@ -2026,6 +2027,18 @@ export function PlannerDayCard({
 
   async function confirmPendingExpense() {
     if (!pendingExpense || savingExpenseId) return;
+
+    if (!pendingExpense.payerMemberId) {
+      setExpenseError("请选择付款人。");
+      return;
+    }
+    if (
+      pendingExpense.accountingMode === "shared" &&
+      pendingExpense.participantMemberIds.length === 0
+    ) {
+      setExpenseError("共同分摊至少需要选择一位成员。");
+      return;
+    }
 
     setSavingExpenseId(pendingExpense.itemId);
     setExpenseError(null);
@@ -3409,6 +3422,85 @@ export function PlannerDayCard({
                             className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
                           />
                         </div>
+                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                          <label className="space-y-1">
+                            <span className="text-xs font-bold text-stone-700">
+                              {t("planner.field.paidBy")}
+                            </span>
+                            <select
+                              value={pendingExpense.payerMemberId}
+                              onChange={(event) =>
+                                updatePendingExpense({
+                                  payerMemberId: event.target.value,
+                                })
+                              }
+                              className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                            >
+                              <option value="">
+                                {t("planner.field.choosePayer")}
+                              </option>
+                              {activeMembers().map((member) => (
+                                <option key={member.id} value={member.id}>
+                                  {member.displayName}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="space-y-1">
+                            <span className="text-xs font-bold text-stone-700">
+                              {t("planner.field.mode")}
+                            </span>
+                            <select
+                              value={pendingExpense.accountingMode}
+                              onChange={(event) =>
+                                updatePendingExpense({
+                                  accountingMode: event.target
+                                    .value as LedgerAccountingMode,
+                                })
+                              }
+                              className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
+                            >
+                              <option value="shared">{t("ledger.shared")}</option>
+                              <option value="stats_only">
+                                {t("ledger.statsOnly")}
+                              </option>
+                            </select>
+                          </label>
+                        </div>
+                        <div className="mt-3 space-y-2">
+                          <p className="text-xs font-bold text-stone-700">
+                            {pendingExpense.accountingMode === "shared"
+                              ? t("planner.expense.splitWith")
+                              : t("planner.expense.countFor")}
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {activeMembers().map((member) => {
+                              const selected =
+                                pendingExpense.participantMemberIds.includes(
+                                  member.id,
+                                );
+                              return (
+                                <button
+                                  key={member.id}
+                                  type="button"
+                                  onClick={() => toggleExpenseParticipant(member.id)}
+                                  className={`rounded-full px-3 py-1.5 text-xs font-bold ${
+                                    selected
+                                      ? "bg-emerald-700 text-white"
+                                      : "bg-white text-stone-600"
+                                  }`}
+                                >
+                                  {member.displayName}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {pendingExpense.accountingMode === "stats_only" ? (
+                            <p className="text-xs leading-5 text-stone-500">
+                              {t("planner.expense.statsOnlyNote")}
+                            </p>
+                          ) : null}
+                        </div>
                         <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                           <p className="text-xs font-semibold text-amber-900">
                             {t("planner.expense.linked")}
@@ -3419,7 +3511,10 @@ export function PlannerDayCard({
                             disabled={
                               savingExpenseId === pendingExpense.itemId ||
                               !pendingExpense.amount ||
-                              !pendingExpense.exchangeRate
+                              !pendingExpense.exchangeRate ||
+                              !pendingExpense.payerMemberId ||
+                              (pendingExpense.accountingMode === "shared" &&
+                                pendingExpense.participantMemberIds.length === 0)
                             }
                             className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-bold text-white disabled:bg-stone-300"
                           >

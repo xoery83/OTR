@@ -46,6 +46,7 @@ import { getPlannerV2, type PlannerV2Day } from "@/lib/supabase/planner-v2";
 import { requestVoiceTranscription } from "@/lib/supabase/media-assets";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import { getTripsForCurrentUser } from "@/lib/supabase/trips";
+import { startPhotoUploadBatch } from "@/lib/uploads/photo-upload-manager";
 import type { ItineraryReservation, JourneyMember, Trip } from "@/types";
 
 type CaptureOpenOptions = {
@@ -119,6 +120,9 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     null,
   );
   const [isPhotoPreparing, setIsPhotoPreparing] = useState(false);
+  const [singlePhotoProgress, setSinglePhotoProgress] = useState<number | null>(
+    null,
+  );
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isDetectingIntent, setIsDetectingIntent] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -156,6 +160,27 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     }),
     [trips],
   );
+  const isDayPlannerAdd = engineOptions.entryPoint === "day_planner_add";
+  const lockedDayDate =
+    typeof engineOptions.lockedContext?.dayDate === "string"
+      ? engineOptions.lockedContext.dayDate
+      : "";
+  const captureTitle = isDayPlannerAdd
+    ? "希望在当天的行程中增加什么？"
+    : "What happened?";
+  const captureIntro = isDayPlannerAdd
+    ? "告诉我时间、地点和要做的事，我会先整理成当天行程，确认后再添加。"
+    : "直接告诉我发生了什么。我会一步步补齐信息，确认后再写入 Journey。";
+  const capturePlaceholder = isDayPlannerAdd
+    ? "例如：18:00 从酒店出发去第一个景点"
+    : "继续告诉我更多细节...";
+  const captureContextLine = isDayPlannerAdd
+    ? `${selectedTrip?.name || "Choose a journey"} · 当天行程${
+        lockedDayDate ? ` · ${lockedDayDate}` : ""
+      }`
+    : `${selectedTrip?.name || "Choose a journey"}${
+        sessionId ? ` · session ${sessionId.slice(0, 8)}` : ""
+      }`;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -361,14 +386,65 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
   }
 
   async function handlePhotoChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files ?? []);
     event.target.value = "";
-    if (!file) return;
+    if (files.length === 0) return;
+    if (!selectedTripId) {
+      setError("Choose a journey first.");
+      return;
+    }
 
     setError(null);
     setIsPhotoPreparing(true);
 
     try {
+      if (files.length > 1) {
+        if (compressedImage?.previewUrl) {
+          URL.revokeObjectURL(compressedImage.previewUrl);
+        }
+        setPhotoFileName("");
+        setOriginalPhotoFile(null);
+        setCompressedImage(null);
+        const lockedContext = engineOptions.lockedContext ?? {};
+        const dayId =
+          typeof lockedContext.dayId === "string"
+            ? lockedContext.dayId
+            : typeof lockedContext.tripDayId === "string"
+              ? lockedContext.tripDayId
+              : null;
+        const plannerItemId =
+          typeof lockedContext.plannerItemId === "string"
+            ? lockedContext.plannerItemId
+            : typeof lockedContext.itineraryEventId === "string"
+              ? lockedContext.itineraryEventId
+              : typeof lockedContext.itineraryReservationId === "string"
+                ? lockedContext.itineraryReservationId
+                : null;
+
+        await startPhotoUploadBatch({
+          journeyId: selectedTripId,
+          dayId,
+          plannerItemId,
+          triggeredBy: engineOptions.entryPoint ?? "capture",
+          files,
+        });
+        setMessages((current) => [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            role: "user",
+            text: `Uploaded ${files.length} photos`,
+          },
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            text: `已开始后台上传 ${files.length} 张照片。你可以关闭 Capture 或切换页面，上传会继续进行。`,
+          },
+        ]);
+        return;
+      }
+
+      const file = files[0];
       const compressed = await compressImageFile(file);
       if (compressedImage?.previewUrl) {
         URL.revokeObjectURL(compressedImage.previewUrl);
@@ -1422,7 +1498,11 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
           input: trimmedText,
           state: resolverStateFromSession(),
         });
-        if (!localResolution.allowLLM) {
+        const localIntentMatchesLock =
+          !engineOptions.intentLock ||
+          localResolution.allowLLM ||
+          intentKeyFromResolution(localResolution) === engineOptions.intentLock;
+        if (!localResolution.allowLLM && localIntentMatchesLock) {
           await applyLocalResolution(trimmedText, localResolution);
           return;
         }
@@ -1482,6 +1562,15 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
 
     setIsSubmitting(true);
     setError(null);
+    let progressTimer: number | null = null;
+    if (compressedImage) {
+      setSinglePhotoProgress(8);
+      progressTimer = window.setInterval(() => {
+        setSinglePhotoProgress((current) =>
+          current === null ? 8 : Math.min(92, current + 12),
+        );
+      }, 450);
+    }
 
     try {
       const selectedIntent = resultOverride ?? intentResult;
@@ -1504,6 +1593,9 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         originalPhotoFile,
         photoFileName,
       });
+      if (compressedImage) {
+        setSinglePhotoProgress(100);
+      }
       setMessages((current) => [
         ...current,
         {
@@ -1532,6 +1624,8 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     } catch (submitError) {
       setError(getErrorMessage(submitError, "Could not complete capture."));
     } finally {
+      if (progressTimer !== null) window.clearInterval(progressTimer);
+      window.setTimeout(() => setSinglePhotoProgress(null), 600);
       setIsSubmitting(false);
     }
   }
@@ -1608,11 +1702,10 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
                   Capture
                 </p>
                 <h2 className="mt-1 text-2xl font-semibold text-stone-950">
-                  What happened?
+                  {captureTitle}
                 </h2>
                 <p className="mt-1 text-sm text-stone-500">
-                  {selectedTrip?.name || "Choose a journey"}
-                  {sessionId ? ` · session ${sessionId.slice(0, 8)}` : ""}
+                  {captureContextLine}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -1666,7 +1759,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
             >
               {messages.length === 0 ? (
                 <div className="rounded-3xl bg-white p-4 text-sm leading-6 text-stone-600 shadow-sm">
-                  直接告诉我发生了什么。我会一步步补齐信息，确认后再写入 Journey。
+                  {captureIntro}
                 </div>
               ) : (
                 <CaptureMessageList
@@ -1745,12 +1838,27 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
                       <span>{compressedImage.width} x {compressedImage.height}</span>
                       <span>{Math.round(compressedImage.blob.size / 1024)} KB</span>
                     </div>
+                    {singlePhotoProgress !== null ? (
+                      <div className="border-t border-stone-200 bg-white px-2 py-2">
+                        <div className="flex items-center justify-between text-xs font-bold text-emerald-800">
+                          <span>Uploading photo</span>
+                          <span>{singlePhotoProgress}%</span>
+                        </div>
+                        <div className="mt-2 h-2 overflow-hidden rounded-full bg-stone-100">
+                          <div
+                            className="h-full rounded-full bg-emerald-700 transition-all"
+                            style={{ width: `${singlePhotoProgress}%` }}
+                          />
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
                 <input
                   ref={photoInputRef}
                   type="file"
                   accept="image/*"
+                  multiple
                   onChange={handlePhotoChange}
                   className="sr-only"
                 />
@@ -1768,7 +1876,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
                     value={text}
                     onChange={(event) => setText(event.target.value)}
                     rows={1}
-                    placeholder="继续告诉我更多细节..."
+                    placeholder={capturePlaceholder}
                     className="min-h-11 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-4 py-3 text-sm leading-5 text-stone-950 placeholder:text-stone-500 outline-none focus:border-emerald-600"
                   />
                   <button

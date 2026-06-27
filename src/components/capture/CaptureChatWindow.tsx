@@ -55,7 +55,7 @@ function visibleActionFacts(action: CaptureActionGraphNode) {
 
 function actionBadge(action: CaptureActionGraphNode) {
   if (action.payload?.queryAnswer) return "Answer";
-  if (action.type === "hotel_stay") return "Add to Planner";
+  if (action.intent === "planner_update") return "Add to Planner";
   if (action.intent === "expense") return "Record Expense";
   if (action.intent === "navigation") return "Open Map";
   if (action.intent === "assistant") return "Assistant";

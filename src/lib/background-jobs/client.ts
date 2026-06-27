@@ -138,29 +138,49 @@ export async function enqueueMediaProcessingJobs(input: {
   tripId: string;
   mediaAssetId: string;
   title?: string;
+  placeholder?: boolean;
+  currentStep?: string | null;
 }) {
-  const [indexJob, faceJob] = await Promise.all([
-    createBackgroundJob({
+  const payload = {
+    tripId: input.tripId,
+    mediaAssetId: input.mediaAssetId,
+    ...(input.placeholder
+      ? {
+          placeholder: true,
+          pendingImplementation: true,
+        }
+      : {}),
+  };
+  const currentStep =
+    input.currentStep ??
+    (input.placeholder ? "Queued after upload" : "Queued");
+
+  const jobsToCreate: CreateBackgroundJobInput[] = [
+    {
       journeyId: input.tripId,
       jobType: "image_indexing",
       title: input.title || "Image indexing",
-      currentStep: "Queued",
-      payload: {
-        tripId: input.tripId,
-        mediaAssetId: input.mediaAssetId,
-      },
-    }),
-    createBackgroundJob({
+      currentStep,
+      payload,
+    },
+    {
       journeyId: input.tripId,
       jobType: "face_detection",
       title: "Face detection",
-      currentStep: "Queued",
-      payload: {
-        tripId: input.tripId,
-        mediaAssetId: input.mediaAssetId,
-      },
-    }),
-  ]);
+      currentStep,
+      payload,
+    },
+  ];
 
-  return [indexJob, faceJob];
+  if (input.placeholder) {
+    jobsToCreate.push({
+      journeyId: input.tripId,
+      jobType: "face_recognition",
+      title: "Face recognition",
+      currentStep,
+      payload,
+    });
+  }
+
+  return Promise.all(jobsToCreate.map((job) => createBackgroundJob(job)));
 }

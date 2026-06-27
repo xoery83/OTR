@@ -140,7 +140,7 @@ function textIncludesEither(left: string | null | undefined, right: string | nul
   return leftText.includes(rightText) || rightText.includes(leftText);
 }
 
-function stayTextMatches(expense: ParsedExpenseDraft, reservation: ItineraryReservation) {
+function reservationTextMatches(expense: ParsedExpenseDraft, reservation: ItineraryReservation) {
   return (
     textIncludesEither(expense.linked_stay_title, reservation.title) ||
     textIncludesEither(expense.linked_stay_location, reservation.locationName) ||
@@ -150,16 +150,50 @@ function stayTextMatches(expense: ParsedExpenseDraft, reservation: ItineraryRese
   );
 }
 
-function findLinkedStayReservation(
+function reservationTypesForExpense(expense: ParsedExpenseDraft): ItineraryReservationType[] {
+  if (expense.category === "hotel") return ["hotel"];
+  if (expense.category === "car") return ["car"];
+  if (expense.category === "flight") return ["flight"];
+  if (expense.category === "food") return ["restaurant"];
+  if (expense.category === "ticket") return ["tour"];
+  return ["hotel", "car", "flight", "ferry", "tour", "restaurant", "other"];
+}
+
+function reservationLinkLabels(expense: ParsedExpenseDraft) {
+  if (expense.category === "hotel") {
+    return {
+      label: "关联住宿",
+      range: "住宿范围",
+      missing: "未找到匹配住宿，导入后不会挂到住宿卡片",
+    };
+  }
+  if (expense.category === "car") {
+    return {
+      label: "关联租车",
+      range: "租车范围",
+      missing: "未找到匹配租车预订，导入后不会挂到租车卡片",
+    };
+  }
+  return {
+    label: "关联预订",
+    range: "预订范围",
+    missing: "未找到匹配预订，导入后不会挂到预订卡片",
+  };
+}
+
+function findLinkedReservation(
   expense: ParsedExpenseDraft,
   reservations: ItineraryReservation[],
 ) {
   const startDate = expense.linked_stay_start_date ?? expense.start_date;
   const endDate = expense.linked_stay_end_date ?? expense.end_date;
-  const hotels = reservations.filter((reservation) => reservation.reservationType === "hotel");
+  const candidateTypes = new Set(reservationTypesForExpense(expense));
+  const candidates = reservations.filter((reservation) =>
+    candidateTypes.has(reservation.reservationType),
+  );
 
   return (
-    hotels.find((reservation) => {
+    candidates.find((reservation) => {
       const reservationStart = dateValue(reservation.startsAt);
       const reservationEnd = dateValue(reservation.endsAt);
       const dateMatches =
@@ -167,10 +201,10 @@ function findLinkedStayReservation(
         (!endDate || reservationEnd === endDate);
       if (!dateMatches) return false;
 
-      return stayTextMatches(expense, reservation);
+      return reservationTextMatches(expense, reservation);
     }) ??
-    hotels.find((reservation) => stayTextMatches(expense, reservation)) ??
-    hotels.find((reservation) => {
+    candidates.find((reservation) => reservationTextMatches(expense, reservation)) ??
+    candidates.find((reservation) => {
       const reservationStart = dateValue(reservation.startsAt);
       const reservationEnd = dateValue(reservation.endsAt);
       return (
@@ -578,7 +612,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
             expense.original_currency,
             ledgerBaseCurrency,
           );
-          const linkedReservation = findLinkedStayReservation(
+          const linkedReservation = findLinkedReservation(
             expense,
             availableReservations,
           );
@@ -1126,7 +1160,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
             </h2>
           </div>
           {expenseDrafts.map((expense) => {
-            const linkedReservation = findLinkedStayReservation(expense, [
+            const linkedReservation = findLinkedReservation(expense, [
               ...existingReservations,
               ...reservationDrafts.map((reservation) => ({
                 id: reservation.clientId,
@@ -1150,6 +1184,9 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                 updatedAt: "",
               } satisfies ItineraryReservation)),
             ]);
+            const linkLabels = reservationLinkLabels(expense);
+            const linkStartDate = expense.linked_stay_start_date ?? expense.start_date;
+            const linkEndDate = expense.linked_stay_end_date ?? expense.end_date;
 
             return (
               <article
@@ -1238,17 +1275,16 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
 
                 <div className="rounded-xl bg-stone-50 p-3 text-sm leading-6 text-stone-700">
                   <p>
-                    关联住宿：
+                    {linkLabels.label}：
                     <span className="font-bold text-emerald-800">
                       {linkedReservation
                         ? linkedReservation.title
-                        : "未找到匹配住宿，导入后不会挂到住宿卡片"}
+                        : linkLabels.missing}
                     </span>
                   </p>
-                  {expense.linked_stay_start_date || expense.linked_stay_end_date ? (
+                  {linkStartDate || linkEndDate ? (
                     <p>
-                      住宿范围：{expense.linked_stay_start_date ?? "?"} →{" "}
-                      {expense.linked_stay_end_date ?? "?"}
+                      {linkLabels.range}：{linkStartDate ?? "?"} → {linkEndDate ?? "?"}
                     </p>
                   ) : null}
                   {expense.address_text ? <p>地址：{expense.address_text}</p> : null}

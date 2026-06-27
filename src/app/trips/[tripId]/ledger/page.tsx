@@ -178,6 +178,41 @@ function buildExpenseSections(entries: LedgerEntry[], sortMode: ExpenseSortMode)
   }));
 }
 
+function normalizeSearchText(value: unknown) {
+  return String(value ?? "").trim().toLocaleLowerCase();
+}
+
+function entryMatchesSearch(
+  entry: LedgerEntry,
+  query: string,
+  categoryLabel: string,
+) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) return true;
+
+  const searchableText = [
+    entry.title,
+    entry.description,
+    entry.addressText,
+    entry.expenseDate,
+    entry.startDate,
+    entry.endDate,
+    entry.originalCurrency,
+    entry.baseCurrency,
+    entry.originalAmount,
+    entry.baseAmount,
+    entry.accountingMode,
+    categoryLabel,
+    entry.payer?.displayName,
+    ...entry.participants.map((participant) => participant.member?.displayName),
+  ]
+    .map(normalizeSearchText)
+    .filter(Boolean)
+    .join(" ");
+
+  return searchableText.includes(normalizedQuery);
+}
+
 function addDays(date: Date, days: number) {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
@@ -811,6 +846,7 @@ function LedgerContent() {
     useState<ExpenseCategoryFilter>("all");
   const [expenseSortMode, setExpenseSortMode] =
     useState<ExpenseSortMode>("latest");
+  const [expenseSearchQuery, setExpenseSearchQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [currencyError, setCurrencyError] = useState<string | null>(null);
@@ -876,12 +912,19 @@ function LedgerContent() {
   }, [ledgerData?.entries]);
   const filteredExpenseEntries = useMemo(
     () =>
-      (ledgerData?.entries ?? []).filter(
-        (entry) =>
+      (ledgerData?.entries ?? []).filter((entry) => {
+        const matchesCategory =
           expenseCategoryFilter === "all" ||
-          entry.category === expenseCategoryFilter,
-      ),
-    [expenseCategoryFilter, ledgerData?.entries],
+          entry.category === expenseCategoryFilter;
+        const matchesSearch = entryMatchesSearch(
+          entry,
+          expenseSearchQuery,
+          t(categoryLabelKeys[entry.category]),
+        );
+
+        return matchesCategory && matchesSearch;
+      }),
+    [expenseCategoryFilter, expenseSearchQuery, ledgerData?.entries, t],
   );
   const expenseSections = useMemo(
     () => buildExpenseSections(filteredExpenseEntries, expenseSortMode),
@@ -933,6 +976,15 @@ function LedgerContent() {
     () => buildDailyLedgerReports(ledgerData?.entries ?? [], locale),
     [ledgerData?.entries, locale],
   );
+  const trimmedExpenseSearchQuery = expenseSearchQuery.trim();
+
+  function updateExpenseSearchQuery(value: string) {
+    setExpenseSearchQuery(value);
+    setActiveView("expenses");
+    if (value.trim()) {
+      setExpenseCategoryFilter("all");
+    }
+  }
 
   function updateForm(patch: Partial<LedgerFormState>) {
     setForm((current) => (current ? { ...current, ...patch } : current));
@@ -1188,6 +1240,23 @@ function LedgerContent() {
             {currencyError}
           </p>
         ) : null}
+        <div className="mt-4 flex flex-col gap-2 rounded-2xl bg-stone-50 p-2 sm:flex-row sm:items-center">
+          <input
+            value={expenseSearchQuery}
+            onChange={(event) => updateExpenseSearchQuery(event.target.value)}
+            placeholder={t("ledger.search.placeholder")}
+            className="min-h-11 flex-1 rounded-xl border border-stone-200 bg-white px-4 py-2 text-sm font-semibold text-stone-950 outline-none placeholder:text-stone-400 focus:border-emerald-300"
+          />
+          {trimmedExpenseSearchQuery ? (
+            <button
+              type="button"
+              onClick={() => updateExpenseSearchQuery("")}
+              className="rounded-full bg-white px-4 py-2 text-xs font-bold text-stone-600 shadow-sm"
+            >
+              {t("ledger.search.clear")}
+            </button>
+          ) : null}
+        </div>
       </section>
 
       <section className="-mx-1 overflow-x-auto px-1">
@@ -1577,10 +1646,16 @@ function LedgerContent() {
         <section className="space-y-3">
           <div>
             <h2 className="text-lg font-semibold text-stone-950">
-              {t("ledger.expensesByDate")}
+              {trimmedExpenseSearchQuery
+                ? t("ledger.search.resultsTitle")
+                : t("ledger.expensesByDate")}
             </h2>
             <p className="mt-1 text-sm text-stone-500">
-              {t("ledger.expensesByDateDescription")}
+              {trimmedExpenseSearchQuery
+                ? t("ledger.search.resultsDescription", {
+                    keyword: trimmedExpenseSearchQuery,
+                  })
+                : t("ledger.expensesByDateDescription")}
             </p>
           </div>
           <div className="overflow-x-auto rounded-3xl bg-white p-2 shadow-sm">
@@ -1670,7 +1745,9 @@ function LedgerContent() {
             </div>
           ) : filteredExpenseEntries.length === 0 ? (
             <div className="rounded-3xl border border-dashed border-stone-200 bg-white p-5 text-stone-500">
-              {t("ledger.empty.filteredExpenses")}
+              {trimmedExpenseSearchQuery
+                ? t("ledger.empty.searchExpenses")
+                : t("ledger.empty.filteredExpenses")}
             </div>
           ) : (
             expenseSections.map(({ date, entries }) => (

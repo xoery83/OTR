@@ -15,6 +15,7 @@ import {
   requestFaceDetection,
   requestPhotoIndexing,
 } from "@/lib/supabase/media-assets";
+import { retryFailedPhotoUploadBatch } from "@/lib/uploads/photo-upload-manager";
 
 function payloadString(job: BackgroundJob, key: string) {
   const value = job.payload[key];
@@ -31,6 +32,13 @@ function activeJob(job: BackgroundJob) {
 
 function activeBatch(batch: BackgroundJobBatch) {
   return isActiveStatus(batch.status);
+}
+
+function isPlaceholderProcessingJob(job: BackgroundJob) {
+  return (
+    Boolean(job.payload.placeholder) &&
+    ["image_indexing", "face_detection", "face_recognition"].includes(job.jobType)
+  );
 }
 
 function statusLabel(status: BackgroundJobStatus) {
@@ -52,6 +60,8 @@ function batchProgress(batch: BackgroundJobBatch) {
 }
 
 async function runJob(job: BackgroundJob) {
+  if (isPlaceholderProcessingJob(job)) return;
+
   const tripId = payloadString(job, "tripId");
   const mediaAssetId = payloadString(job, "mediaAssetId");
   if (!tripId || !mediaAssetId) {
@@ -110,6 +120,8 @@ export function ActivityCenter() {
   const [batches, setBatches] = useState<BackgroundJobBatch[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
   const runningJobIds = useRef(new Set<string>());
   const visibleBatches = useMemo(
     () =>
@@ -120,15 +132,20 @@ export function ActivityCenter() {
   );
   const visibleJobs = useMemo(
     () =>
-      jobs.filter((job) => activeJob(job) || job.status === "failed").slice(0, 8),
+      jobs
+        .filter((job) => !isPlaceholderProcessingJob(job))
+        .filter((job) => activeJob(job) || job.status === "failed")
+        .slice(0, 8),
     [jobs],
   );
-  const activeCount = jobs.filter(activeJob).length + batches.filter(activeBatch).length;
+  const countableJobs = jobs.filter((job) => !isPlaceholderProcessingJob(job));
+  const activeCount =
+    countableJobs.filter(activeJob).length + batches.filter(activeBatch).length;
   const failedCount =
-    jobs.filter((job) => job.status === "failed").length +
+    countableJobs.filter((job) => job.status === "failed").length +
     batches.filter((batch) => batch.status === "failed").length;
   const attentionCount =
-    jobs.filter((job) => job.status === "waiting_for_user").length +
+    countableJobs.filter((job) => job.status === "waiting_for_user").length +
     batches.filter((batch) => batch.status === "waiting_for_user").length;
 
   async function refreshJobs() {
@@ -152,11 +169,34 @@ export function ActivityCenter() {
     const initial = window.setTimeout(() => void refreshJobs(), 0);
     const timer = window.setInterval(() => void refreshJobs(), 6000);
     const onCompleted = () => void refreshJobs();
+    const onBackgroundChanged = () => void refreshJobs();
+    const onPhotoUploadCompleted = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        totalFiles: number;
+        uploadedFiles: number;
+        failedFiles: number;
+      }>).detail;
+      if (!detail) return;
+      setNotice(
+        detail.failedFiles > 0
+          ? `${detail.uploadedFiles} photos uploaded, ${detail.failedFiles} failed`
+          : `${detail.uploadedFiles} photos uploaded. Organizing photos in background...`,
+      );
+      window.setTimeout(() => setNotice(null), 8000);
+      void refreshJobs();
+    };
     window.addEventListener("otr:capture-completed", onCompleted);
+    window.addEventListener("otr:background-jobs-changed", onBackgroundChanged);
+    window.addEventListener("otr:photo-upload-completed", onPhotoUploadCompleted);
     return () => {
       window.clearTimeout(initial);
       window.clearInterval(timer);
       window.removeEventListener("otr:capture-completed", onCompleted);
+      window.removeEventListener("otr:background-jobs-changed", onBackgroundChanged);
+      window.removeEventListener(
+        "otr:photo-upload-completed",
+        onPhotoUploadCompleted,
+      );
     };
   }, []);
 
@@ -165,6 +205,7 @@ export function ActivityCenter() {
       (job) =>
         job.status === "queued" &&
         !runningJobIds.current.has(job.id) &&
+        !isPlaceholderProcessingJob(job) &&
         ["image_indexing", "face_detection", "face_recognition"].includes(
           job.jobType,
         ),
@@ -188,12 +229,18 @@ export function ActivityCenter() {
       });
   }, [jobs]);
 
-  if (activeCount === 0 && failedCount === 0 && !isOpen) {
+  if (activeCount === 0 && failedCount === 0 && !notice && !isOpen) {
     return null;
   }
 
   return (
     <div className="fixed bottom-24 right-3 z-[2147482500] md:bottom-5 md:right-5">
+      {notice && !isOpen ? (
+        <div className="mb-3 w-[min(360px,calc(100vw-24px))] rounded-3xl border border-emerald-100 bg-white p-4 text-sm font-bold text-emerald-900 shadow-2xl">
+          {notice}
+        </div>
+      ) : null}
+
       {isOpen ? (
         <section className="mb-3 w-[min(360px,calc(100vw-24px))] rounded-3xl border border-stone-200 bg-white p-4 shadow-2xl">
           <div className="flex items-start justify-between gap-3">
@@ -257,6 +304,31 @@ export function ActivityCenter() {
                           style={{ width: `${progress}%` }}
                         />
                       </div>
+                      {batch.failedItems > 0 && batch.batchType === "photo_upload" ? (
+                        <button
+                          type="button"
+                          disabled={retryingBatchId === batch.id}
+                          onClick={async () => {
+                            setRetryingBatchId(batch.id);
+                            try {
+                              await retryFailedPhotoUploadBatch(batch.id);
+                            } catch (error) {
+                              setNotice(
+                                error instanceof Error
+                                  ? error.message
+                                  : "Could not retry failed uploads.",
+                              );
+                            } finally {
+                              setRetryingBatchId(null);
+                            }
+                          }}
+                          className="mt-3 rounded-full bg-white px-3 py-2 text-xs font-black text-emerald-800 shadow-sm disabled:text-stone-400"
+                        >
+                          {retryingBatchId === batch.id
+                            ? "Retrying..."
+                            : "Retry failed uploads"}
+                        </button>
+                      ) : null}
                     </article>
                   );
                 })}

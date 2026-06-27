@@ -10,11 +10,16 @@ export type CreateMediaAssetInput = {
   id: string;
   tripId: string;
   userId: string;
-  memoryEntryId: string;
+  memoryEntryId?: string | null;
   compressedFilePath: string;
   compressedFileSize: number;
   width: number;
   height: number;
+  originalFileSize?: number | null;
+  mimeType?: string | null;
+  takenAt?: string | null;
+  exifJson?: Record<string, unknown>;
+  aiMetadata?: Record<string, unknown>;
 };
 
 type MediaAssetRow = {
@@ -404,19 +409,23 @@ export async function createImageMediaAsset(input: CreateMediaAssetInput) {
       id: input.id,
       trip_id: input.tripId,
       user_id: input.userId,
-      memory_entry_id: input.memoryEntryId,
+      memory_entry_id: input.memoryEntryId ?? null,
       asset_type: "image",
       storage_provider: "supabase_legacy",
       storage_bucket: "trip-media",
       original_file_path: null,
       compressed_file_path: input.compressedFilePath,
+      original_file_size: input.originalFileSize ?? null,
       compressed_file_size: input.compressedFileSize,
-      mime_type: "image/jpeg",
+      mime_type: input.mimeType || "image/jpeg",
       width: input.width,
       height: input.height,
       storage_tier: "standard",
       is_original_preserved: false,
+      taken_at: input.takenAt ?? null,
+      exif_json: input.exifJson ?? {},
       ai_status: "pending",
+      ai_metadata: input.aiMetadata ?? {},
     });
 
   if (error) {
@@ -427,15 +436,15 @@ export async function createImageMediaAsset(input: CreateMediaAssetInput) {
     id: input.id,
     trip_id: input.tripId,
     user_id: input.userId,
-    memory_entry_id: input.memoryEntryId,
+    memory_entry_id: input.memoryEntryId ?? null,
     asset_type: "image",
     storage_bucket: "trip-media",
     original_file_path: null,
     compressed_file_path: input.compressedFilePath,
     thumbnail_file_path: null,
-    original_file_size: null,
+    original_file_size: input.originalFileSize ?? null,
     compressed_file_size: input.compressedFileSize,
-    mime_type: "image/jpeg",
+    mime_type: input.mimeType || "image/jpeg",
     width: input.width,
     height: input.height,
     storage_tier: "standard",
@@ -447,14 +456,14 @@ export async function createImageMediaAsset(input: CreateMediaAssetInput) {
     provider_web_url: null,
     provider_thumbnail_url: null,
     provider_original_reference: null,
-    taken_at: null,
+    taken_at: input.takenAt ?? null,
     gps_latitude: null,
     gps_longitude: null,
     camera_model: null,
     orientation: null,
-    exif_json: {},
+    exif_json: input.exifJson ?? {},
     ai_status: "pending",
-    ai_metadata: {},
+    ai_metadata: input.aiMetadata ?? {},
     ocr_text: null,
     duplicate_score: null,
     blur_score: null,

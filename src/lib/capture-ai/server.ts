@@ -742,6 +742,253 @@ function parseAccommodationLocation(text: string, skyTowerMatch: boolean) {
   };
 }
 
+function parsePlannerTime(text: string) {
+  const explicit = text.match(/\b([01]?\d|2[0-3])[:：]([0-5]\d)\b/);
+  if (explicit) {
+    return {
+      value: `${String(Number(explicit[1])).padStart(2, "0")}:${explicit[2]}`,
+      label: explicit[0].replace("：", ":"),
+      evidence: explicit[0],
+    };
+  }
+
+  const slots: { pattern: RegExp; value: string; label: string }[] = [
+    { pattern: /早上|上午|morning/i, value: "09:00", label: "上午" },
+    { pattern: /中午|午餐|lunch/i, value: "12:00", label: "中午" },
+    { pattern: /下午|afternoon/i, value: "14:00", label: "下午" },
+    { pattern: /晚上|今晚|晚餐|evening|dinner|night/i, value: "18:00", label: "晚上" },
+  ];
+  const slot = slots.find((item) => item.pattern.test(text));
+  if (!slot) return null;
+
+  return {
+    value: slot.value,
+    label: slot.label,
+    evidence: text.match(slot.pattern)?.[0],
+  };
+}
+
+function cleanPlannerLocation(raw: string) {
+  return raw
+    .replace(/^(?:city|市区|附近|那个|这个)\s*(?:的|里|附近)?/i, "")
+    .replace(/(?:吃饭|用餐|午餐|晚餐|早餐|了|。|，|,|\.)+$/g, "")
+    .trim();
+}
+
+function parsePlannerDestination(text: string) {
+  const patterns = [
+    /(?:去|到|前往|在)\s*([^，。,；;]+?)(?:吃饭|用餐|午餐|晚餐|早餐|集合|游览|参观|办理|取车|采购|$)/i,
+    /(?:add|go to|visit|eat at|lunch at|dinner at)\s+([^.,;]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const raw = match?.[1]?.trim();
+    if (!match || !raw) continue;
+    const cleaned = cleanPlannerLocation(raw);
+    if (cleaned) {
+      const districtMatch = raw.match(/^(city|市区|[^的]{1,12})的(.+)$/i);
+      return {
+        value: districtMatch
+          ? `${cleanPlannerLocation(districtMatch[2])}（${districtMatch[1]}）`
+          : cleaned,
+        payloadValue: districtMatch
+          ? `${cleanPlannerLocation(districtMatch[2])}, ${districtMatch[1]}`
+          : cleaned,
+        evidence: match[0],
+      };
+    }
+  }
+
+  return {
+    value: text.slice(0, 48),
+    payloadValue: "",
+    evidence: undefined,
+  };
+}
+
+function plannerEventKind(text: string) {
+  if (/吃饭|用餐|餐厅|午餐|晚餐|早餐|restaurant|lunch|dinner|breakfast/i.test(text)) {
+    return {
+      type: "meal",
+      icon: "🍴",
+      label: /晚餐|dinner/i.test(text)
+        ? "晚餐"
+        : /早餐|breakfast/i.test(text)
+          ? "早餐"
+          : /中午|午餐|lunch/i.test(text)
+            ? "午餐"
+            : "用餐",
+    };
+  }
+  if (/取车|租车|car rental/i.test(text)) {
+    return { type: "car_rental", icon: "🚗", label: "租车" };
+  }
+  if (/机场|航班|flight|airport|抵达|出发/i.test(text)) {
+    return { type: "transport", icon: "✈️", label: "交通" };
+  }
+  return { type: "activity", icon: "📍", label: "行程" };
+}
+
+function localPlannerUpdateDetection(input: {
+  text: string;
+  preparse: CaptureLocalPreparseResult;
+  confidence: number;
+  engineOptions?: CaptureEngineOptions;
+  reason: string;
+}): Partial<CaptureIntentDetection> {
+  const { text, preparse, confidence, engineOptions, reason } = input;
+  const explicitDate = parseExplicitMonthDay(text);
+  const lockedDayDate =
+    typeof engineOptions?.lockedContext?.dayDate === "string"
+      ? engineOptions.lockedContext.dayDate
+      : null;
+  const time = parsePlannerTime(text);
+  const destination = parsePlannerDestination(text);
+  const kind = plannerEventKind(text);
+  const dateLabel = explicitDate?.label ?? (lockedDayDate ? "当天" : "");
+  const title =
+    kind.type === "meal" && destination.payloadValue
+      ? `${kind.label}：${destination.value}`
+      : destination.payloadValue
+        ? destination.value
+        : text.slice(0, 48);
+  const summary = [
+    "新增行程",
+    dateLabel,
+    time?.label,
+    kind.label,
+    destination.payloadValue ? destination.value : "",
+  ].filter(Boolean);
+
+  return {
+    intent: "planner_update",
+    confidence,
+    entities: {
+      preparse,
+      sourceText: text,
+      lockedContext: engineOptions?.lockedContext ?? {},
+      plannerItem: {
+        title,
+        type: kind.type,
+        date: explicitDate?.value ?? lockedDayDate,
+        time: time?.value ?? null,
+        locationName: destination.payloadValue || null,
+      },
+    },
+    missingInformation: [],
+    clarificationQuestions: [],
+    reason,
+    proposedAction: {
+      type: "planner_update",
+      label: "Add to Planner",
+      description: summary.join("，") || "新增行程",
+    },
+    actionGraph: {
+      nodes: [
+        {
+          id: "planner_item",
+          intent: "planner_update",
+          type: "planner_item",
+          icon: kind.icon,
+          title: "新增行程",
+          summary: summary.join("，") || title,
+          details: [
+            {
+              label: "类型",
+              value: kind.label,
+              source: "explicit",
+              evidence: kind.label,
+            },
+            ...(dateLabel
+              ? [
+                  {
+                    label: "日期",
+                    value: dateLabel,
+                    source: explicitDate ? ("explicit" as const) : ("default" as const),
+                    evidence: explicitDate?.evidence,
+                  },
+                ]
+              : []),
+            ...(time
+              ? [
+                  {
+                    label: "时间",
+                    value: time.label,
+                    source: "explicit" as const,
+                    evidence: time.evidence,
+                  },
+                ]
+              : []),
+            ...(destination.payloadValue
+              ? [
+                  {
+                    label: "地点",
+                    value: destination.value,
+                    source: "explicit" as const,
+                    evidence: destination.evidence,
+                  },
+                ]
+              : []),
+          ],
+          facts: [
+            {
+              key: "itemType",
+              label: "类型",
+              value: kind.label,
+              source: "explicit",
+              evidence: kind.label,
+            },
+            ...(dateLabel
+              ? [
+                  {
+                    key: "date",
+                    label: "日期",
+                    value: dateLabel,
+                    source: explicitDate ? ("explicit" as const) : ("default" as const),
+                    evidence: explicitDate?.evidence,
+                  },
+                ]
+              : []),
+            ...(time
+              ? [
+                  {
+                    key: "time",
+                    label: "时间",
+                    value: time.label,
+                    source: "explicit" as const,
+                    evidence: time.evidence,
+                  },
+                ]
+              : []),
+            ...(destination.payloadValue
+              ? [
+                  {
+                    key: "location",
+                    label: "地点",
+                    value: destination.value,
+                    source: "explicit" as const,
+                    evidence: destination.evidence,
+                  },
+                ]
+              : []),
+          ],
+          mandatoryMissing: [],
+          optionalMissing: ["participants"],
+          payload: {
+            title,
+            itemType: kind.type,
+            date: explicitDate?.value ?? lockedDayDate,
+            time: time?.value ?? null,
+            locationName: destination.payloadValue || null,
+          },
+        },
+      ],
+      relations: [],
+    },
+  };
+}
+
 function localAccommodationPlannerDetection(input: {
   text: string;
   preparse: CaptureLocalPreparseResult;
@@ -943,25 +1190,15 @@ function localIntentEngine(
       });
     }
     if (lockedIntent === "planner_update" || (!hasExplicitExpense && !hasExplicitNavigation)) {
-      return {
-        intent: "planner_update",
+      return localPlannerUpdateDetection({
+        text,
+        preparse,
         confidence: lockedIntent === "planner_update" ? 0.98 : 0.9,
-        entities: {
-          preparse,
-          sourceText: text,
-          lockedContext: engineOptions?.lockedContext ?? {},
-        },
-        missingInformation: [],
-        clarificationQuestions: [],
+        engineOptions,
         reason: lockedIntent
           ? "Entry point locked this capture to Planner."
           : "Entry point biased this capture toward Planner.",
-        proposedAction: {
-          type: "planner_update",
-          label: "Update Planner",
-          description: "Create or update a planner item using the locked context.",
-        },
-      };
+      });
     }
   }
 
@@ -1206,23 +1443,31 @@ function localIntentEngine(
   }
 
   if (/tomorrow|tonight|leave|arrive|cancel|move|add a stop|schedule|plan|明天|今晚|出发|抵达|取消|改到|挪到|添加|加一个|日程|集合/.test(lower)) {
-    return {
-      intent: "planner_update",
+    if (/change|move|cancel|改|挪|取消/.test(lower)) {
+      return {
+        intent: "planner_update",
+        confidence: 0.88,
+        entities: { preparse, sourceText: text },
+        missingInformation: ["targetPlannerItem"],
+        clarificationQuestions: [
+          { id: "targetPlannerItem", question: "Which plan would you like to modify?" },
+        ],
+        reason: "Detected planner create/update language.",
+        proposedAction: {
+          type: "planner_update",
+          label: "Update Planner",
+          description: "Review the planner change before saving.",
+        },
+      };
+    }
+
+    return localPlannerUpdateDetection({
+      text,
+      preparse,
       confidence: 0.88,
-      entities: { preparse, sourceText: text },
-      missingInformation: /change|move|cancel|改|挪|取消/.test(lower)
-        ? ["targetPlannerItem"]
-        : [],
-      clarificationQuestions: /change|move|cancel|改|挪|取消/.test(lower)
-        ? [{ id: "targetPlannerItem", question: "Which plan would you like to modify?" }]
-        : [],
-      reason: "Detected planner create/update language.",
-      proposedAction: {
-        type: "planner_update",
-        label: "Update Planner",
-        description: "Review the planner change before saving.",
-      },
-    };
+      engineOptions,
+      reason: "Detected planner create language.",
+    });
   }
 
   return {
