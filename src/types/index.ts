@@ -405,6 +405,7 @@ export type CreateItineraryEventInput = {
 export type UpdateItineraryEventInput = {
   id: string;
   tripId: string;
+  tripDayId?: string | null;
   title: string;
   description?: string | null;
   eventType: ItineraryEventType;
@@ -436,6 +437,7 @@ export type CreateItineraryReservationInput = {
 export type UpdateItineraryReservationInput = {
   id: string;
   tripId: string;
+  tripDayId?: string | null;
   reservationType: ItineraryReservationType;
   title: string;
   provider?: string | null;

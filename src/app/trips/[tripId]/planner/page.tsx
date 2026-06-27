@@ -16,7 +16,13 @@ import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import { getLedgerData } from "@/lib/supabase/ledger";
 import { getPlannerV2, type PlannerV2Data } from "@/lib/supabase/planner-v2";
 import { getTrip } from "@/lib/supabase/trips";
-import type { JourneyMember, LedgerEntry, Trip } from "@/types";
+import type {
+  ItineraryEvent,
+  ItineraryReservation,
+  JourneyMember,
+  LedgerEntry,
+  Trip,
+} from "@/types";
 
 async function loadPlannerData(tripId: string) {
   const [tripData, members] = await Promise.all([
@@ -40,6 +46,24 @@ function compactDate(value: string, locale: string) {
   if (value === "unscheduled") return locale === "zh-CN" ? "任意" : "Any";
   const date = new Date(`${value}T00:00:00`);
   return `${date.getMonth() + 1}.${date.getDate()}`;
+}
+
+function longDateLabel(value: string, locale: string) {
+  if (value === "unscheduled") return locale === "zh-CN" ? "任意日期" : "Any date";
+  return new Intl.DateTimeFormat(locale === "zh-CN" ? "zh-CN" : "en", {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(`${value}T00:00:00`));
+}
+
+function timeLabel(value: string | null | undefined, locale: string) {
+  if (!value) return locale === "zh-CN" ? "时间待定" : "Time TBD";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return locale === "zh-CN" ? "时间待定" : "Time TBD";
+  return date.toLocaleTimeString(locale === "zh-CN" ? "zh-CN" : "en", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function isOfficialTripDay(value: string, trip: Trip | null) {
@@ -102,12 +126,54 @@ function getQueryDayId(date: string | null, days: PlannerV2Data["days"]) {
   return days.find((day) => day.day.dayDate === date)?.day.id ?? null;
 }
 
+type PlannerSearchResult = {
+  id: string;
+  itemId: string;
+  dayId: string;
+  dayDate: string;
+  dayTag: string;
+  timeText: string;
+  title: string;
+  subtitle: string;
+  typeLabel: string;
+  searchableText: string;
+};
+
+function normalizeSearchText(value: unknown) {
+  return String(value ?? "").trim().toLocaleLowerCase();
+}
+
+function eventSearchText(event: ItineraryEvent) {
+  return [
+    event.title,
+    event.description,
+    event.eventType,
+    event.locationName,
+    event.bookingReference,
+    event.sourceText,
+    ...event.participants.map((participant) => participant.name),
+  ].join(" ");
+}
+
+function reservationSearchText(reservation: ItineraryReservation) {
+  return [
+    reservation.title,
+    reservation.provider,
+    reservation.reservationType,
+    reservation.locationName,
+    reservation.confirmationCode,
+    reservation.sourceText,
+    ...reservation.participants.map((participant) => participant.name),
+  ].join(" ");
+}
+
 function PlannerContent() {
   const params = useParams<{ tripId: string }>();
   const searchParams = useSearchParams();
   const tripId = params.tripId;
   const router = useRouter();
   const requestedDate = searchParams.get("date");
+  const requestedItemId = searchParams.get("item");
   const { locale, t } = useI18n();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [members, setMembers] = useState<JourneyMember[]>([]);
@@ -115,9 +181,14 @@ function PlannerContent() {
   const [ledgerBaseCurrency, setLedgerBaseCurrency] = useState("NZD");
   const [planner, setPlanner] = useState<PlannerV2Data>({ days: [] });
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
+  const [manualFocusedPlannerItemId, setManualFocusedPlannerItemId] = useState<
+    string | null
+  >(null);
+  const [plannerSearchQuery, setPlannerSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const dateStripRef = useRef<HTMLDivElement | null>(null);
+  const selectedDayCardRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -165,6 +236,74 @@ function PlannerContent() {
   const selectedDay = planner.days[selectedIndex] ?? null;
   const nextDay = planner.days[selectedIndex + 1] ?? null;
   const activeMembers = getActiveJourneyMembers(members);
+  const focusedPlannerItemId = manualFocusedPlannerItemId ?? requestedItemId;
+  const trimmedPlannerSearchQuery = plannerSearchQuery.trim();
+  const plannerSearchResults = useMemo(() => {
+    const query = normalizeSearchText(trimmedPlannerSearchQuery);
+    if (!query) return [];
+
+    return planner.days
+      .flatMap((plannerDay) => {
+        const dayTag =
+          plannerDay.dayTag ??
+          t("planner.day.short", { number: plannerDay.dayNumber });
+        const dateText = longDateLabel(plannerDay.day.dayDate, locale);
+        const activities: PlannerSearchResult[] = plannerDay.activities
+          .filter((activity) => activity.status !== "cancelled")
+          .map((activity) => {
+            const timeText = timeLabel(activity.plannedStart, locale);
+            return {
+              id: `event-${plannerDay.day.id}-${activity.id}`,
+              itemId: `activity-${activity.id}`,
+              dayId: plannerDay.day.id,
+              dayDate: plannerDay.day.dayDate,
+              dayTag,
+              timeText,
+              title: activity.title,
+              subtitle: activity.locationName || activity.description || "",
+              typeLabel: t("planner.search.activity"),
+              searchableText: [
+                dayTag,
+                dateText,
+                timeText,
+                eventSearchText(activity),
+              ].join(" "),
+            };
+          });
+        const reservations: PlannerSearchResult[] = plannerDay.reservations
+          .filter((reservation) => reservation.status !== "cancelled")
+          .map((reservation) => {
+            const timeText = timeLabel(reservation.startsAt, locale);
+            return {
+              id: `reservation-${plannerDay.day.id}-${reservation.id}`,
+              itemId: `reservation-${reservation.id}`,
+              dayId: plannerDay.day.id,
+              dayDate: plannerDay.day.dayDate,
+              dayTag,
+              timeText,
+              title: reservation.title,
+              subtitle:
+                reservation.locationName || reservation.provider || reservation.sourceText || "",
+              typeLabel: t("planner.search.reservation"),
+              searchableText: [
+                dayTag,
+                dateText,
+                timeText,
+                reservationSearchText(reservation),
+              ].join(" "),
+            };
+          });
+
+        return [...activities, ...reservations];
+      })
+      .filter((result) => normalizeSearchText(result.searchableText).includes(query))
+      .sort((left, right) => {
+        const dateOrder = left.dayDate.localeCompare(right.dayDate);
+        if (dateOrder) return dateOrder;
+        return left.timeText.localeCompare(right.timeText);
+      })
+      .slice(0, 40);
+  }, [locale, planner.days, t, trimmedPlannerSearchQuery]);
   const selectedDayMapHref =
     selectedDay && selectedDay.day.dayDate !== "unscheduled"
       ? `/trips/${tripId}/map?date=${selectedDay.day.dayDate}`
@@ -181,6 +320,17 @@ function PlannerContent() {
         }),
       );
     }
+  }
+
+  function jumpToSearchResult(result: PlannerSearchResult) {
+    setManualFocusedPlannerItemId(result.itemId);
+    chooseDay(result.dayId);
+    window.requestAnimationFrame(() => {
+      selectedDayCardRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
   }
 
   const refreshPlanner = useCallback(async () => {
@@ -286,7 +436,84 @@ function PlannerContent() {
             </button>
           </div>
         </div>
+        <div className="mt-3 flex items-center gap-2 rounded-2xl bg-stone-50 p-2">
+          <input
+            value={plannerSearchQuery}
+            onChange={(event) => setPlannerSearchQuery(event.target.value)}
+            placeholder={t("planner.search.placeholder")}
+            className="min-h-10 flex-1 rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-950 outline-none placeholder:text-stone-400 focus:border-emerald-300"
+          />
+          {trimmedPlannerSearchQuery ? (
+            <button
+              type="button"
+              onClick={() => setPlannerSearchQuery("")}
+              className="rounded-full bg-white px-3 py-2 text-xs font-bold text-stone-600 shadow-sm"
+            >
+              {t("planner.search.clear")}
+            </button>
+          ) : null}
+        </div>
       </section>
+
+      {trimmedPlannerSearchQuery ? (
+        <section className="rounded-3xl border border-stone-200 bg-white p-3 shadow-sm">
+          <div className="flex items-center justify-between gap-3 px-1">
+            <div>
+              <h2 className="text-sm font-black text-stone-950">
+                {t("planner.search.resultsTitle")}
+              </h2>
+              <p className="mt-0.5 text-xs text-stone-500">
+                {t("planner.search.resultCount", {
+                  count: plannerSearchResults.length,
+                })}
+              </p>
+            </div>
+          </div>
+          {plannerSearchResults.length === 0 ? (
+            <div className="mt-3 rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
+              {t("planner.search.empty")}
+            </div>
+          ) : (
+            <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
+              {plannerSearchResults.map((result) => (
+                <button
+                  key={result.id}
+                  type="button"
+                  onClick={() => jumpToSearchResult(result)}
+                  className={`w-full rounded-2xl border px-3 py-2 text-left transition ${
+                    selectedDayId === result.dayId
+                      ? "border-emerald-200 bg-emerald-50"
+                      : "border-stone-200 bg-white hover:border-emerald-200 hover:bg-emerald-50/50"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-black uppercase tracking-wide text-emerald-800">
+                        {result.dayTag} · {longDateLabel(result.dayDate, locale)} ·{" "}
+                        {result.timeText}
+                      </p>
+                      <h3 className="mt-1 line-clamp-2 text-sm font-semibold text-stone-950">
+                        {result.title}
+                      </h3>
+                      {result.subtitle ? (
+                        <p className="mt-1 line-clamp-1 text-xs text-stone-500">
+                          {result.subtitle}
+                        </p>
+                      ) : null}
+                    </div>
+                  <span className="shrink-0 rounded-full bg-stone-100 px-2 py-1 text-[11px] font-bold text-stone-600">
+                      {result.typeLabel}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs font-bold text-emerald-700">
+                    {t("planner.search.openAndExpand")}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      ) : null}
 
       {planner.days.length > 0 ? (
         <section className="sticky top-16 z-10 -mx-5 border-y border-stone-200 bg-[#f7f3ea]/95 px-5 py-1.5 backdrop-blur md:top-0">
@@ -339,7 +566,7 @@ function PlannerContent() {
       ) : null}
 
       {selectedDay ? (
-        <section>
+        <section ref={selectedDayCardRef}>
           <PlannerDayCard
             tripId={tripId}
             plannerDay={selectedDay}
@@ -355,6 +582,7 @@ function PlannerContent() {
             onPlannerChanged={refreshPlanner}
             nextDay={nextDay}
             mapHref={selectedDayMapHref}
+            focusedItemId={focusedPlannerItemId}
           />
         </section>
       ) : (

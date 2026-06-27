@@ -54,6 +54,14 @@ function mapTripDay(row: TripDayRow): TripDay {
 
 function dateKey(value: string | null | undefined) {
   if (!value) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const date = new Date(value);
+  if (!Number.isNaN(date.getTime())) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
+      2,
+      "0",
+    )}-${String(date.getDate()).padStart(2, "0")}`;
+  }
   return value.slice(0, 10);
 }
 
@@ -262,17 +270,17 @@ export async function getPlannerV2(trip: Trip): Promise<PlannerV2Data> {
 
   reservations.forEach((reservation) => {
     const date =
-      (reservation.tripDayId && daysById.get(reservation.tripDayId)?.dayDate) ||
       dateKey(reservation.startsAt) ||
-      dateKey(reservation.endsAt);
+      dateKey(reservation.endsAt) ||
+      (reservation.tripDayId && daysById.get(reservation.tripDayId)?.dayDate);
     allDates.add(date ?? "unscheduled");
   });
 
   activities.forEach((activity) => {
     const date =
-      (activity.tripDayId && daysById.get(activity.tripDayId)?.dayDate) ||
       dateKey(activity.plannedStart) ||
-      dateKey(activity.plannedEnd);
+      dateKey(activity.plannedEnd) ||
+      (activity.tripDayId && daysById.get(activity.tripDayId)?.dayDate);
     allDates.add(date ?? "unscheduled");
   });
 
@@ -305,6 +313,9 @@ export async function getPlannerV2(trip: Trip): Promise<PlannerV2Data> {
             if (coversDate(date, reservation.startsAt, reservation.endsAt)) {
               return true;
             }
+            if ((reservation.startsAt || reservation.endsAt) && date !== "unscheduled") {
+              return false;
+            }
             if (reservation.tripDayId) return reservation.tripDayId === day.id;
             return (
               dateKey(reservation.startsAt) === date ||
@@ -318,6 +329,9 @@ export async function getPlannerV2(trip: Trip): Promise<PlannerV2Data> {
           activities.filter((activity) => {
             if (coversDate(date, activity.plannedStart, activity.plannedEnd)) {
               return true;
+            }
+            if ((activity.plannedStart || activity.plannedEnd) && date !== "unscheduled") {
+              return false;
             }
             if (activity.tripDayId) return activity.tripDayId === day.id;
             return (

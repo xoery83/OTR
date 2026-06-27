@@ -15,7 +15,11 @@ import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import { enqueueMediaProcessingJobs } from "@/lib/background-jobs/client";
 import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
-import { updateTripDayTitle, type PlannerV2Day } from "@/lib/supabase/planner-v2";
+import {
+  updateTripDayTitle,
+  upsertTripDay,
+  type PlannerV2Day,
+} from "@/lib/supabase/planner-v2";
 import { getApproxExchangeRate } from "@/lib/exchange-rates";
 import { formatTime, toDateTimeLocalValue } from "@/lib/format";
 import { getErrorMessage } from "@/lib/errors";
@@ -1014,6 +1018,7 @@ export function PlannerDayCard({
   preserveOriginalPhotos = false,
   nextDay,
   mapHref,
+  focusedItemId,
   onLedgerEntryCreated,
   onPlannerChanged,
 }: {
@@ -1025,6 +1030,7 @@ export function PlannerDayCard({
   preserveOriginalPhotos?: boolean;
   nextDay?: PlannerV2Day | null;
   mapHref?: string;
+  focusedItemId?: string | null;
   onLedgerEntryCreated?: () => void;
   onPlannerChanged?: () => void;
 }) {
@@ -1167,6 +1173,10 @@ export function PlannerDayCard({
   const [imageUrlByMemoryPath, setImageUrlByMemoryPath] = useState<
     Record<string, string>
   >({});
+  const [imagePreview, setImagePreview] = useState<{
+    src: string;
+    alt: string;
+  } | null>(null);
   const [preparingAttachmentId, setPreparingAttachmentId] = useState<
     string | null
   >(null);
@@ -1174,6 +1184,7 @@ export function PlannerDayCard({
     Record<string, string>
   >({});
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const storyItemRefs = useRef<Record<string, HTMLDetailsElement | null>>({});
   const attachmentByItemRef = useRef(attachmentByItem);
   const activeVoiceItemIdRef = useRef<string | null>(null);
   const [inlineMemories, setInlineMemories] = useState<InlineMemoryState>({});
@@ -1210,6 +1221,17 @@ export function PlannerDayCard({
       (member) => member.role === "owner" || member.role === "group_member",
     );
   }
+
+  useEffect(() => {
+    if (!focusedItemId) return;
+    setShowMineOnly(false);
+    window.requestAnimationFrame(() => {
+      const details = storyItemRefs.current[focusedItemId];
+      if (!details) return;
+      details.open = true;
+      details.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [focusedItemId]);
 
   async function saveDayTitle() {
     if (day.dayDate === "unscheduled") return;
@@ -1622,6 +1644,27 @@ export function PlannerDayCard({
     setPlanError(null);
   }
 
+  async function tripDayIdForEditedItem() {
+    if (!editingItem) return null;
+    const itemDate =
+      dateOnly(editingItem.startsAt) || dateOnly(editingItem.endsAt);
+    if (!itemDate) return null;
+
+    const existingDay =
+      itemDate === day.dayDate && !day.id.startsWith("synthetic-")
+        ? day
+        : null;
+    if (existingDay) return existingDay.id;
+
+    const persistedDay = await upsertTripDay({
+      tripId,
+      date: itemDate,
+      title: null,
+      notes: null,
+    });
+    return persistedDay.id;
+  }
+
   async function saveEditingItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!editingItem || isSavingPlan) return;
@@ -1630,10 +1673,13 @@ export function PlannerDayCard({
     setPlanError(null);
 
     try {
+      const nextTripDayId = await tripDayIdForEditedItem();
+
       if (editingItem.itemType === "event") {
         await updateItineraryEvent({
           id: editingItem.id,
           tripId,
+          tripDayId: nextTripDayId,
           title: editingItem.title,
           description: editingItem.description,
           eventType: editingItem.typeValue as ItineraryEventType,
@@ -1660,6 +1706,7 @@ export function PlannerDayCard({
         await updateItineraryReservation({
           id: editingItem.id,
           tripId,
+          tripDayId: nextTripDayId,
           reservationType: editingItem.typeValue as ItineraryReservationType,
           title: editingItem.title,
           provider: editingItem.secondary,
@@ -2217,7 +2264,15 @@ export function PlannerDayCard({
               return (
           <details
             key={stay.id}
-            className="group rounded-2xl border border-amber-200 bg-amber-50 p-3 open:bg-[#fffaf1]"
+            ref={(node) => {
+              storyItemRefs.current[stayItem.id] = node;
+            }}
+            open={focusedItemId === stayItem.id ? true : undefined}
+            className={`group rounded-2xl border border-amber-200 bg-amber-50 p-3 open:bg-[#fffaf1] ${
+              focusedItemId === stayItem.id
+                ? "ring-2 ring-emerald-300 ring-offset-2 ring-offset-white"
+                : ""
+            }`}
           >
             <summary className="grid cursor-pointer list-none grid-cols-[1fr_auto] gap-3">
               <div className="min-w-0">
@@ -2455,12 +2510,24 @@ export function PlannerDayCard({
                     {memory.type === "photo" &&
                     memory.mediaUrl &&
                     imageUrlByMemoryPath[memory.mediaUrl] ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={imageUrlByMemoryPath[memory.mediaUrl]}
-                        alt=""
-                        className="mt-2 max-h-56 w-full rounded-xl object-cover"
-                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setImagePreview({
+                            src: imageUrlByMemoryPath[memory.mediaUrl!],
+                            alt: memory.content || t("planner.memory.imagePreview"),
+                          })
+                        }
+                        className="mt-2 block w-full overflow-hidden rounded-xl text-left"
+                        title={t("planner.memory.openImage")}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={imageUrlByMemoryPath[memory.mediaUrl]}
+                          alt=""
+                          className="max-h-56 w-full object-cover transition hover:opacity-90"
+                        />
+                      </button>
                     ) : null}
                     {memory.content ? (
                       <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
@@ -2695,7 +2762,15 @@ export function PlannerDayCard({
                 return (
                   <details
                     key={item.id}
+                    ref={(node) => {
+                      storyItemRefs.current[item.id] = node;
+                    }}
+                    open={focusedItemId === item.id ? true : undefined}
                     className={`group relative rounded-2xl p-3 open:bg-[#fffaf1] ${
+                      focusedItemId === item.id
+                        ? "ring-2 ring-emerald-300 ring-offset-2 ring-offset-white"
+                        : ""
+                    } ${
                       item.status === "cancelled" || item.status === "skipped"
                         ? "bg-stone-100 opacity-70"
                         : isFlightItem
@@ -2795,12 +2870,26 @@ export function PlannerDayCard({
                               {memory.type === "photo" &&
                               memory.mediaUrl &&
                               imageUrlByMemoryPath[memory.mediaUrl] ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img
-                                  src={imageUrlByMemoryPath[memory.mediaUrl]}
-                                  alt=""
-                                  className="mt-2 max-h-56 w-full rounded-xl object-cover"
-                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setImagePreview({
+                                      src: imageUrlByMemoryPath[memory.mediaUrl!],
+                                      alt:
+                                        memory.content ||
+                                        t("planner.memory.imagePreview"),
+                                    })
+                                  }
+                                  className="mt-2 block w-full overflow-hidden rounded-xl text-left"
+                                  title={t("planner.memory.openImage")}
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={imageUrlByMemoryPath[memory.mediaUrl]}
+                                    alt=""
+                                    className="max-h-56 w-full object-cover transition hover:opacity-90"
+                                  />
+                                </button>
                               ) : null}
                               {memory.content ? (
                                 <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
@@ -3231,7 +3320,15 @@ export function PlannerDayCard({
               return (
                 <details
                   key={item.id}
-                  className="group rounded-2xl border border-sky-100 bg-sky-50/70 p-3 open:bg-white"
+                  ref={(node) => {
+                    storyItemRefs.current[item.id] = node;
+                  }}
+                  open={focusedItemId === item.id ? true : undefined}
+                  className={`group rounded-2xl border border-sky-100 bg-sky-50/70 p-3 open:bg-white ${
+                    focusedItemId === item.id
+                      ? "ring-2 ring-emerald-300 ring-offset-2 ring-offset-white"
+                      : ""
+                  }`}
                 >
                   <summary className="grid cursor-pointer list-none grid-cols-[1fr_auto] gap-3">
                     <div className="min-w-0">
@@ -4078,6 +4175,31 @@ export function PlannerDayCard({
               </button>
             </div>
           </form>
+        </div>
+      ) : null}
+      {imagePreview ? (
+        <div className="fixed inset-0 z-[2147482500] bg-stone-950/90 p-3">
+          <button
+            type="button"
+            aria-label={t("common.close")}
+            className="absolute inset-0"
+            onClick={() => setImagePreview(null)}
+          />
+          <div className="relative z-[1] flex h-full flex-col items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => setImagePreview(null)}
+              className="self-end rounded-full bg-white/10 px-4 py-2 text-sm font-bold text-white backdrop-blur"
+            >
+              {t("common.close")}
+            </button>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={imagePreview.src}
+              alt={imagePreview.alt}
+              className="max-h-[84vh] max-w-full rounded-2xl object-contain shadow-2xl"
+            />
+          </div>
         </div>
       ) : null}
     </article>

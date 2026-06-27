@@ -473,21 +473,27 @@ export async function createItineraryReservation(
 }
 
 export async function updateItineraryEvent(input: UpdateItineraryEventInput) {
+  const updatePayload: Record<string, string | null> = {
+    title: input.title.trim(),
+    description: input.description?.trim() || null,
+    event_type: input.eventType,
+    location_name: input.locationName?.trim() || null,
+    planned_start: input.plannedStart
+      ? new Date(input.plannedStart).toISOString()
+      : null,
+    planned_end: input.plannedEnd ? new Date(input.plannedEnd).toISOString() : null,
+    booking_reference: input.bookingReference?.trim() || null,
+    url: input.url?.trim() || null,
+    status: input.status ?? "planned",
+  };
+
+  if (input.tripDayId !== undefined) {
+    updatePayload.trip_day_id = input.tripDayId;
+  }
+
   const { error } = await supabase
     .from("itinerary_events")
-    .update({
-      title: input.title.trim(),
-      description: input.description?.trim() || null,
-      event_type: input.eventType,
-      location_name: input.locationName?.trim() || null,
-      planned_start: input.plannedStart
-        ? new Date(input.plannedStart).toISOString()
-        : null,
-      planned_end: input.plannedEnd ? new Date(input.plannedEnd).toISOString() : null,
-      booking_reference: input.bookingReference?.trim() || null,
-      url: input.url?.trim() || null,
-      status: input.status ?? "planned",
-    })
+    .update(updatePayload)
     .eq("id", input.id)
     .eq("trip_id", input.tripId);
 
@@ -517,6 +523,10 @@ export async function updateItineraryReservation(
 
   if (input.sourceText !== undefined) {
     updatePayload.source_text = input.sourceText?.trim() || null;
+  }
+
+  if (input.tripDayId !== undefined) {
+    updatePayload.trip_day_id = input.tripDayId;
   }
 
   const { error } = await supabase

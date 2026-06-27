@@ -103,6 +103,13 @@ function stringArrayValue(value: unknown) {
 
 function lockedMemoryContext(input: ExecuteCaptureActionInput) {
   const context = input.engineOptions?.lockedContext ?? {};
+  const itineraryEventId = stringValue(context.itineraryEventId);
+  const itineraryReservationId =
+    stringValue(context.itineraryReservationId) ||
+    stringValue(context.reservationId);
+  const plannerItemId = stringValue(context.plannerItemId);
+  const itemType = stringValue(context.itemType);
+
   return {
     dayDate: stringValue(context.dayDate) || stringValue(context.date) || "",
     tripDayId:
@@ -110,12 +117,12 @@ function lockedMemoryContext(input: ExecuteCaptureActionInput) {
       stringValue(context.dayId) ||
       null,
     itineraryEventId:
-      stringValue(context.itineraryEventId) ||
-      stringValue(context.plannerItemId) ||
+      itineraryEventId ||
+      (!itineraryReservationId && itemType !== "reservation" ? plannerItemId : "") ||
       null,
     itineraryReservationId:
-      stringValue(context.itineraryReservationId) ||
-      stringValue(context.reservationId) ||
+      itineraryReservationId ||
+      (!itineraryEventId && itemType === "reservation" ? plannerItemId : "") ||
       null,
     locationName:
       stringValue(context.locationName) ||
