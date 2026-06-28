@@ -53,6 +53,16 @@ input[type="date"] {
   border: 0;
 }
 
+.otr-journey-map .leaflet-top.leaflet-left {
+  top: 176px;
+}
+
+@media (min-width: 768px) {
+  .otr-journey-map .leaflet-top.leaflet-left {
+    top: 190px;
+  }
+}
+
 .otr-route-pane {
   opacity: 1;
   transition: opacity 120ms ease;

@@ -5,10 +5,8 @@ import { useRouter } from "next/navigation";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
-import { getAppOrigin } from "@/lib/app-url";
 import { getErrorMessage } from "@/lib/errors";
 import { getCurrentUser } from "@/lib/supabase/auth";
-import { createJourneyInvite } from "@/lib/supabase/invites";
 import {
   createJourneyMember,
   getJourneyMembers,
@@ -28,12 +26,6 @@ type TravelerDraft = {
   email: string;
   notes: string;
   suggestionKey?: string;
-};
-
-type InviteLink = {
-  travelerName: string;
-  email: string;
-  url: string;
 };
 
 type StorageChoice = "none" | "google_drive" | "onedrive";
@@ -111,14 +103,12 @@ function NewJourneyTour() {
   ]);
   const [suggestions, setSuggestions] = useState<JourneyMemberSuggestion[]>([]);
   const [createdTrip, setCreatedTrip] = useState<Trip | null>(null);
-  const [inviteLinks, setInviteLinks] = useState<InviteLink[]>([]);
   const [coverImageUrl, setCoverImageUrl] = useState("");
   const [aiCoverCount, setAiCoverCount] = useState(0);
   const [storageChoice, setStorageChoice] = useState<StorageChoice>("none");
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
-  const [copiedUrl, setCopiedUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -216,7 +206,7 @@ function NewJourneyTour() {
     setStep(2);
   }
 
-  async function createJourneyAndInvites(event: FormEvent<HTMLFormElement>) {
+  async function createJourneyAndMembers(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (createdTrip) {
       setStep(3);
@@ -258,9 +248,6 @@ function NewJourneyTour() {
         }
       }
 
-      const origin = getAppOrigin();
-      const createdInvites: InviteLink[] = [];
-
       for (const traveler of activeTravelers) {
         const email = traveler.email.trim();
         await createJourneyMember({
@@ -270,23 +257,9 @@ function NewJourneyTour() {
           inviteEmail: email,
           notes: traveler.notes,
         });
-
-        const invite = await createJourneyInvite({
-          tripId: trip.id,
-          invitedEmail: email,
-          role: "member",
-          expiresInDays: "30",
-          maxUses: 1,
-        });
-        createdInvites.push({
-          travelerName: traveler.name.trim(),
-          email,
-          url: `${origin}/invite/${invite.token}`,
-        });
       }
 
       setCreatedTrip(trip);
-      setInviteLinks(createdInvites);
       setAiCoverCount(1);
       setCoverImageUrl(generateAiCoverUrl(name.trim(), destination.trim(), 1));
       setStep(3);
@@ -317,11 +290,6 @@ function NewJourneyTour() {
     } finally {
       setIsSavingSettings(false);
     }
-  }
-
-  async function copyInvite(url: string) {
-    await navigator.clipboard.writeText(url);
-    setCopiedUrl(url);
   }
 
   function generateNextCover() {
@@ -427,7 +395,7 @@ function NewJourneyTour() {
 
       {step === 2 ? (
         <form
-          onSubmit={createJourneyAndInvites}
+          onSubmit={createJourneyAndMembers}
           className="space-y-5 rounded-3xl border border-stone-200 bg-white p-5 shadow-sm"
         >
           <div>
@@ -436,6 +404,9 @@ function NewJourneyTour() {
             </h2>
             <p className="mt-2 text-sm leading-6 text-stone-600">
               {t("journeyCreate.travelers.description")}
+            </p>
+            <p className="mt-2 rounded-2xl bg-emerald-50 p-3 text-sm leading-6 text-emerald-900">
+              {t("journeyCreate.travelers.emailAccess")}
             </p>
           </div>
 
@@ -574,48 +545,6 @@ function NewJourneyTour() {
 
       {step === 3 ? (
         <section className="space-y-5 rounded-3xl border border-stone-200 bg-white p-5 shadow-sm">
-          {inviteLinks.length > 0 ? (
-            <section className="space-y-3 rounded-3xl bg-emerald-50 p-4">
-              <div>
-                <h2 className="text-xl font-semibold text-stone-950">
-                  {t("journeyCreate.invites.title")}
-                </h2>
-                <p className="mt-1 text-sm leading-6 text-stone-600">
-                  {t("journeyCreate.invites.description")}
-                </p>
-              </div>
-              <div className="space-y-2">
-                {inviteLinks.map((invite) => (
-                  <div
-                    key={invite.url}
-                    className="grid gap-2 rounded-2xl bg-white p-3 sm:grid-cols-[1fr_auto]"
-                  >
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-stone-950">
-                        {invite.travelerName}
-                      </p>
-                      <p className="truncate text-xs text-stone-500">
-                        {invite.email || t("journeyCreate.invites.reusable")}
-                      </p>
-                      <p className="mt-1 truncate text-xs text-emerald-800">
-                        {invite.url}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => copyInvite(invite.url)}
-                      className="rounded-2xl bg-emerald-700 px-4 py-2 text-xs font-bold text-white"
-                    >
-                      {copiedUrl === invite.url
-                        ? t("journeyCreate.copied")
-                        : t("journeyCreate.copy")}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-
           <div>
             <h2 className="text-xl font-semibold text-stone-950">
               {t("journeyCreate.cover.title")}

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
@@ -18,8 +17,14 @@ import type { JourneyMember, JourneyMemberRole, Trip } from "@/types";
 
 const roleLabels: Record<JourneyMemberRole, string> = {
   owner: "Owner",
-  group_member: "Group Member",
-  guest: "Guest",
+  group_member: "成员",
+  guest: "访客",
+};
+
+const statusLabels: Record<JourneyMember["status"], string> = {
+  linked: "已关联",
+  invite_pending: "待登录",
+  unlinked: "未关联",
 };
 
 function initials(name: string) {
@@ -38,9 +43,9 @@ function statusClass(status: JourneyMember["status"]) {
 }
 
 function roleHelp(role: JourneyMemberRole) {
-  if (role === "owner") return "Can manage people and permissions.";
-  if (role === "guest") return "Can view and comment, but not add main memories.";
-  return "Can edit planner and add main memories.";
+  if (role === "owner") return "可以管理成员和旅程权限。";
+  if (role === "guest") return "可以查看和评论，但不能添加主要内容。";
+  return "可以编辑行程、添加记录和费用。";
 }
 
 function MembersPageContent() {
@@ -77,7 +82,7 @@ function MembersPageContent() {
         }
       } catch (membersError) {
         if (isMounted) {
-          setError(getErrorMessage(membersError, "Could not load people."));
+          setError(getErrorMessage(membersError, "无法加载成员。"));
         }
       }
     }
@@ -114,9 +119,9 @@ function MembersPageContent() {
       setInviteEmail("");
       setMemberNotes("");
       setRole("group_member");
-      setNotice("Member added.");
+      setNotice("成员已添加。");
     } catch (addError) {
-      setError(getErrorMessage(addError, "Could not add member."));
+      setError(getErrorMessage(addError, "无法添加成员。"));
     } finally {
       setIsAdding(false);
     }
@@ -135,7 +140,7 @@ function MembersPageContent() {
         current.map((item) => (item.id === updated.id ? updated : item)),
       );
     } catch (roleError) {
-      setError(getErrorMessage(roleError, "Could not update role."));
+      setError(getErrorMessage(roleError, "无法更新角色。"));
     } finally {
       setWorkingMemberId(null);
     }
@@ -161,29 +166,9 @@ function MembersPageContent() {
       setMembers((current) =>
         current.map((item) => (item.id === updated.id ? updated : item)),
       );
-      setNotice("Member details saved.");
+      setNotice("成员信息已保存。");
     } catch (saveError) {
-      setError(getErrorMessage(saveError, "Could not save member."));
-    } finally {
-      setWorkingMemberId(null);
-    }
-  }
-
-  async function markInvitePending(member: JourneyMember) {
-    setWorkingMemberId(member.id);
-    setError(null);
-    setNotice(null);
-    try {
-      const updated = await updateJourneyMember({
-        memberId: member.id,
-        status: "invite_pending",
-      });
-      setMembers((current) =>
-        current.map((item) => (item.id === updated.id ? updated : item)),
-      );
-      setNotice("Member marked as invite pending.");
-    } catch (inviteError) {
-      setError(getErrorMessage(inviteError, "Could not update invite status."));
+      setError(getErrorMessage(saveError, "无法保存成员信息。"));
     } finally {
       setWorkingMemberId(null);
     }
@@ -196,17 +181,17 @@ function MembersPageContent() {
     try {
       const result = await removeJourneyMember(member.id);
       if (result.status !== "removed") {
-        setError(`Could not remove member: ${result.status.replaceAll("_", " ")}.`);
+        setError(`无法移除成员：${result.status.replaceAll("_", " ")}。`);
         return;
       }
       setMembers((current) => current.filter((item) => item.id !== member.id));
       setNotice(
         member.userId
-          ? "Member removed and journey access revoked."
-          : "Unlinked member removed.",
+          ? "成员已移除，旅程访问权限已撤销。"
+          : "未关联成员已移除。",
       );
     } catch (removeError) {
-      setError(getErrorMessage(removeError, "Could not remove member."));
+      setError(getErrorMessage(removeError, "无法移除成员。"));
     } finally {
       setWorkingMemberId(null);
     }
@@ -219,14 +204,14 @@ function MembersPageContent() {
     try {
       const result = await claimJourneyMember(member.id);
       if (result.status !== "claimed") {
-        setNotice(`Claim result: ${result.status.replaceAll("_", " ")}.`);
+        setNotice(`关联结果：${result.status.replaceAll("_", " ")}。`);
         return;
       }
       const refreshed = await getJourneyMembers(tripId);
       setMembers(refreshed);
-      setNotice(`You are now linked as ${member.displayName}.`);
+      setNotice(`你已关联为 ${member.displayName}。`);
     } catch (claimError) {
-      setError(getErrorMessage(claimError, "Could not claim member."));
+      setError(getErrorMessage(claimError, "无法关联这个成员身份。"));
     } finally {
       setWorkingMemberId(null);
     }
@@ -240,21 +225,13 @@ function MembersPageContent() {
             {trip?.name || "Journey"}
           </p>
           <h1 className="mt-1 text-3xl font-semibold text-stone-950">
-            People
+            成员
           </h1>
           <p className="mt-3 max-w-2xl text-base leading-7 text-stone-600">
-            Manage the real people in this journey, including invited travelers
-            who have not linked an account yet.
+            管理这个 Journey 的同行成员、邮箱授权、角色和昵称 / 别名。
+            Owner 填入成员邮箱后，成员使用同一个邮箱登录 OTR 就会看到这个旅程。
           </p>
         </div>
-        {canManagePeople ? (
-          <Link
-            href={`/trips/${tripId}/invite`}
-            className="shrink-0 rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white"
-          >
-            Invite
-          </Link>
-        ) : null}
       </section>
 
       {error ? (
@@ -275,10 +252,10 @@ function MembersPageContent() {
         >
           <div>
             <h2 className="text-lg font-semibold text-stone-950">
-              Add Group Member
+              添加成员
             </h2>
             <p className="mt-1 text-sm text-stone-500">
-              Add someone to the journey before they create an account.
+              填写成员姓名和邮箱即可授权访问。邮箱可以之后再补；补上后，成员用该邮箱登录就能看到这个 Journey。
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-[1fr_160px]">
@@ -296,8 +273,8 @@ function MembersPageContent() {
               }
               className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-sm"
             >
-              <option value="group_member">Group Member</option>
-              <option value="guest">Guest</option>
+              <option value="group_member">成员</option>
+              <option value="guest">访客</option>
               <option value="owner">Owner</option>
             </select>
           </div>
@@ -305,7 +282,7 @@ function MembersPageContent() {
             <input
               value={inviteEmail}
               onChange={(event) => setInviteEmail(event.target.value)}
-              placeholder="Optional invite email"
+              placeholder="成员登录邮箱，可后补"
               type="email"
               className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-sm"
             />
@@ -314,22 +291,21 @@ function MembersPageContent() {
               disabled={isAdding || !displayName.trim()}
               className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:bg-stone-300"
             >
-              {isAdding ? "Adding..." : "Add"}
+              {isAdding ? "正在添加..." : "添加"}
             </button>
           </div>
           <label className="block space-y-1">
             <span className="text-xs font-bold text-stone-700">
-              Nicknames / AKA
+              昵称 / 别名
             </span>
             <input
               value={memberNotes}
               onChange={(event) => setMemberNotes(event.target.value)}
-              placeholder="Bao 小宝 B, separated by spaces, commas, / or ;"
+              placeholder="Bao 小宝 B，可用空格、逗号、/ 或 ; 分隔"
               className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-sm"
             />
             <span className="block text-[11px] leading-5 text-stone-500">
-              These aliases help OTR match people in Capture, Planner, voice notes
-              and expenses.
+              用于帮助 OTR 在记录、行程、语音和支出中识别这个人。
             </span>
           </label>
         </form>
@@ -338,11 +314,11 @@ function MembersPageContent() {
       {!currentMember && unlinkedMembers.length > 0 ? (
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-4">
           <h2 className="font-semibold text-amber-950">
-            Claim your travel identity
+            关联你的旅程身份
           </h2>
           <p className="mt-1 text-sm leading-6 text-amber-900">
-            If the owner already added your name, claim it here after joining
-            the journey.
+            如果 owner 已经先添加了你的名字，但还没有填邮箱，你可以在这里手动关联。
+            更推荐让 owner 补上你的登录邮箱，之后系统会自动识别。
           </p>
         </section>
       ) : null}
@@ -397,7 +373,7 @@ function MembersPageContent() {
                     member.status,
                   )}`}
                 >
-                  {member.status.replace("_", " ")}
+                  {statusLabels[member.status]}
                 </span>
               </div>
 
@@ -417,7 +393,7 @@ function MembersPageContent() {
                 ) : null}
                 {!member.userId ? (
                   <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-500">
-                    Not linked
+                    未关联
                   </span>
                 ) : null}
               </div>
@@ -446,7 +422,7 @@ function MembersPageContent() {
                   />
                   <label className="space-y-1">
                     <span className="text-xs font-bold text-stone-600">
-                      Nicknames / AKA
+                      昵称 / 别名
                     </span>
                     <input
                       value={editDrafts[member.id]?.notes ?? member.notes ?? ""}
@@ -465,7 +441,7 @@ function MembersPageContent() {
                           },
                         }))
                       }
-                      placeholder="Bao 小宝 B, separated by spaces, commas, / or ;"
+                      placeholder="Bao 小宝 B，可用空格、逗号、/ 或 ; 分隔"
                       className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
                     />
                   </label>
@@ -489,7 +465,7 @@ function MembersPageContent() {
                           },
                         }))
                       }
-                      placeholder="Invitee email for claiming"
+                      placeholder="成员登录邮箱"
                       type="email"
                       className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
                     />
@@ -503,8 +479,8 @@ function MembersPageContent() {
                     className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
                   >
                     <option value="owner">Owner</option>
-                    <option value="group_member">Group Member</option>
-                    <option value="guest">Guest</option>
+                    <option value="group_member">成员</option>
+                    <option value="guest">访客</option>
                   </select>
                   <div className="flex flex-wrap gap-2">
                     <button
@@ -513,25 +489,15 @@ function MembersPageContent() {
                       onClick={() => saveMemberDetails(member)}
                       className="rounded-full bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 disabled:opacity-60"
                     >
-                      Save
+                      保存
                     </button>
-                    {!member.userId ? (
-                      <button
-                        type="button"
-                        disabled={isWorking}
-                        onClick={() => markInvitePending(member)}
-                        className="rounded-full bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 disabled:opacity-60"
-                      >
-                        Invite pending
-                      </button>
-                    ) : null}
                     <button
                       type="button"
                       disabled={isWorking || member.role === "owner"}
                       onClick={() => removeMember(member)}
                       className="rounded-full bg-red-50 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50"
                     >
-                      {member.userId ? "Remove access" : "Remove"}
+                      {member.userId ? "移除权限" : "移除"}
                     </button>
                   </div>
                 </div>
@@ -544,7 +510,7 @@ function MembersPageContent() {
                   onClick={() => claimMember(member)}
                   className="mt-4 w-full rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:bg-stone-300"
                 >
-                  {isWorking ? "Claiming..." : "Claim this identity"}
+                  {isWorking ? "正在关联..." : "关联这个身份"}
                 </button>
               ) : null}
             </article>
