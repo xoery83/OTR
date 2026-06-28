@@ -81,6 +81,26 @@ function coversDate(
   return start <= date && (!end || end >= date);
 }
 
+function coversReservationDate(
+  date: string,
+  reservation: ItineraryReservation,
+) {
+  if (reservation.reservationType !== "hotel") {
+    return coversDate(date, reservation.startsAt, reservation.endsAt);
+  }
+
+  const start = dateKey(reservation.startsAt) ?? dateKey(reservation.endsAt);
+  const end = dateKey(reservation.endsAt) ?? start;
+
+  if (!start) return false;
+
+  if (!end || end <= start) {
+    return date === start;
+  }
+
+  return start <= date && date < end;
+}
+
 function tripDateRange(trip: Trip) {
   if (!trip.startDate || !trip.endDate) return [];
 
@@ -328,7 +348,7 @@ export async function getPlannerV2(trip: Trip): Promise<PlannerV2Data> {
         dayTag,
         reservations: sortByTime(
           reservations.filter((reservation) => {
-            if (coversDate(date, reservation.startsAt, reservation.endsAt)) {
+            if (coversReservationDate(date, reservation)) {
               return true;
             }
             if ((reservation.startsAt || reservation.endsAt) && date !== "unscheduled") {

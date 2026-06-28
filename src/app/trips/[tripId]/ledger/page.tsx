@@ -7,6 +7,7 @@ import { useI18n } from "@/components/I18nProvider";
 import { getApproxExchangeRate } from "@/lib/exchange-rates";
 import { getErrorMessage } from "@/lib/errors";
 import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
+import { getLedgerAllocationDates } from "@/lib/ledger/date-allocation";
 import {
   createLedgerEntry,
   deleteLedgerEntry,
@@ -213,59 +214,21 @@ function entryMatchesSearch(
   return searchableText.includes(normalizedQuery);
 }
 
-function addDays(date: Date, days: number) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
-function dateKey(date: Date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
-    2,
-    "0",
-  )}-${String(date.getDate()).padStart(2, "0")}`;
-}
-
-function getEntryAllocationDates(entry: LedgerEntry) {
-  const start = entry.startDate || entry.expenseDate;
-  const end = entry.endDate || start;
-  const startDate = new Date(`${start}T00:00:00`);
-  const endDate = new Date(`${end}T00:00:00`);
-
-  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
-    return [entry.expenseDate];
-  }
-
-  if (endDate < startDate) {
-    return [entry.expenseDate];
-  }
-
-  const dates: string[] = [];
-  let cursor = startDate;
-
-  while (cursor <= endDate && dates.length < 90) {
-    dates.push(dateKey(cursor));
-    cursor = addDays(cursor, 1);
-  }
-
-  return dates.length > 0 ? dates : [entry.expenseDate];
-}
-
 function buildDailyLedgerReports(entries: LedgerEntry[], locale: Locale) {
   const reports = new Map<string, DailyLedgerReport>();
 
   entries.forEach((entry) => {
-    const dates = getEntryAllocationDates(entry);
+    const dates = getLedgerAllocationDates(entry);
     const allocatedAmount = Number((entry.baseAmount / dates.length).toFixed(2));
     const allocationNote =
       dates.length > 1
         ? locale === "zh-CN"
           ? `${money(entry.baseAmount, entry.baseCurrency, locale)} 平均分摊到 ${
               dates.length
-            } 天`
+            } ${entry.category === "hotel" ? "晚" : "天"}`
           : `${money(entry.baseAmount, entry.baseCurrency, locale)} split across ${
               dates.length
-            } days`
+            } ${entry.category === "hotel" ? "nights" : "days"}`
         : null;
 
     dates.forEach((date) => {

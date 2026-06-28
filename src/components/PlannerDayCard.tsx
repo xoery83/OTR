@@ -16,6 +16,7 @@ import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import { enqueueMediaProcessingJobs } from "@/lib/background-jobs/client";
 import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
+import { allocatedLedgerAmountForDay } from "@/lib/ledger/date-allocation";
 import {
   updateTripDayTitle,
   upsertTripDay,
@@ -283,9 +284,33 @@ function dayLocation(plannerDay: PlannerV2Day) {
   return [...new Set(locations)][0] ?? null;
 }
 
+function isStayNightForDay(
+  dayDate: string,
+  startValue: string | null | undefined,
+  endValue: string | null | undefined,
+) {
+  if (dayDate === "unscheduled") return true;
+  const startDate = dateOnly(startValue) ?? dateOnly(endValue);
+  const endDate = dateOnly(endValue) ?? startDate;
+
+  if (!startDate) return false;
+
+  if (!endDate || endDate <= startDate) {
+    return dayDate === startDate;
+  }
+
+  return startDate <= dayDate && dayDate < endDate;
+}
+
 function tonightStays(plannerDay: PlannerV2Day) {
   return plannerDay.reservations.filter(
-    (reservation) => reservation.reservationType === "hotel",
+    (reservation) =>
+      reservation.reservationType === "hotel" &&
+      isStayNightForDay(
+        plannerDay.day.dayDate,
+        reservation.startsAt,
+        reservation.endsAt,
+      ),
   );
 }
 
@@ -618,18 +643,6 @@ function formatPlannerDayLabel(value: string, locale: Locale) {
   return formatted;
 }
 
-function daysBetweenInclusive(startDate: string, endDate: string) {
-  const start = new Date(`${startDate}T00:00:00Z`).getTime();
-  const end = new Date(`${endDate}T00:00:00Z`).getTime();
-  const dayMs = 24 * 60 * 60 * 1000;
-
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
-    return 1;
-  }
-
-  return Math.floor((end - start) / dayMs) + 1;
-}
-
 function dateOnly(value: string | null | undefined) {
   return value ? value.slice(0, 10) : null;
 }
@@ -644,26 +657,6 @@ function looksLikeFlightItem(item: StoryItem) {
     /\b[A-Z0-9]{2,3}\s?-?\s?\d{2,5}\b/.test(text) ||
     /\([A-Z]{3}\)\s*(?:→|->|to|到)\s*[^()]*\([A-Z]{3}\)/i.test(text)
   );
-}
-
-function allocatedAmountForDay(
-  entry: LedgerEntry,
-  dayDate: string,
-  range?: { startDate: string | null; endDate: string | null },
-) {
-  const startDate = range?.startDate ?? entry.startDate;
-  const endDate = range?.endDate ?? entry.endDate;
-
-  if (
-    startDate &&
-    endDate &&
-    startDate <= dayDate &&
-    endDate >= dayDate
-  ) {
-    return entry.baseAmount / daysBetweenInclusive(startDate, endDate);
-  }
-
-  return entry.expenseDate === dayDate ? entry.baseAmount : 0;
 }
 
 function comparableText(value: string | null | undefined) {
@@ -1258,7 +1251,11 @@ export function PlannerDayCard({
   }
 
   function allocatedLedgerAmount(entry: LedgerEntry) {
-    return allocatedAmountForDay(entry, day.dayDate, linkedLedgerRange(entry));
+    return allocatedLedgerAmountForDay(
+      entry,
+      day.dayDate,
+      linkedLedgerRange(entry),
+    );
   }
 
   function rangeForStoryItem(item: StoryItem) {
