@@ -7,6 +7,7 @@ import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
 import { getAppOrigin } from "@/lib/app-url";
 import { getErrorMessage } from "@/lib/errors";
+import { getCurrentUser } from "@/lib/supabase/auth";
 import { createJourneyInvite } from "@/lib/supabase/invites";
 import {
   createJourneyMember,
@@ -15,6 +16,7 @@ import {
   type JourneyMemberSuggestion,
   updateJourneyMember,
 } from "@/lib/supabase/journey-members";
+import { getProfile } from "@/lib/supabase/profiles";
 import { createTrip, updateTripSettings } from "@/lib/supabase/trips";
 import type { PhotoStorageProvider, Trip } from "@/types";
 
@@ -231,21 +233,27 @@ function NewJourneyTour() {
         startDate,
         endDate,
       });
+      const currentUser = await getCurrentUser();
+      const currentProfile = currentUser
+        ? await getProfile(currentUser.id).catch(() => null)
+        : null;
       const currentSuggestions =
         suggestions.length > 0 ? suggestions : await getJourneyMemberSuggestions();
       const ownerSuggestion = currentSuggestions.find(
         (suggestion) => suggestion.isCurrentUser && suggestion.notes.trim(),
       );
-      if (ownerSuggestion) {
+      const ownerAka =
+        ownerSuggestion?.notes.trim() || currentProfile?.globalAka?.trim() || "";
+      if (ownerAka) {
         const tripMembers = await getJourneyMembers(trip.id);
         const ownerMember = tripMembers.find(
-          (member) => member.role === "owner" && member.userId === ownerSuggestion.userId,
+          (member) => member.role === "owner" && member.userId === currentUser?.id,
         );
 
         if (ownerMember && !ownerMember.notes?.trim()) {
           await updateJourneyMember({
             memberId: ownerMember.id,
-            notes: ownerSuggestion.notes,
+            notes: ownerAka,
           });
         }
       }
@@ -301,7 +309,7 @@ function NewJourneyTour() {
         coverImageUrl: coverImageUrl.trim() || null,
         photoStorageProvider: storageProviderFromChoice(storageChoice),
       });
-      router.push(`/trips/${createdTrip.id}`);
+      router.push(`/trips/${createdTrip.id}/planner`);
     } catch (settingsError) {
       setError(
         getErrorMessage(settingsError, t("journeyCreate.error.saveSettings")),
@@ -689,7 +697,7 @@ function NewJourneyTour() {
 
           {createdTrip ? (
             <Link
-              href={`/trips/${createdTrip.id}`}
+              href={`/trips/${createdTrip.id}/planner`}
               className="block rounded-2xl bg-emerald-50 px-5 py-3 text-center text-sm font-bold text-emerald-900"
             >
               {t("journeyCreate.skipSettings")}

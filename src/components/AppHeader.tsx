@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import { logout } from "@/lib/supabase/auth";
@@ -32,6 +32,7 @@ export function AppHeader() {
   const [journeyName, setJourneyName] = useState<string | null>(null);
   const [journeyCoverImageUrl, setJourneyCoverImageUrl] = useState<string | null>(null);
   const [journeys, setJourneys] = useState<Trip[]>([]);
+  const journeyMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -80,6 +81,36 @@ export function AppHeader() {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isJourneyMenuOpen) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        journeyMenuRef.current?.contains(target)
+      ) {
+        return;
+      }
+
+      setIsJourneyMenuOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsJourneyMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isJourneyMenuOpen]);
 
   async function handleLogout() {
     await logout();
@@ -144,7 +175,7 @@ export function AppHeader() {
               <p className="pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-sm font-black text-stone-900">
                 {tripId ? journeyName || t("common.journey") : "OTR"}
               </p>
-              <div className="relative">
+              <div ref={journeyMenuRef} className="relative">
                 <button
                   type="button"
                   onClick={() => setIsJourneyMenuOpen((current) => !current)}

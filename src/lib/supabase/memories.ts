@@ -9,6 +9,7 @@ type MemoryRow = {
   id: string;
   trip_id: string;
   trip_day_id: string | null;
+  parent_memory_id: string | null;
   itinerary_event_id: string | null;
   itinerary_reservation_id: string | null;
   user_id: string | null;
@@ -24,6 +25,7 @@ export type CreateMemoryBaseInput = {
   capturedAt: string;
   locationName: string;
   tripDayId?: string | null;
+  parentMemoryId?: string | null;
   itineraryEventId?: string | null;
   itineraryReservationId?: string | null;
 };
@@ -35,16 +37,49 @@ export type UpdateMemoryInput = {
   capturedAt?: string;
 };
 
+const replyMarkerPrefix = "__otr_reply_parent:";
+
+function encodeMemoryContent(content: string, parentMemoryId?: string | null) {
+  const trimmed = content.trim();
+  if (!parentMemoryId) return trimmed;
+  return `${replyMarkerPrefix}${parentMemoryId}__\n${trimmed}`;
+}
+
+function decodeMemoryContent(content: string | null, parentMemoryId?: string | null) {
+  const raw = content ?? "";
+  const match = raw.match(/^__otr_reply_parent:([0-9a-f-]+)__\n?/i);
+  if (!match) {
+    return { content: raw, parentMemoryId: parentMemoryId ?? null };
+  }
+
+  return {
+    content: raw.slice(match[0].length),
+    parentMemoryId: parentMemoryId ?? match[1],
+  };
+}
+
+function isMissingParentMemoryColumn(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const record = error as { message?: string; code?: string };
+  return (
+    record.code === "PGRST204" ||
+    /parent_memory_id|schema cache|column/i.test(record.message ?? "")
+  );
+}
+
 function mapMemory(row: MemoryRow): MemoryEntry {
+  const decoded = decodeMemoryContent(row.content, row.parent_memory_id);
+
   return {
     id: row.id,
     tripId: row.trip_id,
     tripDayId: row.trip_day_id,
+    parentMemoryId: decoded.parentMemoryId,
     itineraryEventId: row.itinerary_event_id,
     itineraryReservationId: row.itinerary_reservation_id,
     userId: row.user_id ?? "",
     type: row.type,
-    content: row.content ?? "",
+    content: decoded.content,
     mediaUrl: row.media_url,
     mediaAssetId: null,
     locationName: row.location_name,
@@ -172,35 +207,47 @@ export async function createTextMemory(
   const memoryId = crypto.randomUUID();
   const now = new Date().toISOString();
   const capturedAt = new Date(input.capturedAt).toISOString();
+  const encodedContent = encodeMemoryContent(content, input.parentMemoryId);
 
-  const { error } = await supabase
-    .from("memory_entries")
-    .insert({
-      id: memoryId,
-      trip_id: tripId,
-      user_id: user.id,
-      trip_day_id: input.tripDayId || null,
-      itinerary_event_id: input.itineraryEventId || null,
-      itinerary_reservation_id: input.itineraryReservationId || null,
-      type: "text",
-      content,
-      location_name: input.locationName.trim() || null,
-      captured_at: capturedAt,
-    });
+  const row = {
+    id: memoryId,
+    trip_id: tripId,
+    user_id: user.id,
+    trip_day_id: input.tripDayId || null,
+    parent_memory_id: input.parentMemoryId || null,
+    itinerary_event_id: input.itineraryEventId || null,
+    itinerary_reservation_id: input.itineraryReservationId || null,
+    type: "text",
+    content: encodedContent,
+    location_name: input.locationName.trim() || null,
+    captured_at: capturedAt,
+  };
+
+  const { error } = await supabase.from("memory_entries").insert(row);
 
   if (error) {
-    throw error;
+    if (!isMissingParentMemoryColumn(error)) {
+      throw error;
+    }
+
+    const fallbackRow = { ...row };
+    delete (fallbackRow as Partial<typeof row>).parent_memory_id;
+    const { error: fallbackError } = await supabase
+      .from("memory_entries")
+      .insert(fallbackRow);
+    if (fallbackError) throw fallbackError;
   }
 
   return {
     id: memoryId,
     tripId,
     tripDayId: input.tripDayId || null,
+    parentMemoryId: input.parentMemoryId || null,
     itineraryEventId: input.itineraryEventId || null,
     itineraryReservationId: input.itineraryReservationId || null,
     userId: user.id,
     type: "text",
-    content,
+    content: content.trim(),
     mediaUrl: null,
     mediaAssetId: null,
     locationName: input.locationName.trim() || null,
@@ -317,23 +364,40 @@ export async function createPhotoMemory(
   }
 
   const memoryId = crypto.randomUUID();
+  const encodedCaption = encodeMemoryContent(caption, input.parentMemoryId);
 
-  const { error: memoryError } = await supabase.from("memory_entries").insert({
+  const memoryRow = {
     id: memoryId,
     trip_id: tripId,
     user_id: user.id,
     trip_day_id: input.tripDayId || null,
+    parent_memory_id: input.parentMemoryId || null,
     itinerary_event_id: input.itineraryEventId || null,
     itinerary_reservation_id: input.itineraryReservationId || null,
     type: "photo",
-    content: caption.trim() || null,
+    content: encodedCaption || null,
     media_url: compressedFilePath,
     location_name: input.locationName.trim() || null,
     captured_at: capturedAt,
-  });
+  };
+
+  const { error: memoryError } = await supabase
+    .from("memory_entries")
+    .insert(memoryRow);
 
   if (memoryError) {
-    throw new Error(`Memory row failed: ${memoryError.message}`);
+    if (!isMissingParentMemoryColumn(memoryError)) {
+      throw new Error(`Memory row failed: ${memoryError.message}`);
+    }
+
+    const fallbackRow = { ...memoryRow };
+    delete (fallbackRow as Partial<typeof memoryRow>).parent_memory_id;
+    const { error: fallbackError } = await supabase
+      .from("memory_entries")
+      .insert(fallbackRow);
+    if (fallbackError) {
+      throw new Error(`Memory row failed: ${fallbackError.message}`);
+    }
   }
 
   const mediaAssetId = crypto.randomUUID();
@@ -406,6 +470,7 @@ export async function createPhotoMemory(
     id: memoryId,
     tripId,
     tripDayId: input.tripDayId || null,
+    parentMemoryId: input.parentMemoryId || null,
     itineraryEventId: input.itineraryEventId || null,
     itineraryReservationId: input.itineraryReservationId || null,
     userId: user.id,

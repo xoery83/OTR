@@ -10,6 +10,8 @@ import {
 import type {
   BackgroundJob,
   BackgroundJobBatch,
+  UpdateBackgroundJobBatchInput,
+  UpdateBackgroundJobInput,
 } from "@/lib/background-jobs/types";
 import { compressImageFile, makeSafeFileName } from "@/lib/images";
 import { supabase } from "@/lib/supabase/client";
@@ -37,6 +39,14 @@ type UploadRuntimeBatch = {
 
 const runtimeBatches = new Map<string, UploadRuntimeBatch>();
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function isRuntimeOnlyId(id: string) {
+  return id.startsWith("runtime-");
+}
+
 function emitActivityChanged() {
   window.dispatchEvent(new CustomEvent("otr:background-jobs-changed"));
 }
@@ -60,6 +70,152 @@ function metadataForFile(file: File) {
     mimeType: file.type,
     lastModified: file.lastModified || null,
   };
+}
+
+function patchRuntimeBatch(
+  runtime: UploadRuntimeBatch,
+  patch: UpdateBackgroundJobBatchInput,
+) {
+  Object.assign(runtime.batch, {
+    ...patch,
+    updatedAt: nowIso(),
+  });
+}
+
+async function saveRuntimeBatch(
+  runtime: UploadRuntimeBatch,
+  patch: UpdateBackgroundJobBatchInput,
+) {
+  patchRuntimeBatch(runtime, patch);
+  if (!isRuntimeOnlyId(runtime.batch.id)) {
+    const updated = await updateBackgroundJobBatch(runtime.batch.id, patch).catch(
+      () => null,
+    );
+    if (updated) Object.assign(runtime.batch, updated);
+  }
+}
+
+function patchRuntimeJob(item: UploadRuntimeItem, patch: UpdateBackgroundJobInput) {
+  Object.assign(item.job, {
+    ...patch,
+    updatedAt: nowIso(),
+  });
+}
+
+async function saveRuntimeJob(
+  item: UploadRuntimeItem,
+  patch: UpdateBackgroundJobInput,
+) {
+  patchRuntimeJob(item, patch);
+  if (!isRuntimeOnlyId(item.job.id)) {
+    const updated = await updateBackgroundJob(item.job.id, patch).catch(() => null);
+    if (updated) Object.assign(item.job, updated);
+  }
+}
+
+function createRuntimeOnlyBatch(
+  input: StartPhotoUploadBatchInput,
+  createError?: unknown,
+): UploadRuntimeBatch {
+  const createdAt = nowIso();
+  const batchId = `runtime-${crypto.randomUUID()}`;
+  const errorMessage =
+    createError instanceof Error ? createError.message : "Could not create job batch.";
+  const batch: BackgroundJobBatch = {
+    id: batchId,
+    journeyId: input.journeyId,
+    userId: null,
+    batchType: "photo_upload",
+    title: `Uploading ${input.files.length} photos`,
+    totalItems: input.files.length,
+    completedItems: 0,
+    failedItems: 0,
+    status: "queued",
+    currentStep: "Queued in this browser",
+    metadata: {
+      dayId: input.dayId ?? null,
+      plannerItemId: input.plannerItemId ?? null,
+      triggeredBy: input.triggeredBy ?? "capture",
+      runtimeOnly: true,
+      createError: errorMessage,
+    },
+    createdAt,
+    updatedAt: createdAt,
+  };
+
+  return {
+    batch,
+    items: input.files.map((file) => ({
+      file,
+      status: "queued",
+      job: {
+        id: `runtime-${crypto.randomUUID()}`,
+        batchId,
+        journeyId: input.journeyId,
+        userId: null,
+        jobType: "photo_upload",
+        title: file.name || "Photo upload",
+        status: "queued",
+        progress: 0,
+        currentStep: "Queued",
+        payload: {
+          batchId,
+          dayId: input.dayId ?? null,
+          plannerItemId: input.plannerItemId ?? null,
+          triggeredBy: input.triggeredBy ?? "capture",
+          runtimeOnly: true,
+          ...metadataForFile(file),
+        },
+        result: {},
+        errorMessage: null,
+        attempts: 0,
+        availableAt: createdAt,
+        startedAt: null,
+        completedAt: null,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    })),
+    started: false,
+  };
+}
+
+export function listRuntimePhotoUploadBatches() {
+  return Array.from(runtimeBatches.values()).map((runtime) => runtime.batch);
+}
+
+function runRuntimeBatch(runtime: UploadRuntimeBatch) {
+  void processRuntimeBatch(runtime).catch(async (error) => {
+    const message =
+      error instanceof Error ? error.message : "Photo upload batch failed.";
+    runtime.items.forEach((item) => {
+      if (item.status !== "completed") {
+        item.status = "failed";
+        patchRuntimeJob(item, {
+          status: "failed",
+          progress: 100,
+          currentStep: "Upload failed",
+          errorMessage: message,
+        });
+      }
+    });
+    const completedItems = runtime.items.filter(
+      (item) => item.status === "completed",
+    ).length;
+    const failedItems = runtime.items.length - completedItems;
+    await saveRuntimeBatch(runtime, {
+      status: "failed",
+      completedItems,
+      failedItems,
+      currentStep: `${completedItems} photos uploaded, ${failedItems} failed`,
+    });
+    emitActivityChanged();
+    emitUploadCompleted({
+      totalFiles: runtime.batch.totalItems,
+      uploadedFiles: completedItems,
+      failedFiles: failedItems,
+    });
+  });
 }
 
 async function getCurrentUserId() {
@@ -135,15 +291,14 @@ async function processRuntimeBatch(runtime: UploadRuntimeBatch) {
   if (runtime.started) return;
   runtime.started = true;
 
-  const { batch } = runtime;
   const userId = await getCurrentUserId();
   let completedItems = 0;
   let failedItems = 0;
 
-  await updateBackgroundJobBatch(batch.id, {
+  await saveRuntimeBatch(runtime, {
     status: "uploading",
-    currentStep: `Uploading 0/${batch.totalItems}`,
-  }).catch(() => null);
+    currentStep: `Uploading 0/${runtime.batch.totalItems}`,
+  });
   emitActivityChanged();
 
   for (const item of runtime.items) {
@@ -153,7 +308,7 @@ async function processRuntimeBatch(runtime: UploadRuntimeBatch) {
     }
 
     item.status = "uploading";
-    await updateBackgroundJob(item.job.id, {
+    await saveRuntimeJob(item, {
       status: "uploading",
       progress: 10,
       currentStep: "Preparing photo",
@@ -162,30 +317,32 @@ async function processRuntimeBatch(runtime: UploadRuntimeBatch) {
     emitActivityChanged();
 
     try {
-      await updateBackgroundJob(item.job.id, {
+      await saveRuntimeJob(item, {
         status: "uploading",
         progress: 35,
         currentStep: "Uploading photo",
       });
       const asset = await uploadPhotoFile({
-        journeyId: batch.journeyId || "",
+        journeyId: runtime.batch.journeyId || "",
         userId,
         file: item.file,
         dayId:
-          typeof batch.metadata.dayId === "string" ? batch.metadata.dayId : null,
+          typeof runtime.batch.metadata.dayId === "string"
+            ? runtime.batch.metadata.dayId
+            : null,
         plannerItemId:
-          typeof batch.metadata.plannerItemId === "string"
-            ? batch.metadata.plannerItemId
+          typeof runtime.batch.metadata.plannerItemId === "string"
+            ? runtime.batch.metadata.plannerItemId
             : null,
         triggeredBy:
-          typeof batch.metadata.triggeredBy === "string"
-            ? batch.metadata.triggeredBy
+          typeof runtime.batch.metadata.triggeredBy === "string"
+            ? runtime.batch.metadata.triggeredBy
             : "capture",
       });
 
       item.status = "completed";
       completedItems += 1;
-      await updateBackgroundJob(item.job.id, {
+      await saveRuntimeJob(item, {
         status: "completed",
         progress: 100,
         currentStep: "Photo uploaded",
@@ -197,29 +354,29 @@ async function processRuntimeBatch(runtime: UploadRuntimeBatch) {
     } catch (error) {
       item.status = "failed";
       failedItems += 1;
-      await updateBackgroundJob(item.job.id, {
+      await saveRuntimeJob(item, {
         status: "failed",
         progress: 100,
         currentStep: "Upload failed",
         errorMessage:
           error instanceof Error ? error.message : "Photo upload failed.",
-      }).catch(() => null);
+      });
     }
 
-    await updateBackgroundJobBatch(batch.id, {
+    await saveRuntimeBatch(runtime, {
       status: failedItems > 0 ? "failed" : "uploading",
       completedItems,
       failedItems,
       currentStep:
         failedItems > 0
           ? `${completedItems} uploaded, ${failedItems} failed`
-          : `Uploading ${completedItems}/${batch.totalItems}`,
-    }).catch(() => null);
+          : `Uploading ${completedItems}/${runtime.batch.totalItems}`,
+    });
     emitActivityChanged();
   }
 
   const finalStatus = failedItems > 0 ? "failed" : "completed";
-  await updateBackgroundJobBatch(batch.id, {
+  await saveRuntimeBatch(runtime, {
     status: finalStatus,
     completedItems,
     failedItems,
@@ -227,10 +384,10 @@ async function processRuntimeBatch(runtime: UploadRuntimeBatch) {
       finalStatus === "completed"
         ? "Organizing photos in background..."
         : `${completedItems} photos uploaded, ${failedItems} failed`,
-  }).catch(() => null);
+  });
   emitActivityChanged();
   emitUploadCompleted({
-    totalFiles: batch.totalItems,
+    totalFiles: runtime.batch.totalItems,
     uploadedFiles: completedItems,
     failedFiles: failedItems,
   });
@@ -241,52 +398,57 @@ export async function startPhotoUploadBatch(input: StartPhotoUploadBatchInput) {
     throw new Error("Use the foreground Capture flow for a single photo.");
   }
 
-  const batch = await createBackgroundJobBatch({
-    journeyId: input.journeyId,
-    batchType: "photo_upload",
-    title: `Uploading ${input.files.length} photos`,
-    totalItems: input.files.length,
-    currentStep: "Queued",
-    metadata: {
-      dayId: input.dayId ?? null,
-      plannerItemId: input.plannerItemId ?? null,
-      triggeredBy: input.triggeredBy ?? "capture",
-    },
-  });
+  let runtime: UploadRuntimeBatch;
+  try {
+    const batch = await createBackgroundJobBatch({
+      journeyId: input.journeyId,
+      batchType: "photo_upload",
+      title: `Uploading ${input.files.length} photos`,
+      totalItems: input.files.length,
+      currentStep: "Queued",
+      metadata: {
+        dayId: input.dayId ?? null,
+        plannerItemId: input.plannerItemId ?? null,
+        triggeredBy: input.triggeredBy ?? "capture",
+      },
+    });
 
-  const jobs = await Promise.all(
-    input.files.map((file) =>
-      createBackgroundJob({
-        journeyId: input.journeyId,
-        batchId: batch.id,
-        jobType: "photo_upload",
-        title: file.name || "Photo upload",
-        currentStep: "Queued",
-        payload: {
+    const jobs = await Promise.all(
+      input.files.map((file) =>
+        createBackgroundJob({
+          journeyId: input.journeyId,
           batchId: batch.id,
-          dayId: input.dayId ?? null,
-          plannerItemId: input.plannerItemId ?? null,
-          triggeredBy: input.triggeredBy ?? "capture",
-          ...metadataForFile(file),
-        },
-      }),
-    ),
-  );
+          jobType: "photo_upload",
+          title: file.name || "Photo upload",
+          currentStep: "Queued",
+          payload: {
+            batchId: batch.id,
+            dayId: input.dayId ?? null,
+            plannerItemId: input.plannerItemId ?? null,
+            triggeredBy: input.triggeredBy ?? "capture",
+            ...metadataForFile(file),
+          },
+        }),
+      ),
+    );
 
-  const runtime: UploadRuntimeBatch = {
-    batch,
-    items: input.files.map((file, index) => ({
-      file,
-      job: jobs[index],
-      status: "queued",
-    })),
-    started: false,
-  };
-  runtimeBatches.set(batch.id, runtime);
+    runtime = {
+      batch,
+      items: input.files.map((file, index) => ({
+        file,
+        job: jobs[index],
+        status: "queued",
+      })),
+      started: false,
+    };
+  } catch (error) {
+    runtime = createRuntimeOnlyBatch(input, error);
+  }
+  runtimeBatches.set(runtime.batch.id, runtime);
   emitActivityChanged();
-  void processRuntimeBatch(runtime);
+  runRuntimeBatch(runtime);
 
-  return batch;
+  return runtime.batch;
 }
 
 export async function retryFailedPhotoUploadBatch(batchId: string) {
@@ -303,7 +465,7 @@ export async function retryFailedPhotoUploadBatch(batchId: string) {
   runtime.started = false;
   for (const item of failedItems) {
     item.status = "queued";
-    item.job = await updateBackgroundJob(item.job.id, {
+    await saveRuntimeJob(item, {
       status: "queued",
       progress: 0,
       currentStep: "Queued for retry",
@@ -311,12 +473,11 @@ export async function retryFailedPhotoUploadBatch(batchId: string) {
     });
   }
 
-  await updateBackgroundJobBatch(batchId, {
+  await saveRuntimeBatch(runtime, {
     status: "uploading",
     failedItems: 0,
     currentStep: "Retrying failed uploads",
   });
   emitActivityChanged();
-  void processRuntimeBatch(runtime);
+  runRuntimeBatch(runtime);
 }
-

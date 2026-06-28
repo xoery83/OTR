@@ -1,24 +1,34 @@
 "use client";
 
+import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { createBackgroundJob } from "@/lib/background-jobs/client";
+import { executeCaptureAction } from "@/lib/capture-ai/actions";
+import { detectCaptureIntent } from "@/lib/capture-ai/client";
+import { getErrorMessage } from "@/lib/errors";
 import { formatDayLabel } from "@/lib/format";
+import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
+import { compressImageFile, type CompressedImage } from "@/lib/images";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import {
   getPhotoFacesForAssets,
   getTripPhotoAssets,
   requestFaceConfirmation,
+  requestVoiceTranscription,
 } from "@/lib/supabase/media-assets";
 import {
+  createPhotoMemory,
+  createTextMemory,
   deleteMemoryEntry,
   getSignedMemoryImageUrls,
   getTripMemories,
   updateMemoryEntry,
 } from "@/lib/supabase/memories";
+import { getPlannerV2, type PlannerV2Data } from "@/lib/supabase/planner-v2";
 import { getTrip } from "@/lib/supabase/trips";
 import type {
   JourneyMember,
@@ -41,6 +51,15 @@ type TimelineItem = {
   searchText: string;
   peopleNames: string[];
   hasUnassignedFaces: boolean;
+  linkedPlannerItem: LinkedPlannerItem | null;
+  replies: TimelineItem[];
+};
+
+type LinkedPlannerItem = {
+  href: string;
+  dayLabel: string;
+  timeLabel: string | null;
+  title: string;
 };
 
 function getLocalDateKey(value: string) {
@@ -139,6 +158,57 @@ function formatShortDateTime(value: string) {
   })}`;
 }
 
+function formatPlannerDayText(value: string) {
+  if (value === "unscheduled") return "任意日期";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+  }).format(new Date(`${value}T00:00:00`));
+}
+
+function formatPlannerTimeText(value: string | null | undefined) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleTimeString("zh-CN", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function buildPlannerLinkIndex(
+  plannerData: PlannerV2Data | null,
+  tripId: string,
+) {
+  const index = new Map<string, LinkedPlannerItem>();
+  if (!plannerData) return index;
+
+  plannerData.days.forEach((plannerDay) => {
+    const dayDate = plannerDay.day.dayDate;
+    const dayLabel = formatPlannerDayText(dayDate);
+
+    plannerDay.activities.forEach((activity) => {
+      index.set(`event:${activity.id}`, {
+        href: `/trips/${tripId}/planner?date=${dayDate}&item=activity-${activity.id}`,
+        dayLabel,
+        timeLabel: formatPlannerTimeText(activity.plannedStart),
+        title: activity.title,
+      });
+    });
+
+    plannerDay.reservations.forEach((reservation) => {
+      index.set(`reservation:${reservation.id}`, {
+        href: `/trips/${tripId}/planner?date=${dayDate}&item=reservation-${reservation.id}`,
+        dayLabel,
+        timeLabel: formatPlannerTimeText(reservation.startsAt),
+        title: reservation.title,
+      });
+    });
+  });
+
+  return index;
+}
+
 function toDateTimeLocalValue(value: string) {
   const date = new Date(value);
   const offset = date.getTimezoneOffset();
@@ -169,6 +239,7 @@ function getTimelineItems(input: {
   facesByAssetId: Record<string, PhotoFace[]>;
   imageUrls: Record<string, string>;
   members: JourneyMember[];
+  plannerLinks: Map<string, LinkedPlannerItem>;
 }) {
   const photoByMemoryId = new Map(
     input.photoAssets
@@ -176,7 +247,7 @@ function getTimelineItems(input: {
       .map((photo) => [photo.memoryEntryId, photo]),
   );
 
-  return input.memories.map((memory) => {
+  function toTimelineItem(memory: MemoryEntry): TimelineItem {
     const photo = photoByMemoryId.get(memory.id) ?? null;
     const faces = photo ? input.facesByAssetId[photo.id] ?? [] : [];
     const faceNames = faces
@@ -196,6 +267,14 @@ function getTimelineItems(input: {
     const summary = photo ? getAiSummary(photo) : null;
     const uploadedAt = photo?.createdAt ?? memory.createdAt;
     const displayUrl = photo?.displayUrl ?? (memory.mediaUrl ? input.imageUrls[memory.mediaUrl] : undefined);
+    const linkedPlannerItem =
+      (memory.itineraryEventId
+        ? input.plannerLinks.get(`event:${memory.itineraryEventId}`)
+        : null) ??
+      (memory.itineraryReservationId
+        ? input.plannerLinks.get(`reservation:${memory.itineraryReservationId}`)
+        : null) ??
+      null;
 
     return {
       id: memory.id,
@@ -210,6 +289,8 @@ function getTimelineItems(input: {
           memory.content,
           memory.locationName,
           memory.contributorName,
+          linkedPlannerItem?.title,
+          linkedPlannerItem?.dayLabel,
           summary,
           photo?.ocrText,
           sceneTags.join(" "),
@@ -223,8 +304,33 @@ function getTimelineItems(input: {
       hasUnassignedFaces: faces.some(
         (face) => face.recognitionStatus !== "confirmed",
       ),
+      linkedPlannerItem,
+      replies: [],
     } satisfies TimelineItem;
+  }
+
+  const allItems = input.memories.map(toTimelineItem);
+  const itemsById = new Map(allItems.map((item) => [item.id, item]));
+  const rootItems: TimelineItem[] = [];
+
+  allItems.forEach((item) => {
+    const parentId = item.memory.parentMemoryId;
+    const parent = parentId ? itemsById.get(parentId) : null;
+    if (parent) {
+      parent.replies.push(item);
+    } else {
+      rootItems.push(item);
+    }
   });
+
+  allItems.forEach((item) => {
+    item.replies.sort(
+      (left, right) =>
+        new Date(left.capturedAt).getTime() - new Date(right.capturedAt).getTime(),
+    );
+  });
+
+  return rootItems;
 }
 
 function getFilteredItems(input: {
@@ -241,8 +347,13 @@ function getFilteredItems(input: {
   );
 
   return input.items.filter((item) => {
+    const replySearchText = item.replies
+      .map((reply) => reply.searchText)
+      .join(" ");
     const matchedMembers = input.members.filter((member) => {
-      const nameHit = item.searchText.includes(member.displayName.toLowerCase());
+      const nameHit = `${item.searchText} ${replySearchText}`.includes(
+        member.displayName.toLowerCase(),
+      );
       const faceHit = item.faces.some(
         (face) => face.journeyMemberId === member.id,
       );
@@ -259,7 +370,7 @@ function getFilteredItems(input: {
       );
 
     return (
-      (!query || item.searchText.includes(query)) &&
+      (!query || `${item.searchText} ${replySearchText}`.includes(query)) &&
       (!input.mineOnly || isMine) &&
       memberFilterPassed
     );
@@ -267,20 +378,36 @@ function getFilteredItems(input: {
 }
 
 function ItemMeta({ item }: { item: TimelineItem }) {
+  const timeLabel =
+    item.memory.type === "text" || item.memory.type === "voice"
+      ? "说话时间"
+      : "拍摄时间";
+
   return (
     <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold text-stone-600">
       <span className="rounded-full bg-stone-100 px-2 py-1">
-        Uploaded {formatShortDateTime(item.uploadedAt)}
+        {timeLabel} {formatShortDateTime(item.capturedAt)}
       </span>
-      <span className="rounded-full bg-stone-100 px-2 py-1">
-        Shot {formatShortDateTime(item.capturedAt)}
-      </span>
+      {item.linkedPlannerItem ? (
+        <Link
+          href={item.linkedPlannerItem.href}
+          className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-900 underline decoration-emerald-200 underline-offset-2"
+        >
+          {[
+            item.linkedPlannerItem.dayLabel,
+            item.linkedPlannerItem.timeLabel,
+            item.linkedPlannerItem.title,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </Link>
+      ) : null}
       {item.memory.locationName ? (
         <span className="rounded-full bg-stone-100 px-2 py-1">
           {item.memory.locationName}
         </span>
       ) : null}
-      {item.memory.contributorName ? (
+      {item.memory.contributorName && item.memory.type !== "text" ? (
         <span className="rounded-full bg-stone-100 px-2 py-1">
           By {item.memory.contributorName}
         </span>
@@ -297,19 +424,86 @@ function ItemMeta({ item }: { item: TimelineItem }) {
   );
 }
 
+function MicrophoneIcon({ className = "size-4" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+    >
+      <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z" />
+      <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
+      <path d="M12 18v4" />
+      <path d="M8 22h8" />
+    </svg>
+  );
+}
+
+function looksLikeExpenseReply(value: string) {
+  return /(?:\b(?:paid|cost|receipt|invoice|expense)\b|费用|花了|付款|收据|发票|门票|票|酒店|餐|油|停车|租车|[$¥€£]|(?:NZD|AUD|CHF|CNY|EUR|DKK|USD|ISK|GBP)\s*\d|\d+(?:\.\d{1,2})?\s*(?:NZD|AUD|CHF|CNY|EUR|DKK|USD|ISK|GBP|元|欧|刀))/i.test(
+    value,
+  );
+}
+
+function ReplyBubble({
+  reply,
+  currentUserId,
+}: {
+  reply: TimelineItem;
+  currentUserId: string;
+}) {
+  const mine = reply.memory.userId === currentUserId;
+  const bubbleTone = mine
+    ? "bg-emerald-700 text-white rounded-tr-sm"
+    : "bg-white text-stone-950 rounded-tl-sm";
+
+  return (
+    <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+      <div className={`max-w-[88%] ${mine ? "text-right" : "text-left"}`}>
+        <p className="mb-1 px-1 text-xs font-bold text-emerald-900">
+          {reply.memory.contributorName || "旅伴"} 说
+        </p>
+        <div className={`rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${bubbleTone}`}>
+          {reply.memory.type === "photo" && reply.photo?.displayUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={reply.photo.displayUrl}
+              alt={reply.memory.content || "Reply photo"}
+              className="mb-2 max-h-56 rounded-xl object-cover"
+            />
+          ) : null}
+          {reply.memory.content ? (
+            <p className="whitespace-pre-wrap">{reply.memory.content}</p>
+          ) : null}
+        </div>
+        <ItemMeta item={reply} />
+      </div>
+    </div>
+  );
+}
+
 function CompactMemoryCard({
   item,
+  tripId,
   currentUserId,
   onSave,
   onDelete,
+  onReplyCreated,
 }: {
   item: TimelineItem;
+  tripId: string;
   currentUserId: string;
   onSave: (
     memoryId: string,
     input: { content: string; locationName: string; capturedAt: string },
   ) => Promise<void>;
   onDelete: (memoryId: string) => Promise<void>;
+  onReplyCreated: () => Promise<void>;
 }) {
   const isPhoto = item.memory.type === "photo" && item.photo?.displayUrl;
   const canManage = item.memory.userId === currentUserId;
@@ -319,8 +513,151 @@ function CompactMemoryCard({
   const [capturedAtDraft, setCapturedAtDraft] = useState(
     toDateTimeLocalValue(item.memory.capturedAt),
   );
+  const [isReplying, setIsReplying] = useState(false);
+  const [replyText, setReplyText] = useState("");
+  const [replyImage, setReplyImage] = useState<{
+    file: File;
+    compressedImage: CompressedImage;
+    previewUrl: string;
+  } | null>(null);
+  const [isPreparingImage, setIsPreparingImage] = useState(false);
+  const [isSavingReply, setIsSavingReply] = useState(false);
+  const [isTranscribingReply, setIsTranscribingReply] = useState(false);
   const [isWorking, setIsWorking] = useState(false);
   const [cardError, setCardError] = useState<string | null>(null);
+
+  const replyRecorder = useVoiceRecorder({
+    onRecordingComplete: async (file) => {
+      setIsTranscribingReply(true);
+      setCardError(null);
+      try {
+        const result = await requestVoiceTranscription({ tripId, audio: file });
+        setReplyText((current) =>
+          [current.trim(), result.transcript].filter(Boolean).join("\n"),
+        );
+      } catch (voiceError) {
+        setCardError(
+          voiceError instanceof Error ? voiceError.message : "Could not transcribe voice.",
+        );
+      } finally {
+        setIsTranscribingReply(false);
+      }
+    },
+    onError: (voiceError) => {
+      setCardError(voiceError.message);
+    },
+  });
+
+  async function prepareReplyImage(file: File | null) {
+    if (!file) return;
+    setIsPreparingImage(true);
+    setCardError(null);
+    try {
+      const compressedImage = await compressImageFile(file);
+      setReplyImage({
+        file,
+        compressedImage,
+        previewUrl: compressedImage.previewUrl,
+      });
+    } catch (imageError) {
+      setCardError(
+        imageError instanceof Error ? imageError.message : "Could not prepare image.",
+      );
+    } finally {
+      setIsPreparingImage(false);
+    }
+  }
+
+  async function maybeCreateReplyExpense(text: string, image: typeof replyImage) {
+    if (!looksLikeExpenseReply(text) && !image) return;
+
+    const result = await detectCaptureIntent({
+      tripId,
+      text: text || "Uploaded expense image",
+      engineOptions: {
+        entryPoint: "timeline_reply",
+        intentBias: "expense",
+        intentLock: "expense",
+        lockedContext: {
+          journeyId: tripId,
+          dayDate: getLocalDateKey(item.memory.capturedAt),
+          tripDayId: item.memory.tripDayId ?? null,
+          itineraryEventId: item.memory.itineraryEventId ?? null,
+          itineraryReservationId: item.memory.itineraryReservationId ?? null,
+          locationName: item.memory.locationName ?? "",
+        },
+      },
+      inputTypes: [
+        ...(text.trim() ? (["text"] as const) : []),
+        ...(image ? (["image"] as const) : []),
+      ],
+    });
+
+    if (result.intent !== "expense") return;
+
+    await executeCaptureAction({
+      tripId,
+      text,
+      intent: result,
+      compressedImage: image?.compressedImage ?? null,
+      originalPhotoFile: image?.file ?? null,
+      photoFileName: image?.file.name ?? "",
+      engineOptions: {
+        entryPoint: "timeline_reply",
+        intentBias: "expense",
+        intentLock: "expense",
+        lockedContext: {
+          journeyId: tripId,
+          dayDate: getLocalDateKey(item.memory.capturedAt),
+          tripDayId: item.memory.tripDayId ?? null,
+          itineraryEventId: item.memory.itineraryEventId ?? null,
+          itineraryReservationId: item.memory.itineraryReservationId ?? null,
+          locationName: item.memory.locationName ?? "",
+        },
+      },
+    });
+  }
+
+  async function saveReply() {
+    const text = replyText.trim();
+    if (!text && !replyImage) return;
+
+    setIsSavingReply(true);
+    setCardError(null);
+    try {
+      const input = {
+        capturedAt: new Date().toISOString(),
+        locationName: item.memory.locationName ?? "",
+        tripDayId: item.memory.tripDayId ?? null,
+        parentMemoryId: item.memory.id,
+        itineraryEventId: item.memory.itineraryEventId ?? null,
+        itineraryReservationId: item.memory.itineraryReservationId ?? null,
+      };
+
+      if (replyImage) {
+        await createPhotoMemory(
+          tripId,
+          replyImage.compressedImage,
+          replyImage.file.name,
+          text,
+          input,
+          replyImage.file,
+        );
+      } else {
+        await createTextMemory(tripId, text, input);
+      }
+
+      await maybeCreateReplyExpense(text, replyImage);
+      setReplyText("");
+      setReplyImage(null);
+      setIsReplying(false);
+      await onReplyCreated();
+    } catch (replyError) {
+      setCardError(getErrorMessage(replyError, "Could not save reply."));
+    } finally {
+      setIsSavingReply(false);
+    }
+  }
 
   async function saveEdit() {
     setIsWorking(true);
@@ -367,15 +704,31 @@ function CompactMemoryCard({
           className="h-auto w-full object-cover"
         />
       ) : (
-        <div className="bg-emerald-50 p-4 text-sm leading-6 text-emerald-950">
-          {item.memory.content || "Text memory"}
+        <div className="bg-emerald-50/70 p-4">
+          <div className="flex items-start gap-3">
+            <div className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-sm font-black text-white">
+              {(item.memory.contributorName || "OTR").slice(0, 1).toUpperCase()}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-bold text-emerald-900">
+                {item.memory.contributorName || "旅伴"} 说
+              </p>
+              <div className="mt-1 rounded-2xl rounded-tl-sm bg-white px-4 py-3 text-base font-medium leading-7 text-stone-950 shadow-sm">
+                {item.memory.content || "Text memory"}
+              </div>
+            </div>
+          </div>
         </div>
       )}
       <div className="p-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">
-            {item.memory.type}
-          </p>
+          <div className="min-w-0">
+            {!["text", "photo", "voice", "location"].includes(item.memory.type) ? (
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">
+                {item.memory.type}
+              </p>
+            ) : null}
+          </div>
           <div className="flex shrink-0 items-center gap-2">
             {item.hasUnassignedFaces ? (
               <span className="rounded-full bg-amber-100 px-2 py-1 text-[11px] font-black text-amber-900">
@@ -454,6 +807,109 @@ function CompactMemoryCard({
           <p className="mt-2 text-xs font-semibold text-red-600">{cardError}</p>
         ) : null}
         <ItemMeta item={item} />
+        {item.replies.length > 0 ? (
+          <div className="mt-4 space-y-3 rounded-3xl bg-emerald-50/50 p-3">
+            {item.replies.map((reply) => (
+              <ReplyBubble
+                key={reply.id}
+                reply={reply}
+                currentUserId={currentUserId}
+              />
+            ))}
+          </div>
+        ) : null}
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setIsReplying((current) => !current)}
+            className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-800"
+          >
+            {isReplying ? "取消回复" : "回复"}
+          </button>
+        </div>
+        {isReplying ? (
+          <div className="mt-3 rounded-3xl border border-emerald-100 bg-[#fffdf8] p-3">
+            <textarea
+              value={replyText}
+              onChange={(event) => setReplyText(event.target.value)}
+              rows={2}
+              placeholder="写回复、记录费用，或用语音输入..."
+              className="w-full resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm leading-6 text-stone-950 outline-none focus:border-emerald-300"
+            />
+            {replyImage ? (
+              <div className="mt-2 flex items-center gap-3 rounded-2xl bg-emerald-50 p-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={replyImage.previewUrl}
+                  alt=""
+                  className="size-14 rounded-xl object-cover"
+                />
+                <p className="min-w-0 flex-1 truncate text-xs font-bold text-stone-700">
+                  {replyImage.file.name}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setReplyImage(null)}
+                  className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-stone-500"
+                >
+                  移除
+                </button>
+              </div>
+            ) : null}
+            {looksLikeExpenseReply(replyText) || replyImage ? (
+              <p className="mt-2 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
+                保存后会按“费用”解析，不会新增行程。
+              </p>
+            ) : null}
+            <div className="mt-3 flex items-center gap-2">
+              <label className="grid size-9 cursor-pointer place-items-center rounded-full bg-stone-100 text-xs font-black text-stone-600">
+                IMG
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  onChange={(event) => {
+                    void prepareReplyImage(event.target.files?.[0] ?? null);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() =>
+                  replyRecorder.isRecording
+                    ? replyRecorder.stop()
+                    : void replyRecorder.start()
+                }
+                disabled={isTranscribingReply}
+                className={`grid size-9 place-items-center rounded-full ${
+                  replyRecorder.isRecording
+                    ? "bg-red-600 text-white"
+                    : "bg-stone-100 text-stone-600"
+                } disabled:text-stone-300`}
+                title="语音输入"
+              >
+                {isTranscribingReply ? (
+                  <span className="text-xs font-bold">...</span>
+                ) : (
+                  <MicrophoneIcon />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={saveReply}
+                disabled={
+                  isSavingReply ||
+                  isPreparingImage ||
+                  (!replyText.trim() && !replyImage)
+                }
+                className="ml-auto rounded-full bg-emerald-700 px-4 py-2 text-xs font-black text-white disabled:bg-stone-300"
+              >
+                {isSavingReply ? "保存中" : "发送"}
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </article>
   );
@@ -461,17 +917,21 @@ function CompactMemoryCard({
 
 function UploadFeedView({
   items,
+  tripId,
   currentUserId,
   onSaveMemory,
   onDeleteMemory,
+  onReplyCreated,
 }: {
   items: TimelineItem[];
+  tripId: string;
   currentUserId: string;
   onSaveMemory: (
     memoryId: string,
     input: { content: string; locationName: string; capturedAt: string },
   ) => Promise<void>;
   onDeleteMemory: (memoryId: string) => Promise<void>;
+  onReplyCreated: () => Promise<void>;
 }) {
   const sorted = [...items].sort(
     (left, right) =>
@@ -484,9 +944,11 @@ function UploadFeedView({
         <div key={item.id} className="break-inside-avoid pb-4">
           <CompactMemoryCard
             item={item}
+            tripId={tripId}
             currentUserId={currentUserId}
             onSave={onSaveMemory}
             onDelete={onDeleteMemory}
+            onReplyCreated={onReplyCreated}
           />
         </div>
       ))}
@@ -496,12 +958,15 @@ function UploadFeedView({
 
 function TrueTimelineView({
   items,
+  tripId,
   currentUserId,
   initialDate,
   onSaveMemory,
   onDeleteMemory,
+  onReplyCreated,
 }: {
   items: TimelineItem[];
+  tripId: string;
   currentUserId: string;
   initialDate?: string | null;
   onSaveMemory: (
@@ -509,6 +974,7 @@ function TrueTimelineView({
     input: { content: string; locationName: string; capturedAt: string },
   ) => Promise<void>;
   onDeleteMemory: (memoryId: string) => Promise<void>;
+  onReplyCreated: () => Promise<void>;
 }) {
   const dates = [
     ...new Set([initialDate, ...items.map((item) => item.dateKey)].filter(Boolean)),
@@ -569,9 +1035,11 @@ function TrueTimelineView({
           <CompactMemoryCard
             key={item.id}
             item={item}
+            tripId={tripId}
             currentUserId={currentUserId}
             onSave={onSaveMemory}
             onDelete={onDeleteMemory}
+            onReplyCreated={onReplyCreated}
           />
         ))}
       </div>
@@ -1162,6 +1630,7 @@ function TimelineContent({ user }: { user: User }) {
   const [trip, setTrip] = useState<Trip | null>(null);
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [photoAssets, setPhotoAssets] = useState<PhotoAssetWithMemory[]>([]);
+  const [plannerData, setPlannerData] = useState<PlannerV2Data | null>(null);
   const [facesByAssetId, setFacesByAssetId] = useState<Record<string, PhotoFace[]>>(
     {},
   );
@@ -1186,15 +1655,17 @@ function TimelineContent({ user }: { user: User }) {
           getTripPhotoAssets(tripId),
           getJourneyMembers(tripId),
         ]);
-        const [signedUrls, faceData] = await Promise.all([
+        const [signedUrls, faceData, loadedPlannerData] = await Promise.all([
           getSignedMemoryImageUrls(memoryData),
           getPhotoFacesForAssets(assetData.map((asset) => asset.id)),
+          getPlannerV2(tripData),
         ]);
 
         if (isMounted) {
           setTrip(tripData);
           setMemories(memoryData);
           setPhotoAssets(assetData);
+          setPlannerData(loadedPlannerData);
           setFacesByAssetId(faceData);
           setMembers(memberData);
           setImageUrls(signedUrls);
@@ -1229,8 +1700,9 @@ function TimelineContent({ user }: { user: User }) {
         facesByAssetId,
         imageUrls,
         members,
+        plannerLinks: buildPlannerLinkIndex(plannerData, tripId),
       }),
-    [facesByAssetId, imageUrls, memories, members, photoAssets],
+    [facesByAssetId, imageUrls, memories, members, photoAssets, plannerData, tripId],
   );
   const filteredItems = useMemo(
     () =>
@@ -1264,6 +1736,21 @@ function TimelineContent({ user }: { user: User }) {
         item.id === face.id ? face : item,
       ),
     }));
+  }
+
+  async function refreshMemorySnapshot() {
+    const [memoryData, assetData] = await Promise.all([
+      getTripMemories(tripId),
+      getTripPhotoAssets(tripId),
+    ]);
+    const [signedUrls, faceData] = await Promise.all([
+      getSignedMemoryImageUrls(memoryData),
+      getPhotoFacesForAssets(assetData.map((asset) => asset.id)),
+    ]);
+    setMemories(memoryData);
+    setPhotoAssets(assetData);
+    setFacesByAssetId(faceData);
+    setImageUrls(signedUrls);
   }
 
   async function handleSaveMemory(
@@ -1430,9 +1917,11 @@ function TimelineContent({ user }: { user: User }) {
       {view === "feed" ? (
         <UploadFeedView
           items={filteredItems}
+          tripId={tripId}
           currentUserId={user.id}
           onSaveMemory={handleSaveMemory}
           onDeleteMemory={handleDeleteMemory}
+          onReplyCreated={refreshMemorySnapshot}
         />
       ) : null}
 
@@ -1440,10 +1929,12 @@ function TimelineContent({ user }: { user: User }) {
         <TrueTimelineView
           key={initialTimelineDate ?? "nearest"}
           items={filteredItems}
+          tripId={tripId}
           currentUserId={user.id}
           initialDate={initialTimelineDate}
           onSaveMemory={handleSaveMemory}
           onDeleteMemory={handleDeleteMemory}
+          onReplyCreated={refreshMemorySnapshot}
         />
       ) : null}
 

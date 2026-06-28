@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
@@ -13,7 +13,7 @@ import {
   disconnectJourneyStorage,
   getJourneyStorageConnection,
 } from "@/lib/supabase/storage-connections";
-import { getTrip, updateTripSettings } from "@/lib/supabase/trips";
+import { deleteTrip, getTrip, updateTripSettings } from "@/lib/supabase/trips";
 import type {
   JourneyStorageConnection,
   JourneyMember,
@@ -41,6 +41,7 @@ const storageProviders: {
 function SettingsContent() {
   const { t } = useI18n();
   const params = useParams<{ tripId: string }>();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const tripId = params.tripId;
   const [trip, setTrip] = useState<Trip | null>(null);
@@ -58,6 +59,8 @@ function SettingsContent() {
   const [isSavingStorage, setIsSavingStorage] = useState(false);
   const [isConnectingStorage, setIsConnectingStorage] = useState(false);
   const [isDisconnectingStorage, setIsDisconnectingStorage] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -237,6 +240,27 @@ function SettingsContent() {
       setError(getErrorMessage(disconnectError, "Could not disconnect storage."));
     } finally {
       setIsDisconnectingStorage(false);
+    }
+  }
+
+  async function handleDeleteJourney() {
+    if (!trip || !canManageJourney) return;
+
+    if (deleteConfirmation !== trip.name) {
+      setError("请输入完整旅程名称后再删除。");
+      setNotice(null);
+      return;
+    }
+
+    setIsDeleting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await deleteTrip(trip.id);
+      router.replace("/trips");
+    } catch (deleteError) {
+      setError(getErrorMessage(deleteError, "Could not delete journey."));
+      setIsDeleting(false);
     }
   }
 
@@ -459,11 +483,42 @@ function SettingsContent() {
         </p>
       </section>
 
+      {canManageJourney ? (
+        <section className="rounded-3xl border border-red-200 bg-red-50 p-5 shadow-sm">
+          <div>
+            <h2 className="text-xl font-semibold text-red-900">删除旅程</h2>
+            <p className="mt-2 text-sm leading-6 text-red-800">
+              删除后，这个 Journey 以及相关成员、行程、记忆和账本记录会被移除。这个操作不可恢复。
+            </p>
+          </div>
+          <label
+            htmlFor="delete-journey-confirm"
+            className="mt-4 block text-sm font-bold text-red-900"
+          >
+            输入 “{trip?.name}” 确认删除
+          </label>
+          <input
+            id="delete-journey-confirm"
+            value={deleteConfirmation}
+            onChange={(event) => setDeleteConfirmation(event.target.value)}
+            className="mt-3 w-full rounded-2xl border border-red-200 bg-white px-4 py-3 text-stone-950 outline-none focus:border-red-500 focus:ring-4 focus:ring-red-100"
+          />
+          <button
+            type="button"
+            onClick={handleDeleteJourney}
+            disabled={isDeleting || deleteConfirmation !== trip?.name}
+            className="mt-4 w-full rounded-2xl bg-red-700 px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-red-200 disabled:text-red-500"
+          >
+            {isDeleting ? "正在删除..." : "删除 Journey"}
+          </button>
+        </section>
+      ) : null}
+
       <Link
-        href={`/trips/${tripId}`}
+        href={`/trips/${tripId}/planner`}
         className="block rounded-2xl bg-emerald-50 px-5 py-3 text-center text-sm font-bold text-emerald-900"
       >
-        Back to journey
+        返回行程
       </Link>
     </div>
   );

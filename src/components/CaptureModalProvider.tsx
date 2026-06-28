@@ -37,6 +37,7 @@ import type {
 } from "@/lib/capture-ai/types";
 import { getErrorMessage } from "@/lib/errors";
 import { compressImageFile, type CompressedImage } from "@/lib/images";
+import { readTodayScopedValue } from "@/lib/day-view-storage";
 import {
   compareTripsByStartDateAsc,
   getJourneyStatus,
@@ -179,6 +180,8 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         lockedDayDate ? ` · ${lockedDayDate}` : ""
       }`
     : `${selectedTrip?.name || "Choose a journey"}${
+        lockedDayDate ? ` · 记录到 ${lockedDayDate}` : ""
+      }${
         sessionId ? ` · session ${sessionId.slice(0, 8)}` : ""
       }`;
 
@@ -324,6 +327,41 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     };
   }, [compressedImage]);
 
+  function contextualDayDateForCapture(tripId: string | null | undefined) {
+    if (!tripId) return "";
+    if (!pathname.match(/^\/trips\/[^/]+\/(?:planner|map)$/)) return "";
+
+    const queryDate =
+      typeof window === "undefined"
+        ? ""
+        : new URLSearchParams(window.location.search).get("date");
+    if (queryDate && /^\d{4}-\d{2}-\d{2}$/.test(queryDate)) {
+      return queryDate;
+    }
+
+    const storedDate = readTodayScopedValue(`otr:planner-day:${tripId}`);
+    return storedDate && /^\d{4}-\d{2}-\d{2}$/.test(storedDate)
+      ? storedDate
+      : "";
+  }
+
+  function contextualLockedContext(options?: CaptureOpenOptions) {
+    const tripId = options?.tripId ?? selectedTripId ?? activeTripId;
+    const lockedContext = { ...(options?.lockedContext ?? {}) };
+    const hasExplicitDate =
+      typeof lockedContext.dayDate === "string" ||
+      typeof lockedContext.date === "string";
+    const contextualDayDate = hasExplicitDate
+      ? ""
+      : contextualDayDateForCapture(tripId);
+
+    return {
+      ...lockedContext,
+      ...(contextualDayDate ? { dayDate: contextualDayDate } : {}),
+      ...(options?.tripId ? { journeyId: options.tripId } : {}),
+    };
+  }
+
   function openCapture(options?: CaptureOpenOptions) {
     if (!sessionId) {
       const nextSessionId = crypto.randomUUID();
@@ -340,15 +378,13 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
       messages.length === 0 ||
       Boolean(options?.entryPoint && options.entryPoint !== engineOptions.entryPoint);
     if (shouldReplaceEngineOptions) {
+      const lockedContext = contextualLockedContext(options);
       setEngineOptions({
         entryPoint: options?.entryPoint ?? "global_capture",
         intentBias: options?.intentBias,
         intentLock: options?.intentLock,
         mode: options?.mode ?? "single_action",
-        lockedContext: {
-          ...(options?.lockedContext ?? {}),
-          ...(options?.tripId ? { journeyId: options.tripId } : {}),
-        },
+        lockedContext,
       });
     }
     setIsOpen(true);

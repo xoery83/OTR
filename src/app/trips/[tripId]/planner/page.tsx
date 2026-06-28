@@ -234,7 +234,8 @@ function PlannerContent() {
     return index >= 0 ? index : 0;
   }, [planner.days, selectedDayId]);
   const selectedDay = planner.days[selectedIndex] ?? null;
-  const nextDay = planner.days[selectedIndex + 1] ?? null;
+  const previousSelectedDay =
+    selectedIndex > 0 ? planner.days[selectedIndex - 1] ?? null : null;
   const activeMembers = getActiveJourneyMembers(members);
   const focusedPlannerItemId = manualFocusedPlannerItemId ?? requestedItemId;
   const trimmedPlannerSearchQuery = plannerSearchQuery.trim();
@@ -428,7 +429,14 @@ function PlannerContent() {
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
-              onClick={() => router.push(`/trips/${tripId}/planner/import`)}
+              onClick={() => {
+                const dayDate = selectedDay?.day.dayDate;
+                const importHref =
+                  dayDate && dayDate !== "unscheduled"
+                    ? `/trips/${tripId}/planner/import?date=${dayDate}`
+                    : `/trips/${tripId}/planner/import`;
+                router.push(importHref);
+              }}
               className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-bold text-white shadow-sm"
               title={t("planner.import")}
             >
@@ -573,6 +581,9 @@ function PlannerContent() {
             journeyMembers={activeMembers}
             ledgerEntries={ledgerEntries}
             ledgerBaseCurrency={ledgerBaseCurrency}
+            journeyName={trip?.name ?? ""}
+            journeyDestination={trip?.destination ?? ""}
+            previousPlannerDay={previousSelectedDay}
             preserveOriginalPhotos={trip?.photoStorageStatus === "connected"}
             onLedgerEntryCreated={async () => {
               const data = await getLedgerData(tripId);
@@ -580,7 +591,6 @@ function PlannerContent() {
               setLedgerBaseCurrency(data.ledger.baseCurrency);
             }}
             onPlannerChanged={refreshPlanner}
-            nextDay={nextDay}
             mapHref={selectedDayMapHref}
             focusedItemId={focusedPlannerItemId}
           />

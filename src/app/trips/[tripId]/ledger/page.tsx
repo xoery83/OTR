@@ -591,7 +591,7 @@ function DailyLedgerAnalysis({
   }
 
   return (
-    <section className="space-y-4">
+    <section id="daily-ledger" className="space-y-4 scroll-mt-24">
       <div>
         <h2 className="text-lg font-semibold text-stone-950">
           {t("ledger.dailyAnalysis.title")}
@@ -827,8 +827,13 @@ function LedgerContent() {
   const searchParams = useSearchParams();
   const tripId = params.tripId;
   const initialLedgerView =
-    searchParams.get("view") === "days" ? "days" : undefined;
+    searchParams.get("view") === "days"
+      ? "days"
+      : searchParams.get("view") === "expenses" || searchParams.get("q")
+        ? "expenses"
+        : undefined;
   const initialLedgerDate = searchParams.get("date");
+  const initialExpenseSearchQuery = searchParams.get("q") ?? "";
   const { locale, t } = useI18n();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [ledgerData, setLedgerData] = useState<LedgerData | null>(null);
@@ -846,7 +851,9 @@ function LedgerContent() {
     useState<ExpenseCategoryFilter>("all");
   const [expenseSortMode, setExpenseSortMode] =
     useState<ExpenseSortMode>("latest");
-  const [expenseSearchQuery, setExpenseSearchQuery] = useState("");
+  const [expenseSearchQuery, setExpenseSearchQuery] = useState(
+    initialExpenseSearchQuery,
+  );
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [currencyError, setCurrencyError] = useState<string | null>(null);

@@ -59,6 +59,7 @@ export type MemoryEntry = {
   id: string;
   tripId: string;
   tripDayId?: string | null;
+  parentMemoryId?: string | null;
   itineraryEventId?: string | null;
   itineraryReservationId?: string | null;
   userId: string;
@@ -249,6 +250,7 @@ export type JourneyMemberFaceEmbedding = {
 export type Profile = {
   id: string;
   displayName: string;
+  globalAka?: string | null;
   avatarUrl: string | null;
   createdAt: string;
 };
@@ -319,6 +321,7 @@ export type ItineraryReservation = {
   needsReview: boolean;
   status: ItineraryItemStatus;
   participants: ItineraryReservationParticipant[];
+  ratingSummary?: ItineraryItemRatingSummary | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -358,9 +361,20 @@ export type ItineraryEvent = {
   participantsConfidence: number | null;
   locationConfidence: number | null;
   participants: ItineraryEventParticipant[];
+  ratingSummary?: ItineraryItemRatingSummary | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ItineraryRatingItemType = "event" | "reservation";
+
+export type ItineraryItemRatingSummary = {
+  itemType: ItineraryRatingItemType;
+  itemId: string;
+  averageRating: number | null;
+  ratingCount: number;
+  myRating: number | null;
 };
 
 export type ItineraryEventParticipantStatus =

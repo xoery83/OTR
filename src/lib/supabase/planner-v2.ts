@@ -10,6 +10,10 @@ import {
   getItineraryEvents,
   getItineraryReservations,
 } from "./itinerary";
+import {
+  getItineraryRatingSummaries,
+  itineraryRatingKey,
+} from "./itinerary-ratings";
 import { supabase } from "./client";
 import { getCurrentUser } from "./auth";
 
@@ -257,12 +261,26 @@ function sortByTime<T>(
 }
 
 export async function getPlannerV2(trip: Trip): Promise<PlannerV2Data> {
-  const [tripDays, reservations, activities, memories] = await Promise.all([
+  const [tripDays, rawReservations, rawActivities, memories, ratingSummaries] =
+    await Promise.all([
     getTripDays(trip.id),
     getItineraryReservations(trip.id),
     getItineraryEvents(trip.id),
     getTripMemories(trip.id),
+    getItineraryRatingSummaries(trip.id),
   ]);
+  const reservations = rawReservations.map((reservation) => ({
+    ...reservation,
+    ratingSummary:
+      ratingSummaries.get(
+        itineraryRatingKey("reservation", reservation.id),
+      ) ?? null,
+  }));
+  const activities = rawActivities.map((activity) => ({
+    ...activity,
+    ratingSummary:
+      ratingSummaries.get(itineraryRatingKey("event", activity.id)) ?? null,
+  }));
 
   const daysById = new Map(tripDays.map((day) => [day.id, day]));
   const daysByDate = new Map(tripDays.map((day) => [day.dayDate, day]));

@@ -1661,7 +1661,7 @@ function JourneyMapContent() {
       : selectedMarker?.thumbnailUrl;
 
   return (
-    <section className="fixed inset-0 z-10 bg-stone-100 md:left-20">
+    <section className="fixed inset-0 z-10 bg-stone-100 md:left-44">
       {isLoading ? (
         <div className="h-full w-full bg-gradient-to-br from-emerald-50 via-sky-50 to-stone-100" />
       ) : (

@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
+import { AiRouteRecommendationPanel } from "@/components/AiRouteRecommendationPanel";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import { enqueueMediaProcessingJobs } from "@/lib/background-jobs/client";
@@ -32,6 +33,7 @@ import {
   updateItineraryEvent,
   updateItineraryReservation,
 } from "@/lib/supabase/itinerary";
+import { upsertItineraryItemRating } from "@/lib/supabase/itinerary-ratings";
 import { createLedgerEntry, updateLedgerEntry } from "@/lib/supabase/ledger";
 import {
   createPhotoMemory,
@@ -42,7 +44,9 @@ import { requestVoiceTranscription } from "@/lib/supabase/media-assets";
 import type {
   JourneyMember,
   ItineraryEventType,
+  ItineraryItemRatingSummary,
   ItineraryItemStatus,
+  ItineraryRatingItemType,
   ItineraryReservationType,
   LedgerAccountingMode,
   LedgerCategory,
@@ -59,6 +63,7 @@ type StoryItem = {
   location: string | null;
   kind: string;
   note: string | null;
+  sourceText: string | null;
   itineraryEventId: string | null;
   itineraryReservationId: string | null;
   itemType: "event" | "reservation";
@@ -69,6 +74,7 @@ type StoryItem = {
   secondary: string | null;
   url: string | null;
   participantNames: string[];
+  ratingSummary: ItineraryItemRatingSummary | null;
 };
 
 type InlineMemoryState = Record<string, MemoryEntry[]>;
@@ -128,6 +134,13 @@ type DraftPlanItem = {
   plannedStart: string;
   plannedEnd: string;
   description: string;
+};
+
+type RatingTarget = {
+  itemId: string;
+  itemType: ItineraryRatingItemType;
+  title: string;
+  summary: ItineraryItemRatingSummary | null;
 };
 
 function MicrophoneIcon({ className = "size-4" }: { className?: string }) {
@@ -234,6 +247,19 @@ const expenseCategoryLabelKeys: Record<LedgerCategory, TranslationKey> = {
   transport: "planner.expense.transport",
   insurance: "planner.expense.insurance",
   other: "planner.expense.other",
+};
+
+const ledgerCategoryColorClasses: Record<LedgerCategory, string> = {
+  flight: "bg-emerald-600",
+  hotel: "bg-orange-500",
+  car: "bg-sky-500",
+  fuel: "bg-lime-600",
+  food: "bg-amber-500",
+  ticket: "bg-violet-500",
+  shopping: "bg-rose-500",
+  transport: "bg-cyan-600",
+  insurance: "bg-indigo-500",
+  other: "bg-stone-500",
 };
 
 const statusLabelKeys: Record<ItineraryItemStatus, TranslationKey> = {
@@ -376,6 +402,7 @@ function storyItems(plannerDay: PlannerV2Day): StoryItem[] {
         location: item.locationName,
         kind: item.reservationType,
         note: item.sourceText,
+        sourceText: item.sourceText,
         itineraryEventId: null,
         itineraryReservationId: item.id,
         itemType: "reservation" as const,
@@ -389,30 +416,37 @@ function storyItems(plannerDay: PlannerV2Day): StoryItem[] {
           item.participants,
           item.sourceText,
         ),
+        ratingSummary: item.ratingSummary ?? null,
       })),
     ...plannerDay.activities
       .filter((item) =>
         shouldShowInStory(dayDate, item.plannedStart, item.plannedEnd),
       )
-      .map((item) => ({
-        id: `activity-${item.id}`,
-        time: item.plannedStart,
-        title: item.title,
-        detail: item.description,
-        location: item.locationName,
-        kind: item.eventType,
-        note: item.sourceText || item.description,
-        itineraryEventId: item.id,
-        itineraryReservationId: item.reservationId,
-        itemType: "event" as const,
-        status: item.status,
-        typeValue: item.eventType,
-        startsAt: item.plannedStart,
-        endsAt: item.plannedEnd,
-        secondary: item.bookingReference || "",
-        url: item.url,
-        participantNames: item.participants.map((participant) => participant.name),
-      })),
+      .map((item) => {
+        const isAiRoute = item.sourceText?.startsWith("AI_ROUTE_RECOMMENDATION");
+
+        return {
+          id: `activity-${item.id}`,
+          time: item.plannedStart,
+          title: item.title,
+          detail: item.description,
+          location: item.locationName,
+          kind: item.eventType,
+          note: isAiRoute ? item.description : item.sourceText || item.description,
+          sourceText: item.sourceText,
+          itineraryEventId: item.id,
+          itineraryReservationId: item.reservationId,
+          itemType: "event" as const,
+          status: item.status,
+          typeValue: item.eventType,
+          startsAt: item.plannedStart,
+          endsAt: item.plannedEnd,
+          secondary: item.bookingReference || "",
+          url: item.url,
+          participantNames: item.participants.map((participant) => participant.name),
+          ratingSummary: item.ratingSummary ?? null,
+        };
+      }),
   ].sort((a, b) => {
     if (!a.time && !b.time) return a.title.localeCompare(b.title);
     if (!a.time) return 1;
@@ -451,9 +485,10 @@ function carRentalItems(plannerDay: PlannerV2Day): StoryItem[] {
       title: reservation.title,
       detail: reservation.provider || reservation.confirmationCode || null,
       location: reservation.locationName,
-      kind: reservation.reservationType,
-      note: reservation.sourceText,
-      itineraryEventId: null,
+        kind: reservation.reservationType,
+        note: reservation.sourceText,
+        sourceText: reservation.sourceText,
+        itineraryEventId: null,
       itineraryReservationId: reservation.id,
       itemType: "reservation" as const,
       status: reservation.status,
@@ -466,7 +501,12 @@ function carRentalItems(plannerDay: PlannerV2Day): StoryItem[] {
         reservation.participants,
         reservation.sourceText,
       ),
+      ratingSummary: reservation.ratingSummary ?? null,
     }));
+}
+
+function isAiRecommendedItem(item: StoryItem) {
+  return Boolean(item.sourceText?.startsWith("AI_ROUTE_RECOMMENDATION"));
 }
 
 function SectionTitle({ title }: { title: string }) {
@@ -474,6 +514,72 @@ function SectionTitle({ title }: { title: string }) {
     <h3 className="text-sm font-bold uppercase tracking-[0.14em] text-emerald-900">
       {title}
     </h3>
+  );
+}
+
+function ExpenseLinkPill({
+  amount,
+  onClick,
+  tone = "emerald",
+}: {
+  amount: string;
+  onClick: () => void;
+  tone?: "emerald" | "amber" | "sky";
+}) {
+  const toneClass = {
+    emerald: "bg-emerald-100 text-emerald-800",
+    amber: "bg-amber-100 text-amber-900",
+    sky: "bg-sky-100 text-sky-800",
+  }[tone];
+
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+      }}
+      className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-black shadow-sm ${toneClass}`}
+    >
+      {amount}
+    </button>
+  );
+}
+
+function RatingButton({
+  summary,
+  onClick,
+}: {
+  summary: ItineraryItemRatingSummary | null;
+  onClick: () => void;
+}) {
+  const hasRating = Boolean(summary && summary.ratingCount > 0);
+  const label = hasRating
+    ? summary!.averageRating?.toFixed(1) ?? "0.0"
+    : "★";
+
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+      }}
+      className={`grid h-8 min-w-8 shrink-0 place-items-center rounded-full px-2 text-xs font-black shadow-sm ${
+        hasRating
+          ? "bg-amber-300 text-amber-950"
+          : "bg-stone-100 text-stone-400"
+      }`}
+      title={
+        hasRating
+          ? `${summary!.ratingCount} ratings`
+          : "Rate this itinerary item"
+      }
+    >
+      {hasRating ? label : <span className="text-base leading-none">★</span>}
+    </button>
   );
 }
 
@@ -558,6 +664,33 @@ function allocatedAmountForDay(
   }
 
   return entry.expenseDate === dayDate ? entry.baseAmount : 0;
+}
+
+function comparableText(value: string | null | undefined) {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}\u4e00-\u9fff]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function meaningfulComparableParts(values: Array<string | null | undefined>) {
+  return values
+    .flatMap((value) =>
+      comparableText(value)
+        .split(/\s*(?:·|->|→|到|至|from|to)\s*/i)
+        .flatMap((part) => part.split(/\s{2,}/)),
+    )
+    .map((part) => part.trim())
+    .filter((part, index, parts) => {
+      if (!part) return false;
+      const compact = part.replace(/\s+/g, "");
+      const hasCjk = /[\u4e00-\u9fff]/.test(compact);
+      const longEnough = hasCjk ? compact.length >= 2 : compact.length >= 6;
+      return longEnough && parts.indexOf(part) === index;
+    });
 }
 
 function toLocalInputValue(value: string | null) {
@@ -1011,24 +1144,28 @@ function HighlightedText({
 
 export function PlannerDayCard({
   tripId,
+  journeyName = "",
+  journeyDestination = "",
   plannerDay,
+  previousPlannerDay = null,
   journeyMembers,
   ledgerEntries = [],
   ledgerBaseCurrency = "NZD",
   preserveOriginalPhotos = false,
-  nextDay,
   mapHref,
   focusedItemId,
   onLedgerEntryCreated,
   onPlannerChanged,
 }: {
   tripId: string;
+  journeyName?: string;
+  journeyDestination?: string;
   plannerDay: PlannerV2Day;
+  previousPlannerDay?: PlannerV2Day | null;
   journeyMembers?: JourneyMember[];
   ledgerEntries?: LedgerEntry[];
   ledgerBaseCurrency?: string;
   preserveOriginalPhotos?: boolean;
-  nextDay?: PlannerV2Day | null;
   mapHref?: string;
   focusedItemId?: string | null;
   onLedgerEntryCreated?: () => void;
@@ -1051,6 +1188,7 @@ export function PlannerDayCard({
         location: stay.locationName,
         kind: "hotel",
         note: stay.sourceText,
+        sourceText: stay.sourceText,
         itineraryEventId: null,
         itineraryReservationId: stay.id,
         itemType: "reservation",
@@ -1064,6 +1202,7 @@ export function PlannerDayCard({
           reservationParticipantNames(stay.participants, stay.sourceText),
           journeyMembers ?? [],
         ),
+        ratingSummary: stay.ratingSummary ?? null,
       } satisfies StoryItem,
   }));
   const story = storyItems(plannerDay).map((item) =>
@@ -1084,21 +1223,6 @@ export function PlannerDayCard({
       journeyMembers ?? [],
     ),
   }));
-  const nextStory = nextDay
-    ? storyItems(nextDay)
-        .map((item) =>
-          item.itemType === "reservation"
-            ? {
-                ...item,
-                participantNames: normalizeParticipantNames(
-                  item.participantNames,
-                  journeyMembers ?? [],
-                ),
-              }
-            : item,
-        )
-        .slice(0, 2)
-    : [];
   const aliases = memberAliases(journeyMembers ?? []);
   const editableReservationMembers = journeyMembers ?? [];
   const ledgerCurrency = ledgerEntries[0]?.baseCurrency ?? "NZD";
@@ -1149,21 +1273,14 @@ export function PlannerDayCard({
     (total, entry) => total + allocatedLedgerAmount(entry),
     0,
   );
-  const sharedTotal = ledgerEntries
-    .filter((entry) => entry.accountingMode === "shared")
-    .reduce(
-      (total, entry) => total + allocatedLedgerAmount(entry),
-      0,
-    );
-  const statsOnlyTotal = ledgerEntries
-    .filter((entry) => entry.accountingMode === "stats_only")
-    .reduce(
-      (total, entry) => total + allocatedLedgerAmount(entry),
-      0,
-    );
-  const reviewCount = ledgerEntries.filter(
-    (entry) => entry.status !== "complete" && allocatedLedgerAmount(entry) > 0,
-  ).length;
+  const ledgerCategoryTotals = expenseCategories
+    .map((category) => ({
+      category,
+      amount: ledgerEntries
+        .filter((entry) => entry.category === category)
+        .reduce((total, entry) => total + allocatedLedgerAmount(entry), 0),
+    }))
+    .filter((item) => item.amount > 0);
   const [memoryTextByItem, setMemoryTextByItem] = useState<Record<string, string>>(
     {},
   );
@@ -1197,6 +1314,7 @@ export function PlannerDayCard({
   const [pendingExpense, setPendingExpense] = useState<PendingExpense | null>(
     null,
   );
+  const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [memoryErrorByItem, setMemoryErrorByItem] = useState<Record<string, string>>(
     {},
   );
@@ -1215,6 +1333,10 @@ export function PlannerDayCard({
   const [dayTitleDraft, setDayTitleDraft] = useState(day.title || "");
   const [isSavingDayTitle, setIsSavingDayTitle] = useState(false);
   const [dayTitleError, setDayTitleError] = useState<string | null>(null);
+  const [ratingTarget, setRatingTarget] = useState<RatingTarget | null>(null);
+  const [ratingDraft, setRatingDraft] = useState("5");
+  const [isSavingRating, setIsSavingRating] = useState(false);
+  const [ratingError, setRatingError] = useState<string | null>(null);
 
   function activeMembers() {
     return (journeyMembers ?? []).filter(
@@ -1252,6 +1374,51 @@ export function PlannerDayCard({
       );
     } finally {
       setIsSavingDayTitle(false);
+    }
+  }
+
+  function startRating(item: StoryItem) {
+    const itemType: ItineraryRatingItemType =
+      item.itemType === "event" ? "event" : "reservation";
+    const itemId =
+      item.itemType === "event"
+        ? item.itineraryEventId
+        : item.itineraryReservationId;
+    if (!itemId) return;
+
+    setRatingTarget({
+      itemId,
+      itemType,
+      title: item.title,
+      summary: item.ratingSummary,
+    });
+    setRatingDraft(String(item.ratingSummary?.myRating ?? 5));
+    setRatingError(null);
+  }
+
+  async function saveRating() {
+    if (!ratingTarget || isSavingRating) return;
+    const rating = Number(ratingDraft);
+    if (!Number.isFinite(rating) || rating < 0 || rating > 5) {
+      setRatingError("请输入 0 到 5 之间的分数。");
+      return;
+    }
+
+    setIsSavingRating(true);
+    setRatingError(null);
+    try {
+      await upsertItineraryItemRating({
+        tripId,
+        itemType: ratingTarget.itemType,
+        itemId: ratingTarget.itemId,
+        rating,
+      });
+      setRatingTarget(null);
+      await onPlannerChanged?.();
+    } catch (error) {
+      setRatingError(getErrorMessage(error, "Could not save rating."));
+    } finally {
+      setIsSavingRating(false);
     }
   }
 
@@ -1392,25 +1559,85 @@ export function PlannerDayCard({
   }
 
   function ledgerTotalForItem(item: StoryItem) {
-    return ledgerEntries
-      .filter(
-        (entry) =>
-          (item.itineraryEventId &&
-            entry.itineraryEventId === item.itineraryEventId) ||
-          (item.itineraryReservationId &&
-            entry.itineraryReservationId === item.itineraryReservationId),
-      )
-      .reduce((total, entry) => total + entry.baseAmount, 0);
+    return ledgerEntriesForItem(item).reduce(
+      (total, entry) => total + entry.baseAmount,
+      0,
+    );
   }
 
   function ledgerEntriesForItem(item: StoryItem) {
-    return ledgerEntries.filter(
-      (entry) =>
+    const itemMemoryIds = new Set(
+      memoriesForItem(item).map((memory) => memory.id),
+    );
+    const itemParts = meaningfulComparableParts([
+      item.title,
+      item.detail,
+      item.location,
+      item.note,
+    ]);
+    const byId = new Map<string, LedgerEntry>();
+
+    ledgerEntries.forEach((entry) => {
+      const matchesPlannerItem =
         (item.itineraryEventId &&
           entry.itineraryEventId === item.itineraryEventId) ||
         (item.itineraryReservationId &&
-          entry.itineraryReservationId === item.itineraryReservationId),
-    );
+          entry.itineraryReservationId === item.itineraryReservationId);
+      const matchesMemory =
+        entry.memoryEntryId && itemMemoryIds.has(entry.memoryEntryId);
+      const canFallbackMatch =
+        !entry.itineraryEventId &&
+        !entry.itineraryReservationId &&
+        allocatedLedgerAmount(entry) > 0;
+      const entryText = comparableText(
+        [
+          entry.title,
+          entry.description,
+          entry.addressText,
+          entry.category,
+        ].join(" "),
+      );
+      const matchesText =
+        canFallbackMatch &&
+        itemParts.some(
+          (part) => entryText.includes(part) || part.includes(entryText),
+        );
+
+      if (matchesPlannerItem || matchesMemory || matchesText) {
+        byId.set(entry.id, entry);
+      }
+    });
+
+    return [...byId.values()];
+  }
+
+  function openExpenseModalForItem(item: StoryItem) {
+    const entry = ledgerEntriesForItem(item)[0];
+    if (!entry) return;
+
+    setExpenseError(null);
+    setPendingExpense({
+      itemId: item.id,
+      ledgerEntryId: entry.id,
+      memoryEntryId: entry.memoryEntryId ?? "",
+      title: entry.title,
+      category: entry.category,
+      accountingMode: entry.accountingMode,
+      amount: String(entry.originalAmount),
+      currency: entry.originalCurrency,
+      exchangeRate: String(entry.exchangeRate || 1),
+      payerMemberId: entry.payerMemberId ?? "",
+      participantMemberIds: entry.participants.map(
+        (participant) => participant.memberId,
+      ),
+      addressText: entry.addressText ?? item.location ?? "",
+      description: entry.description ?? "",
+      itineraryEventId: item.itineraryEventId,
+      itineraryReservationId: item.itineraryReservationId,
+      startDate: entry.startDate,
+      endDate: entry.endDate,
+    });
+    setIsExpenseModalOpen(true);
   }
 
   function existingExpenseForItem(
@@ -1543,11 +1770,15 @@ export function PlannerDayCard({
     : carItems;
 
   function itemSubtitle(item: StoryItem) {
-    const total = ledgerTotalForItem(item);
-    const label = item.detail || item.location || labelForItemKind(item.kind);
-    return total > 0
-      ? `${label} · ${money(total, ledgerCurrency, locale)}`
-      : label;
+    if (isAiRecommendedItem(item)) {
+      const firstLine = item.detail
+        ?.split(/\r?\n/)
+        .map((line) => line.trim())
+        .find(Boolean);
+      return firstLine || item.location || labelForItemKind(item.kind);
+    }
+
+    return item.detail || item.location || labelForItemKind(item.kind);
   }
 
   function labelForItemKind(value: string) {
@@ -1592,21 +1823,6 @@ export function PlannerDayCard({
       entryPoint: "planner_item_memory",
       intentBias: "memory",
       lockedContext: lockedContextForItem(item),
-    });
-  }
-
-  function openDayPlannerCapture() {
-    openCapture({
-      tripId,
-      entryPoint: "day_planner_add",
-      intentBias: "planner_update",
-      intentLock: "planner_update",
-      lockedContext: {
-        journeyId: tripId,
-        dayId: day.id.startsWith("synthetic-") ? null : day.id,
-        tripDayId: day.id.startsWith("synthetic-") ? null : day.id,
-        dayDate: day.dayDate,
-      },
     });
   }
 
@@ -2122,6 +2338,7 @@ export function PlannerDayCard({
         await createLedgerEntry(payload);
       }
       setPendingExpense(null);
+      setIsExpenseModalOpen(false);
       onLedgerEntryCreated?.();
     } catch (error) {
       setExpenseError(getErrorMessage(error, t("planner.error.addExpense")));
@@ -2260,6 +2477,7 @@ export function PlannerDayCard({
           <section className="space-y-2">
             {stayItems.map(({ stay, stayItem }) => {
               const stayMapsHref = mapsHref(stay.locationName);
+              const stayTotal = ledgerTotalForItem(stayItem);
 
               return (
           <details
@@ -2276,9 +2494,18 @@ export function PlannerDayCard({
           >
             <summary className="grid cursor-pointer list-none grid-cols-[1fr_auto] gap-3">
               <div className="min-w-0">
-                <p className="text-xs font-bold uppercase tracking-wide text-amber-800">
-                  {t("planner.tonight")}
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs font-bold uppercase tracking-wide text-amber-800">
+                    {t("planner.tonight")}
+                  </p>
+                  {stayTotal > 0 ? (
+                    <ExpenseLinkPill
+                      amount={money(stayTotal, ledgerCurrency, locale)}
+                      tone="amber"
+                      onClick={() => openExpenseModalForItem(stayItem)}
+                    />
+                  ) : null}
+                </div>
                 <h3 className="mt-1 truncate text-base font-semibold text-stone-950">
                   {stay.title}
                 </h3>
@@ -2337,22 +2564,28 @@ export function PlannerDayCard({
                     </div>
                   ) : null}
                 </div>
-                {canManagePlans ? (
-                  <button
-                    type="button"
-                    onClick={() => startEditItem(stayItem)}
-                    className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-50 shadow-sm"
-                    title={t("planner.modify.booking")}
-                  >
-                    <Image
-                      src="/icons/modify.png"
-                      alt=""
-                      width={14}
-                      height={14}
-                      className="object-contain opacity-75"
-                    />
-                  </button>
-                ) : null}
+                <div className="flex shrink-0 items-center gap-2">
+                  <RatingButton
+                    summary={stayItem.ratingSummary}
+                    onClick={() => startRating(stayItem)}
+                  />
+                  {canManagePlans ? (
+                    <button
+                      type="button"
+                      onClick={() => startEditItem(stayItem)}
+                      className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-50 shadow-sm"
+                      title={t("planner.modify.booking")}
+                    >
+                      <Image
+                        src="/icons/modify.png"
+                        alt=""
+                        width={14}
+                        height={14}
+                        className="object-contain opacity-75"
+                      />
+                    </button>
+                  ) : null}
+                </div>
               </div>
               <form
                 onSubmit={(event) => addInlineMemory(event, stayItem)}
@@ -2732,18 +2965,19 @@ export function PlannerDayCard({
                   {t("planner.filter.mine")}
                 </button>
               ) : null}
-              {canManagePlans && day.dayDate !== "unscheduled" ? (
-                <button
-                  type="button"
-                  onClick={openDayPlannerCapture}
-                  className="grid size-8 place-items-center rounded-full bg-emerald-700 text-lg font-bold leading-none text-white shadow-sm"
-                  title={t("planner.addSchedule")}
-                >
-                  +
-                </button>
-              ) : null}
             </div>
           </div>
+          {day.dayDate !== "unscheduled" && story.length <= 2 ? (
+            <AiRouteRecommendationPanel
+              tripId={tripId}
+              journeyName={journeyName}
+              destination={journeyDestination || dayLocation(plannerDay) || ""}
+              plannerDay={plannerDay}
+              previousPlannerDay={previousPlannerDay}
+              onSaved={onPlannerChanged}
+              compact
+            />
+          ) : null}
           {story.length === 0 ? (
             <p className="rounded-2xl bg-stone-50 p-4 text-sm text-stone-500">
               {t("planner.empty.schedule")}
@@ -2756,6 +2990,8 @@ export function PlannerDayCard({
             <div className="relative space-y-2 pl-5 before:absolute before:bottom-4 before:left-2 before:top-4 before:w-px before:bg-emerald-100">
               {visibleStory.map((item) => {
                 const navHref = mapsHref(item.location);
+                const itemTotal = ledgerTotalForItem(item);
+                const isAiItem = isAiRecommendedItem(item);
                 const isFlightItem =
                   (item.kind === "flight" || item.typeValue === "flight") &&
                   looksLikeFlightItem(item);
@@ -2773,7 +3009,9 @@ export function PlannerDayCard({
                     } ${
                       item.status === "cancelled" || item.status === "skipped"
                         ? "bg-stone-100 opacity-70"
-                        : isFlightItem
+                        : isAiItem
+                          ? "border border-emerald-200 bg-emerald-50/80 shadow-sm"
+                          : isFlightItem
                           ? "border border-sky-100 bg-sky-50/80 shadow-sm"
                           : "bg-stone-50"
                     }`}
@@ -2800,6 +3038,11 @@ export function PlannerDayCard({
                               {labelForItemKind(item.kind)}
                             </span>
                           ) : null}
+                          {isAiItem ? (
+                            <span className="mr-2 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-800">
+                              AI推荐
+                            </span>
+                          ) : null}
                           <HighlightedText text={item.title} aliases={aliases} />
                           {item.status !== "planned" ? (
                             <span className="ml-2 rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-bold uppercase text-stone-600">
@@ -2807,12 +3050,22 @@ export function PlannerDayCard({
                             </span>
                           ) : null}
                         </span>
-                        <span className="mt-1 block truncate text-xs text-stone-500">
-                          <HighlightedText
-                            text={itemSubtitle(item)}
-                            aliases={aliases}
-                          />
-                        </span>
+                        {itemTotal > 0 ? (
+                          <span className="mt-1 block">
+                            <ExpenseLinkPill
+                              amount={money(itemTotal, ledgerCurrency, locale)}
+                              tone={isFlightItem ? "sky" : "emerald"}
+                              onClick={() => openExpenseModalForItem(item)}
+                            />
+                          </span>
+                        ) : (
+                          <span className="mt-1 block truncate text-xs text-stone-500">
+                            <HighlightedText
+                              text={itemSubtitle(item)}
+                              aliases={aliases}
+                            />
+                          </span>
+                        )}
                       </span>
                     </summary>
                     <div className="mt-3 rounded-xl bg-white p-3 text-sm leading-6 text-stone-600">
@@ -2833,30 +3086,35 @@ export function PlannerDayCard({
                             </span>
                           )}
                         </div>
-                        {canManagePlans ? (
-                          <button
-                            type="button"
-                            onClick={() => startEditItem(item)}
-                            className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-50 shadow-sm"
-                            title={t("planner.modify.schedule")}
-                          >
-                            <Image
-                              src="/icons/modify.png"
-                              alt=""
-                              width={14}
-                              height={14}
-                              className="object-contain opacity-75"
-                            />
-                          </button>
-                        ) : null}
+                        <div className="flex shrink-0 items-center gap-2">
+                          <RatingButton
+                            summary={item.ratingSummary}
+                            onClick={() => startRating(item)}
+                          />
+                          {canManagePlans ? (
+                            <button
+                              type="button"
+                              onClick={() => startEditItem(item)}
+                              className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-50 shadow-sm"
+                              title={t("planner.modify.schedule")}
+                            >
+                              <Image
+                                src="/icons/modify.png"
+                                alt=""
+                                width={14}
+                                height={14}
+                                className="object-contain opacity-75"
+                              />
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
-                      <HighlightedText
-                        text={
-                          item.note ||
-                          t("planner.note.empty")
-                        }
-                        aliases={aliases}
-                      />
+                      <p className="whitespace-pre-wrap">
+                        <HighlightedText
+                          text={item.note || t("planner.note.empty")}
+                          aliases={aliases}
+                        />
+                      </p>
                       {memoriesForItem(item).length > 0 ? (
                         <div className="mt-3 space-y-2 border-t border-stone-100 pt-3">
                           {memoriesForItem(item).map((memory) => (
@@ -3310,7 +3568,6 @@ export function PlannerDayCard({
 
         {visibleCarItems.length > 0 ? (
           <section className="space-y-2">
-            <SectionTitle title={labelForItemKind("car")} />
             {visibleCarItems.map((item) => {
               const navHref = mapsHref(item.location);
               const itemTotal = ledgerTotalForItem(item);
@@ -3333,15 +3590,20 @@ export function PlannerDayCard({
                   <summary className="grid cursor-pointer list-none grid-cols-[1fr_auto] gap-3">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="truncate text-sm font-semibold text-stone-950">
-                          {item.title}
-                        </h3>
+                        <p className="text-xs font-bold uppercase tracking-wide text-sky-800">
+                          {labelForItemKind("car")}
+                        </p>
                         {itemTotal > 0 ? (
-                          <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-bold text-sky-800">
-                            {money(itemTotal, ledgerCurrency, locale)}
-                          </span>
+                          <ExpenseLinkPill
+                            amount={money(itemTotal, ledgerCurrency, locale)}
+                            tone="sky"
+                            onClick={() => openExpenseModalForItem(item)}
+                          />
                         ) : null}
                       </div>
+                      <h3 className="mt-1 truncate text-sm font-semibold text-stone-950">
+                        {item.title}
+                      </h3>
                       <p className="mt-1 truncate text-xs text-stone-500">
                         {[item.location, startDate && endDate ? `${startDate} → ${endDate}` : null]
                           .filter(Boolean)
@@ -3379,22 +3641,28 @@ export function PlannerDayCard({
                           </p>
                         ) : null}
                       </div>
-                      {canManagePlans ? (
-                        <button
-                          type="button"
-                          onClick={() => startEditItem(item)}
-                          className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-50 shadow-sm"
-                          title={t("planner.modify.booking")}
-                        >
-                          <Image
-                            src="/icons/modify.png"
-                            alt=""
-                            width={14}
-                            height={14}
-                            className="object-contain opacity-75"
-                          />
-                        </button>
-                      ) : null}
+                      <div className="flex shrink-0 items-center gap-2">
+                        <RatingButton
+                          summary={item.ratingSummary}
+                          onClick={() => startRating(item)}
+                        />
+                        {canManagePlans ? (
+                          <button
+                            type="button"
+                            onClick={() => startEditItem(item)}
+                            className="grid size-8 shrink-0 place-items-center rounded-full bg-stone-50 shadow-sm"
+                            title={t("planner.modify.booking")}
+                          >
+                            <Image
+                              src="/icons/modify.png"
+                              alt=""
+                              width={14}
+                              height={14}
+                              className="object-contain opacity-75"
+                            />
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
 
                     <form
@@ -3645,7 +3913,11 @@ export function PlannerDayCard({
           <div className="flex items-center justify-between gap-3">
             <SectionTitle title={t("nav.ledger")} />
             <Link
-              href={`/trips/${tripId}/ledger`}
+              href={
+                day.dayDate === "unscheduled"
+                  ? `/trips/${tripId}/ledger`
+                  : `/trips/${tripId}/ledger?view=days&date=${day.dayDate}#daily-ledger`
+              }
               className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-700"
             >
               {t("common.open")}
@@ -3656,39 +3928,33 @@ export function PlannerDayCard({
               {t("planner.empty.expenses")}
             </p>
           ) : (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="space-y-3">
               <div className="rounded-2xl bg-emerald-50 p-3">
                 <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-800">
                   {t("ledger.totalCost")}
                 </p>
-                <p className="mt-1 font-semibold text-emerald-950">
+                <p className="mt-1 text-xl font-semibold text-emerald-950">
                   {money(ledgerTotal, ledgerCurrency, locale)}
                 </p>
               </div>
-              <div className="rounded-2xl bg-amber-50 p-3">
-                <p className="text-[11px] font-bold uppercase tracking-wide text-amber-800">
-                  {t("ledger.shared")}
-                </p>
-                <p className="mt-1 font-semibold text-amber-950">
-                  {money(sharedTotal, ledgerCurrency, locale)}
-                </p>
-              </div>
-              <div className="rounded-2xl bg-stone-50 p-3">
-                <p className="text-[11px] font-bold uppercase tracking-wide text-stone-500">
-                  {t("ledger.statsOnly")}
-                </p>
-                <p className="mt-1 font-semibold text-stone-950">
-                  {money(statsOnlyTotal, ledgerCurrency, locale)}
-                </p>
-              </div>
-              <div className="rounded-2xl bg-stone-50 p-3">
-                <p className="text-[11px] font-bold uppercase tracking-wide text-stone-500">
-                  {t("ledger.needsReview")}
-                </p>
-                <p className="mt-1 font-semibold text-stone-950">
-                  {reviewCount}
-                </p>
-              </div>
+              {ledgerCategoryTotals.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {ledgerCategoryTotals.map(({ category, amount }) => (
+                    <div
+                      key={category}
+                      className="flex items-center gap-2 rounded-full bg-stone-50 px-3 py-2 text-xs font-bold text-stone-700"
+                    >
+                      <span
+                        className={`size-2.5 rounded-full ${ledgerCategoryColorClasses[category]}`}
+                      />
+                      <span>{t(expenseCategoryLabelKeys[category])}</span>
+                      <span className="text-stone-950">
+                        {money(amount, ledgerCurrency, locale)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           )}
         </section>
@@ -3702,24 +3968,6 @@ export function PlannerDayCard({
           />
         </section>
 
-        {nextDay ? (
-          <section className="rounded-3xl border border-stone-100 bg-stone-50 p-4">
-            <SectionTitle title={t("planner.section.tomorrow")} />
-            <h3 className="mt-2 text-base font-semibold text-stone-950">
-              {nextDay.day.title ||
-                formatPlannerDayLabel(nextDay.day.dayDate, locale)}
-            </h3>
-            {nextStory.length > 0 ? (
-              <p className="mt-1 line-clamp-2 text-sm text-stone-600">
-                {nextStory.map((item) => item.title).join(" / ")}
-              </p>
-            ) : (
-              <p className="mt-1 text-sm text-stone-500">
-                {t("planner.empty.tomorrow")}
-              </p>
-            )}
-          </section>
-        ) : null}
       </div>
       {isAddingPlan ? (
         <div className="fixed inset-0 z-50 grid place-items-end bg-stone-950/30 p-3 sm:place-items-center">
@@ -3892,6 +4140,76 @@ export function PlannerDayCard({
                 {planError}
               </p>
             ) : null}
+          </section>
+        </div>
+      ) : null}
+      {ratingTarget ? (
+        <div className="fixed inset-0 z-50 grid place-items-end bg-stone-950/30 p-3 sm:place-items-center">
+          <section className="w-full max-w-sm rounded-3xl bg-white p-4 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-emerald-800">行程点评</p>
+                <h3 className="mt-1 line-clamp-2 text-xl font-semibold text-stone-950">
+                  {ratingTarget.title}
+                </h3>
+                <p className="mt-2 text-xs font-bold text-stone-500">
+                  {ratingTarget.summary?.ratingCount
+                    ? `当前平均 ${ratingTarget.summary.averageRating?.toFixed(
+                        1,
+                      )} · ${ratingTarget.summary.ratingCount} 人打分`
+                    : "还没有人打分"}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRatingTarget(null)}
+                className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
+              >
+                {t("common.close")}
+              </button>
+            </div>
+            <div className="mt-4 grid grid-cols-6 gap-2">
+              {[0, 1, 2, 3, 4, 5].map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setRatingDraft(String(value))}
+                  className={`rounded-2xl px-2 py-3 text-sm font-black ${
+                    Number(ratingDraft) === value
+                      ? "bg-amber-300 text-amber-950"
+                      : "bg-stone-100 text-stone-600"
+                  }`}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
+            <label className="mt-3 block space-y-1">
+              <span className="text-sm font-bold text-stone-800">
+                自定义分数
+              </span>
+              <input
+                value={ratingDraft}
+                onChange={(event) => setRatingDraft(event.target.value)}
+                inputMode="decimal"
+                className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+              />
+            </label>
+            {ratingError ? (
+              <p className="mt-3 rounded-2xl bg-red-50 p-3 text-sm font-medium text-red-700">
+                {ratingError}
+              </p>
+            ) : null}
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={saveRating}
+                disabled={isSavingRating}
+                className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-bold text-white disabled:bg-stone-300"
+              >
+                {isSavingRating ? "保存中..." : "保存评分"}
+              </button>
+            </div>
           </section>
         </div>
       ) : null}
@@ -4175,6 +4493,242 @@ export function PlannerDayCard({
               </button>
             </div>
           </form>
+        </div>
+      ) : null}
+      {isExpenseModalOpen && pendingExpense ? (
+        <div className="fixed inset-0 z-[2147482400] grid place-items-end bg-stone-950/30 p-3 sm:place-items-center">
+          <button
+            type="button"
+            aria-label={t("common.close")}
+            className="absolute inset-0"
+            onClick={() => {
+              setIsExpenseModalOpen(false);
+              setPendingExpense(null);
+              setExpenseError(null);
+            }}
+          />
+          <section className="relative z-[1] max-h-[88vh] w-full max-w-xl overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-emerald-800">
+                  {t("nav.ledger")}
+                </p>
+                <h3 className="mt-1 text-xl font-semibold text-stone-950">
+                  {pendingExpense.title}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsExpenseModalOpen(false);
+                  setPendingExpense(null);
+                  setExpenseError(null);
+                }}
+                className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
+              >
+                {t("common.close")}
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="space-y-1 sm:col-span-2">
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.title")}
+                </span>
+                <input
+                  value={pendingExpense.title}
+                  onChange={(event) =>
+                    updatePendingExpense({ title: event.target.value })
+                  }
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.category")}
+                </span>
+                <select
+                  value={pendingExpense.category}
+                  onChange={(event) =>
+                    updatePendingExpense({
+                      category: event.target.value as LedgerCategory,
+                    })
+                  }
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                >
+                  {expenseCategories.map((category) => (
+                    <option key={category} value={category}>
+                      {labelForExpenseCategory(category)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.mode")}
+                </span>
+                <select
+                  value={pendingExpense.accountingMode}
+                  onChange={(event) =>
+                    updatePendingExpense({
+                      accountingMode: event.target.value as LedgerAccountingMode,
+                    })
+                  }
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                >
+                  <option value="shared">{t("ledger.shared")}</option>
+                  <option value="stats_only">{t("ledger.statsOnly")}</option>
+                </select>
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.amount")}
+                </span>
+                <input
+                  value={pendingExpense.amount}
+                  onChange={(event) =>
+                    updatePendingExpense({ amount: event.target.value })
+                  }
+                  min="0"
+                  step="0.01"
+                  type="number"
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.currency")}
+                </span>
+                <select
+                  value={pendingExpense.currency}
+                  onChange={(event) =>
+                    updatePendingExpense({
+                      currency: event.target.value,
+                      exchangeRate:
+                        event.target.value === ledgerBaseCurrency ? "1" : "",
+                    })
+                  }
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                >
+                  {expenseCurrencies.map((currency) => (
+                    <option key={currency} value={currency}>
+                      {currency}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.rateTo", {
+                    currency: ledgerBaseCurrency,
+                  })}
+                  {isLoadingRate ? t("planner.loadingSuffix") : ""}
+                </span>
+                <input
+                  value={pendingExpense.exchangeRate}
+                  onChange={(event) =>
+                    updatePendingExpense({ exchangeRate: event.target.value })
+                  }
+                  min="0"
+                  step="0.0001"
+                  type="number"
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.paidBy")}
+                </span>
+                <select
+                  value={pendingExpense.payerMemberId}
+                  onChange={(event) =>
+                    updatePendingExpense({ payerMemberId: event.target.value })
+                  }
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                >
+                  <option value="">{t("planner.field.choosePayer")}</option>
+                  {activeMembers().map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="space-y-1 sm:col-span-2">
+                <span className="text-sm font-bold text-stone-800">
+                  {t("planner.field.location")}
+                </span>
+                <input
+                  value={pendingExpense.addressText}
+                  onChange={(event) =>
+                    updatePendingExpense({ addressText: event.target.value })
+                  }
+                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                />
+              </label>
+
+              {pendingExpense.accountingMode === "shared" ? (
+                <div className="space-y-2 sm:col-span-2">
+                  <span className="text-sm font-bold text-stone-800">
+                    {t("planner.expense.splitWith")}
+                  </span>
+                  <div className="flex flex-wrap gap-2 rounded-2xl border border-stone-200 bg-[#fffdf8] p-3">
+                    {activeMembers().map((member) => {
+                      const checked =
+                        pendingExpense.participantMemberIds.includes(member.id);
+                      return (
+                        <button
+                          key={member.id}
+                          type="button"
+                          onClick={() => toggleExpenseParticipant(member.id)}
+                          className={`rounded-full px-3 py-2 text-sm font-bold ${
+                            checked
+                              ? "bg-emerald-700 text-white"
+                              : "bg-stone-100 text-stone-700"
+                          }`}
+                        >
+                          {member.displayName}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            {expenseError ? (
+              <p className="mt-3 rounded-2xl bg-red-50 p-3 text-sm font-medium text-red-700">
+                {expenseError}
+              </p>
+            ) : null}
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={confirmPendingExpense}
+                disabled={
+                  savingExpenseId === pendingExpense.itemId ||
+                  !pendingExpense.amount ||
+                  !pendingExpense.exchangeRate ||
+                  !pendingExpense.payerMemberId ||
+                  (pendingExpense.accountingMode === "shared" &&
+                    pendingExpense.participantMemberIds.length === 0)
+                }
+                className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-bold text-white disabled:bg-stone-300"
+              >
+                {savingExpenseId === pendingExpense.itemId
+                  ? t("common.saving")
+                  : t("common.saveChanges")}
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
       {imagePreview ? (

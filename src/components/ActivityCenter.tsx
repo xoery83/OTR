@@ -15,7 +15,10 @@ import {
   requestFaceDetection,
   requestPhotoIndexing,
 } from "@/lib/supabase/media-assets";
-import { retryFailedPhotoUploadBatch } from "@/lib/uploads/photo-upload-manager";
+import {
+  listRuntimePhotoUploadBatches,
+  retryFailedPhotoUploadBatch,
+} from "@/lib/uploads/photo-upload-manager";
 
 function payloadString(job: BackgroundJob, key: string) {
   const value = job.payload[key];
@@ -150,16 +153,23 @@ export function ActivityCenter() {
 
   async function refreshJobs() {
     setIsLoading(true);
+    const runtimeBatches = listRuntimePhotoUploadBatches();
     try {
       const [nextJobs, nextBatches] = await Promise.all([
         listBackgroundJobs(),
         listBackgroundJobBatches(),
       ]);
       setJobs(nextJobs);
-      setBatches(nextBatches);
+      setBatches([
+        ...runtimeBatches,
+        ...nextBatches.filter(
+          (batch) =>
+            !runtimeBatches.some((runtimeBatch) => runtimeBatch.id === batch.id),
+        ),
+      ]);
     } catch {
       setJobs([]);
-      setBatches([]);
+      setBatches(runtimeBatches);
     } finally {
       setIsLoading(false);
     }

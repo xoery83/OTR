@@ -6,6 +6,7 @@ import { supabase } from "./client";
 type ProfileRow = {
   id: string;
   display_name: string;
+  global_aka?: string | null;
   avatar_url: string | null;
   created_at: string;
 };
@@ -14,6 +15,7 @@ function mapProfile(row: ProfileRow): Profile {
   return {
     id: row.id,
     displayName: row.display_name,
+    globalAka: row.global_aka ?? null,
     avatarUrl: row.avatar_url,
     createdAt: row.created_at,
   };
@@ -54,14 +56,21 @@ export async function upsertProfileForUser(user: User) {
 export async function updateProfile(input: {
   id: string;
   displayName: string;
+  globalAka?: string | null;
   avatarUrl: string | null;
 }) {
+  const payload: Record<string, string | null> = {
+    display_name: input.displayName.trim(),
+    avatar_url: input.avatarUrl?.trim() || null,
+  };
+
+  if (input.globalAka !== undefined) {
+    payload.global_aka = input.globalAka?.trim() || null;
+  }
+
   const { data, error } = await supabase
     .from("profiles")
-    .update({
-      display_name: input.displayName.trim(),
-      avatar_url: input.avatarUrl?.trim() || null,
-    })
+    .update(payload)
     .eq("id", input.id)
     .select("*")
     .single();

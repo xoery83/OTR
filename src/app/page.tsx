@@ -212,7 +212,7 @@ function HomeDashboard() {
             ) : null}
             <div className="grid gap-3 sm:grid-cols-2">
               <Link
-                href={`/trips/${current.trip.id}`}
+                href={`/trips/${current.trip.id}/planner`}
                 className="rounded-2xl bg-emerald-700 px-4 py-3 text-center text-sm font-bold text-white"
               >
                 Open Journey

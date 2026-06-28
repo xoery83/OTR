@@ -2,9 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
+import {
+  compareTripsByStartDateAsc,
+  getJourneyStatus,
+} from "@/lib/journeys/status";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
+import { getTripsForCurrentUser } from "@/lib/supabase/trips";
+import type { Trip } from "@/types";
 
 type NavIcon =
   | "home"
@@ -13,7 +20,6 @@ type NavIcon =
   | "people"
   | "account"
   | "profile"
-  | "overview"
   | "planner"
   | "capture"
   | "map"
@@ -82,15 +88,6 @@ function Icon({ name }: { name: NavIcon }) {
         <svg {...common}>
           <circle cx="12" cy="8" r="4" />
           <path d="M5 21c1.2-4 12.8-4 14 0" />
-        </svg>
-      );
-    case "overview":
-      return (
-        <svg {...common}>
-          <rect x="4" y="4" width="7" height="7" rx="2" />
-          <rect x="13" y="4" width="7" height="7" rx="2" />
-          <rect x="4" y="13" width="7" height="7" rx="2" />
-          <rect x="13" y="13" width="7" height="7" rx="2" />
         </svg>
       );
     case "planner":
@@ -163,6 +160,7 @@ export function SidebarNav() {
   const { t } = useI18n();
   const { openCapture } = useCaptureModal();
   const tripId = getActiveTripId(pathname);
+  const [quickTrips, setQuickTrips] = useState<Trip[]>([]);
   const mainItems: NavItem[] = [
     { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
     { labelKey: "nav.discover", href: "/discover", icon: "discover" },
@@ -172,7 +170,6 @@ export function SidebarNav() {
   ];
   const journeyItems: NavItem[] = tripId
     ? [
-        { labelKey: "nav.overview", href: `/trips/${tripId}`, icon: "overview" },
         { labelKey: "nav.planner", href: `/trips/${tripId}/planner`, icon: "planner" },
         { labelKey: "nav.capture", href: `/trips/${tripId}/capture`, icon: "capture" },
         { labelKey: "nav.map", href: `/trips/${tripId}/map`, icon: "map" },
@@ -195,6 +192,41 @@ export function SidebarNav() {
         },
       ]
     : [];
+  const quickJourneyItems = useMemo(() => {
+    const statusRank: Record<string, number> = {
+      active: 0,
+      upcoming: 1,
+      completed: 2,
+    };
+
+    return [...quickTrips]
+      .sort((left, right) => {
+        const statusOrder =
+          statusRank[getJourneyStatus(left)] - statusRank[getJourneyStatus(right)];
+        if (statusOrder) return statusOrder;
+        return compareTripsByStartDateAsc(left, right);
+      })
+      .slice(0, 3);
+  }, [quickTrips]);
+
+  useEffect(() => {
+    if (tripId) {
+      return;
+    }
+
+    let isMounted = true;
+    getTripsForCurrentUser()
+      .then((trips) => {
+        if (isMounted) setQuickTrips(trips);
+      })
+      .catch(() => {
+        if (isMounted) setQuickTrips([]);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [tripId]);
 
   function isActive(href: string) {
     if (href === "/" || href.startsWith("/?")) return pathname === "/";
@@ -203,9 +235,9 @@ export function SidebarNav() {
   }
 
   function itemClass(active: boolean) {
-    return `group relative grid size-11 place-items-center rounded-2xl transition ${
+    return `group relative flex h-10 w-full items-center gap-3 rounded-xl px-3 text-sm font-bold transition ${
       active
-        ? "bg-emerald-50 text-emerald-900"
+        ? "bg-emerald-50 text-emerald-900 shadow-sm"
         : "text-stone-600 hover:bg-stone-100 hover:text-stone-950"
     }`;
   }
@@ -224,7 +256,7 @@ export function SidebarNav() {
           aria-label={label}
         >
           <Icon name={item.icon} />
-          <span className="pointer-events-none absolute left-14 top-1/2 z-50 hidden -translate-y-1/2 whitespace-nowrap rounded-xl bg-stone-950 px-3 py-2 text-xs font-bold text-white shadow-lg group-hover:block group-focus-visible:block">
+          <span className="truncate">
             {label}
           </span>
         </button>
@@ -240,32 +272,85 @@ export function SidebarNav() {
         aria-label={label}
       >
         <Icon name={item.icon} />
-        <span className="pointer-events-none absolute left-14 top-1/2 z-50 hidden -translate-y-1/2 whitespace-nowrap rounded-xl bg-stone-950 px-3 py-2 text-xs font-bold text-white shadow-lg group-hover:block group-focus-visible:block">
+        <span className="truncate">
           {label}
         </span>
       </Link>
     );
   }
 
+  function renderQuickJourney(trip: Trip) {
+    const status = getJourneyStatus(trip);
+    const statusLabel =
+      status === "active" ? "进行中" : status === "upcoming" ? "即将开始" : "已完成";
+
+    return (
+      <Link
+        key={trip.id}
+        href={`/trips/${trip.id}/planner`}
+        className="group rounded-xl px-3 py-2 transition hover:bg-emerald-50"
+        title={trip.name}
+      >
+        <span className="block truncate text-sm font-black text-stone-900 group-hover:text-emerald-900">
+          {trip.name}
+        </span>
+        <span className="mt-0.5 block truncate text-[11px] font-semibold text-stone-500">
+          {statusLabel}
+          {trip.destination ? ` · ${trip.destination}` : ""}
+        </span>
+      </Link>
+    );
+  }
+
   return (
-    <aside className="fixed left-0 top-0 z-40 hidden h-screen w-20 border-r border-emerald-100 bg-[#fffdf8] px-3 py-5 md:block">
-      <Link href="/trips" className="grid place-items-center" title="OTR">
+    <aside className="fixed left-0 top-0 z-40 hidden h-screen w-44 border-r border-emerald-100 bg-[#fffdf8] px-3 py-5 shadow-[8px_0_28px_rgba(28,25,23,0.04)] md:block">
+      <Link href="/trips" className="flex items-center gap-3 px-1" title="OTR">
         <span className="grid size-10 place-items-center rounded-xl bg-emerald-700 text-sm font-bold text-white">
           O
         </span>
+        <span>
+          <span className="block text-base font-black leading-tight text-stone-950">
+            OTR
+          </span>
+          <span className="block text-xs font-semibold leading-tight text-stone-500">
+            旅程与记忆
+          </span>
+        </span>
       </Link>
-      <nav className="mt-8 space-y-7">
-        <div className="grid justify-items-center gap-2">
+      <nav className="mt-7 space-y-5">
+        <div className="grid gap-1.5">
           {mainItems.map(renderItem)}
         </div>
 
-        <div className="grid justify-items-center gap-2 border-t border-stone-100 pt-4">
+        <div className="border-t-2 border-emerald-100 pt-4">
           {journeyItems.length > 0 ? (
-            journeyItems.map(renderItem)
+            <>
+              <p className="mb-2 px-3 text-[11px] font-black uppercase tracking-[0.16em] text-emerald-800">
+                当前 Journey
+              </p>
+              <div className="grid gap-1.5 rounded-2xl bg-white/60 p-1.5 ring-1 ring-emerald-50">
+                {journeyItems.map(renderItem)}
+              </div>
+            </>
           ) : (
-            <span className="grid size-11 place-items-center rounded-2xl bg-stone-50 text-xs font-bold text-stone-300">
-              <Icon name="journeys" />
-            </span>
+            <>
+              <p className="mb-2 px-3 text-[11px] font-black uppercase tracking-[0.16em] text-emerald-800">
+                快速进入
+              </p>
+              {quickJourneyItems.length > 0 ? (
+                <div className="grid gap-1.5 rounded-2xl bg-white/60 p-1.5 ring-1 ring-emerald-50">
+                  {quickJourneyItems.map(renderQuickJourney)}
+                </div>
+              ) : (
+                <Link
+                  href="/trips"
+                  className="flex h-10 items-center gap-3 rounded-xl bg-stone-50 px-3 text-sm font-bold text-stone-400 hover:bg-emerald-50 hover:text-emerald-900"
+                >
+                  <Icon name="journeys" />
+                  Journey
+                </Link>
+              )}
+            </>
           )}
         </div>
       </nav>

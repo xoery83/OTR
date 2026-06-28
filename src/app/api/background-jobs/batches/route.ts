@@ -25,6 +25,21 @@ function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
 }
 
+function errorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const parts = [
+      record.message,
+      record.details,
+      record.hint,
+      record.code ? `code: ${record.code}` : null,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0);
+    if (parts.length > 0) return parts.join(" ");
+  }
+  return fallback;
+}
+
 function getSupabaseForRequest(request: Request) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -81,10 +96,7 @@ export async function GET(request: Request) {
       batches: ((data ?? []) as BatchRow[]).map(mapBatch),
     });
   } catch (error) {
-    return jsonError(
-      error instanceof Error ? error.message : "Could not load job batches.",
-      500,
-    );
+    return jsonError(errorMessage(error, "Could not load job batches."), 500);
   }
 }
 
@@ -119,9 +131,6 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ batch: mapBatch(data as BatchRow) });
   } catch (error) {
-    return jsonError(
-      error instanceof Error ? error.message : "Could not create job batch.",
-      500,
-    );
+    return jsonError(errorMessage(error, "Could not create job batch."), 500);
   }
 }

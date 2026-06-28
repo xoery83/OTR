@@ -2,18 +2,27 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
 
-const moreItems = [
-  { labelKey: "nav.overview", href: "" },
-  { labelKey: "nav.people", href: "people" },
-  { labelKey: "nav.timeline", href: "timeline" },
-  { labelKey: "nav.highlights", href: "highlights" },
-  { labelKey: "nav.settings", href: "settings" },
-] as const;
+type MobileNavIcon =
+  | "journeys"
+  | "discover"
+  | "account"
+  | "planner"
+  | "map"
+  | "ledger"
+  | "people"
+  | "timeline"
+  | "highlights"
+  | "settings";
+
+type MobileNavItem = {
+  labelKey: TranslationKey;
+  href: string;
+  icon: MobileNavIcon;
+};
 
 function getActiveTripId(pathname: string) {
   const match = pathname.match(/^\/trips\/([^/]+)/);
@@ -31,26 +40,135 @@ function getActiveTripId(pathname: string) {
   return null;
 }
 
-function baseItemClass(active: boolean, compact = false) {
-  if (compact) {
-    return `flex flex-col items-center justify-center rounded-2xl px-1 text-[11px] font-bold transition ${
-      active
-        ? "bg-emerald-50/80 text-emerald-800 backdrop-blur"
-        : "text-stone-600 drop-shadow-sm hover:bg-white/40 hover:text-stone-900"
-    }`;
-  }
+function Icon({ name }: { name: MobileNavIcon }) {
+  const common = {
+    className: "h-5 w-5",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
 
-  return `flex flex-col items-center justify-center rounded-2xl px-1 text-[11px] font-bold transition ${
-    active
-      ? "bg-emerald-50 text-emerald-800"
-      : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+  switch (name) {
+    case "journeys":
+      return (
+        <svg {...common}>
+          <path d="M4 17 9 5l5 12 2-5 4 7" />
+          <path d="M4 17h16" />
+        </svg>
+      );
+    case "discover":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="m15 9-2 5-5 2 2-5 5-2Z" />
+        </svg>
+      );
+    case "account":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="8" r="4" />
+          <path d="M5 21c1.2-4 12.8-4 14 0" />
+        </svg>
+      );
+    case "planner":
+      return (
+        <svg {...common}>
+          <path d="M7 3v4" />
+          <path d="M17 3v4" />
+          <rect x="4" y="5" width="16" height="15" rx="3" />
+          <path d="M8 12h8" />
+          <path d="M8 16h5" />
+        </svg>
+      );
+    case "map":
+      return (
+        <svg {...common}>
+          <path d="M9 18 3 21V6l6-3 6 3 6-3v15l-6 3-6-3Z" />
+          <path d="M9 3v15" />
+          <path d="M15 6v15" />
+        </svg>
+      );
+    case "ledger":
+      return (
+        <svg {...common}>
+          <path d="M6 3h12v18H6z" />
+          <path d="M9 8h6" />
+          <path d="M9 12h6" />
+          <path d="M9 16h3" />
+        </svg>
+      );
+    case "people":
+      return (
+        <svg {...common}>
+          <path d="M16 19c0-2.2-1.8-4-4-4s-4 1.8-4 4" />
+          <circle cx="12" cy="8" r="3" />
+          <path d="M20 18c0-1.7-1.1-3.1-2.7-3.7" />
+          <path d="M6.7 14.3C5.1 14.9 4 16.3 4 18" />
+        </svg>
+      );
+    case "timeline":
+      return (
+        <svg {...common}>
+          <path d="M12 5v14" />
+          <circle cx="12" cy="7" r="2" />
+          <circle cx="12" cy="17" r="2" />
+          <path d="M14 7h5" />
+          <path d="M5 17h5" />
+        </svg>
+      );
+    case "highlights":
+      return (
+        <svg {...common}>
+          <path d="m12 3 2.4 5 5.6.8-4 3.9.9 5.5L12 15.6 7.1 18.2l.9-5.5-4-3.9 5.6-.8L12 3Z" />
+        </svg>
+      );
+    case "settings":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a8 8 0 0 0 .1-6" />
+          <path d="M4.5 9a8 8 0 0 0 .1 6" />
+          <path d="m8 4 1.2 2" />
+          <path d="m14.8 18 1.2 2" />
+          <path d="m16 4-1.2 2" />
+          <path d="m9.2 18-1.2 2" />
+        </svg>
+      );
+  }
+}
+
+function navItemClass(active: boolean, compact = false) {
+  return `flex h-14 min-w-[74px] flex-col items-center justify-center gap-1 rounded-2xl px-3 text-[11px] font-black transition ${
+    compact
+      ? active
+        ? "bg-white/90 text-emerald-800 shadow-sm backdrop-blur"
+        : "text-stone-700 drop-shadow-sm hover:bg-white/45 hover:text-stone-950"
+      : active
+        ? "bg-emerald-50 text-emerald-800 shadow-sm"
+        : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
   }`;
 }
 
-function captureItemClass(active: boolean, compact = false) {
-  return `${compact ? "-mt-5 h-[70px]" : "-mt-6 h-[76px]"} flex flex-col items-center justify-center rounded-3xl bg-emerald-700 px-1 text-xs font-black text-white shadow-lg shadow-emerald-900/20 transition ${
-    active ? "ring-4 ring-emerald-100" : ""
-  }`;
+function CaptureIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className="h-7 w-7"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2.4"
+    >
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
+  );
 }
 
 export function BottomNav() {
@@ -59,65 +177,26 @@ export function BottomNav() {
   const { openCapture } = useCaptureModal();
   const activeTripId = getActiveTripId(pathname);
   const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
-  const [isMoreOpen, setIsMoreOpen] = useState(false);
+  const globalItems: MobileNavItem[] = [
+    { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
+    { labelKey: "nav.discover", href: "/discover", icon: "discover" },
+    { labelKey: "nav.account", href: "/profile", icon: "account" },
+    { labelKey: "nav.settings", href: "/settings", icon: "settings" },
+  ];
 
-  if (!activeTripId) {
-    return (
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-stone-200 bg-white/95 shadow-[0_-10px_30px_rgba(28,25,23,0.08)] backdrop-blur md:hidden">
-        <div className="mx-auto grid h-20 max-w-3xl grid-cols-5 items-end gap-1 px-2 pb-2 pt-2">
-          <Link
-            href="/trips"
-            className={baseItemClass(pathname.startsWith("/trips"))}
-          >
-            <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            {t("nav.journeys")}
-          </Link>
-          <Link
-            href="/discover"
-            className={baseItemClass(pathname.startsWith("/discover"))}
-          >
-            <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            {t("nav.discover")}
-          </Link>
-          <button
-            type="button"
-            onClick={() => openCapture({ entryPoint: "global_capture" })}
-            className={captureItemClass(pathname.startsWith("/capture"))}
-          >
-            <span className="text-2xl leading-none">+</span>
-            {t("nav.capture")}
-          </button>
-          <Link
-            href="/profile"
-            className={baseItemClass(pathname.startsWith("/profile"))}
-          >
-            <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            {t("nav.account")}
-          </Link>
-          <Link
-            href="/settings"
-            className={baseItemClass(pathname.startsWith("/settings"))}
-          >
-            <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            {t("nav.settings")}
-          </Link>
-        </div>
-      </nav>
-    );
+  function isActive(href: string) {
+    if (href === "/trips") return pathname === "/trips" || pathname === "/trips/new";
+    return pathname === href || pathname.startsWith(`${href}/`);
   }
 
-  const overviewHref = `/trips/${activeTripId}`;
-  const plannerHref = `/trips/${activeTripId}/planner`;
-  const mapHref = `/trips/${activeTripId}/map`;
-  const ledgerHref = `/trips/${activeTripId}/ledger`;
-  const moreActive = moreItems.some(
-    (item) =>
-      pathname ===
-      (item.href ? `/trips/${activeTripId}/${item.href}` : overviewHref),
-  );
+  function captureOptions() {
+    return activeTripId
+      ? { tripId: activeTripId, entryPoint: "global_capture" as const }
+      : { entryPoint: "global_capture" as const };
+  }
 
-  return (
-    <>
+  function renderBottomBar(items: MobileNavItem[]) {
+    return (
       <nav
         className={`fixed inset-x-0 bottom-0 z-30 backdrop-blur md:hidden ${
           isMapPage
@@ -125,100 +204,97 @@ export function BottomNav() {
             : "border-t border-stone-200 bg-white/95 shadow-[0_-10px_30px_rgba(28,25,23,0.08)]"
         }`}
       >
+        <div className="pointer-events-none absolute inset-y-0 left-0 z-10 flex w-8 items-center justify-start bg-gradient-to-r from-white/95 to-transparent pl-1 text-stone-400">
+          <span className="text-lg leading-none">‹</span>
+        </div>
+        <div className="pointer-events-none absolute inset-y-0 right-0 z-10 flex w-8 items-center justify-end bg-gradient-to-l from-white/95 to-transparent pr-1 text-stone-400">
+          <span className="text-lg leading-none">›</span>
+        </div>
         <div
-          className={`mx-auto grid max-w-3xl grid-cols-5 items-end gap-1 px-2 ${
-            isMapPage ? "h-16 pb-1 pt-0" : "h-20 pb-2 pt-2"
+          className={`mx-auto max-w-3xl overflow-x-auto pl-5 pr-28 ${
+            isMapPage ? "h-[72px] py-2" : "h-[82px] pb-3 pt-2"
           }`}
         >
-          <Link
-            href={plannerHref}
-            className={baseItemClass(pathname === plannerHref, isMapPage)}
-          >
-            <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            {t("nav.planner")}
-          </Link>
-          <Link
-            href={mapHref}
-            className={baseItemClass(pathname === mapHref, isMapPage)}
-          >
-            <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            {t("nav.map")}
-          </Link>
-          <button
-            type="button"
-            onClick={() =>
-              openCapture({
-                tripId: activeTripId,
-                entryPoint: "global_capture",
-              })
-            }
-            className={captureItemClass(false, isMapPage)}
-          >
-            <span className="text-2xl leading-none">+</span>
-            {t("nav.capture")}
-          </button>
-          <Link
-            href={ledgerHref}
-            className={baseItemClass(pathname === ledgerHref, isMapPage)}
-          >
-            <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            {t("nav.ledger")}
-          </Link>
-          <button
-            type="button"
-            onClick={() => setIsMoreOpen(true)}
-            className={baseItemClass(moreActive, isMapPage)}
-          >
-            <span className="mb-1 h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            {t("nav.more")}
-          </button>
+          <div className="flex w-max min-w-full items-center justify-[safe_center] gap-2">
+            {items.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={navItemClass(isActive(item.href), isMapPage)}
+                aria-label={t(item.labelKey)}
+              >
+                <Icon name={item.icon} />
+                <span className="leading-none">{t(item.labelKey)}</span>
+              </Link>
+            ))}
+          </div>
         </div>
       </nav>
+    );
+  }
 
-      {isMoreOpen ? (
-        <div className="fixed inset-0 z-50 md:hidden">
-          <button
-            type="button"
-            aria-label={t("app.menu.close")}
-            className="absolute inset-0 bg-stone-950/30"
-            onClick={() => setIsMoreOpen(false)}
-          />
-          <section className="absolute inset-x-0 bottom-0 rounded-t-[28px] bg-[#fffdf8] p-5 shadow-2xl">
-            <div className="mx-auto h-1.5 w-12 rounded-full bg-stone-200" />
-            <div className="mt-5 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-800">
-                  {t("nav.more")}
-                </p>
-                <h2 className="text-xl font-semibold text-stone-950">
-                  {t("nav.journeyTools")}
-                </h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsMoreOpen(false)}
-                className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
-              >
-                {t("common.close")}
-              </button>
-            </div>
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              {moreItems.map((item) => (
-                <Link
-                  key={item.labelKey}
-                  href={
-                    item.href ? `/trips/${activeTripId}/${item.href}` : overviewHref
-                  }
-                  onClick={() => setIsMoreOpen(false)}
-                  className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-stone-800 shadow-sm"
-                >
-                  {t(item.labelKey as TranslationKey)}
-                </Link>
-              ))}
-            </div>
-          </section>
-        </div>
-      ) : null}
+  const captureButton = (
+    <button
+      type="button"
+      onClick={() => openCapture(captureOptions())}
+      className={`fixed right-4 z-40 flex h-16 min-w-20 flex-col items-center justify-center gap-0.5 rounded-[22px] bg-emerald-700 px-4 text-white shadow-2xl shadow-emerald-950/25 transition active:scale-95 md:hidden ${
+        isMapPage ? "bottom-20" : "bottom-24"
+      }`}
+      aria-label={t("nav.capture")}
+      title={t("nav.capture")}
+    >
+      <CaptureIcon />
+      <span className="text-xs font-black leading-none">{t("nav.capture")}</span>
+    </button>
+  );
+
+  if (!activeTripId) {
+    return (
+      <>
+        {renderBottomBar(globalItems)}
+        {captureButton}
+      </>
+    );
+  }
+
+  const journeyItems: MobileNavItem[] = [
+    {
+      labelKey: "nav.planner",
+      href: `/trips/${activeTripId}/planner`,
+      icon: "planner",
+    },
+    { labelKey: "nav.map", href: `/trips/${activeTripId}/map`, icon: "map" },
+    {
+      labelKey: "nav.ledger",
+      href: `/trips/${activeTripId}/ledger`,
+      icon: "ledger",
+    },
+    {
+      labelKey: "nav.people",
+      href: `/trips/${activeTripId}/people`,
+      icon: "people",
+    },
+    {
+      labelKey: "nav.timeline",
+      href: `/trips/${activeTripId}/timeline`,
+      icon: "timeline",
+    },
+    {
+      labelKey: "nav.highlights",
+      href: `/trips/${activeTripId}/highlights`,
+      icon: "highlights",
+    },
+    {
+      labelKey: "nav.settings",
+      href: `/trips/${activeTripId}/settings`,
+      icon: "settings",
+    },
+  ];
+
+  return (
+    <>
+      {renderBottomBar(journeyItems)}
+      {captureButton}
     </>
   );
 }

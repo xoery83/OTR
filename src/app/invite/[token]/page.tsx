@@ -50,7 +50,10 @@ export default function InviteAcceptPage() {
           result.tripId &&
           (result.status === "joined" || result.status === "already_member")
         ) {
-          setTimeout(() => router.replace(`/trips/${result.tripId}`), 1200);
+          setTimeout(
+            () => router.replace(`/trips/${result.tripId}/planner`),
+            1200,
+          );
         }
       } catch (inviteError) {
         if (isMounted) {
@@ -81,7 +84,7 @@ export default function InviteAcceptPage() {
           {isLoading
             ? "Checking your session and joining the journey."
             : tripId && (status === "joined" || status === "already_member")
-              ? "Redirecting to the journey overview..."
+              ? "Redirecting to the journey planner..."
               : "This invite could not be used."}
         </p>
         {error ? (
@@ -91,7 +94,7 @@ export default function InviteAcceptPage() {
         ) : null}
         {tripId ? (
           <Link
-            href={`/trips/${tripId}`}
+            href={`/trips/${tripId}/planner`}
             className="mt-5 inline-flex rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white"
           >
             Open Journey
