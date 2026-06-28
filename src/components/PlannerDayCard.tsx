@@ -1243,6 +1243,13 @@ export function PlannerDayCard({
   }
 
   function rangeForStoryItem(item: StoryItem) {
+    if (day.dayDate !== "unscheduled") {
+      return {
+        startDate: day.dayDate,
+        endDate: day.dayDate,
+      };
+    }
+
     const startDate = dateOnly(item.startsAt) ?? dateOnly(item.endsAt);
     return {
       startDate,
