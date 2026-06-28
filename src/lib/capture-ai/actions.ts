@@ -64,13 +64,14 @@ function resolveDate(value: unknown, capturedAt: string) {
 }
 
 function isoAt(date: string, time = "18:00") {
-  return new Date(`${date}T${time}:00`).toISOString();
+  return `${date}T${time}:00`;
 }
 
 function addDays(date: string, days: number, time = "10:00") {
-  const result = new Date(`${date}T${time}:00`);
+  const result = new Date(`${date}T00:00:00`);
   result.setDate(result.getDate() + days);
-  return result.toISOString();
+  const nextDate = result.toISOString().slice(0, 10);
+  return `${nextDate}T${time}:00`;
 }
 
 function ledgerCategory(value: unknown): LedgerCategory {

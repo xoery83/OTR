@@ -7,7 +7,11 @@ import { AuthGate } from "@/components/AuthGate";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { getErrorMessage } from "@/lib/errors";
 import { getApproxExchangeRate } from "@/lib/exchange-rates";
-import { formatDateTime, toDateTimeLocalValue } from "@/lib/format";
+import {
+  formatDateTime,
+  journeyDateKey,
+  toJourneyDateTimeLocalValue,
+} from "@/lib/format";
 import { compressImageFile } from "@/lib/images";
 import {
   addConflictWarnings,
@@ -246,10 +250,7 @@ function reservationFormCopy(type: ItineraryReservationType) {
 }
 
 function toInputDateTime(value: string | null) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return toDateTimeLocalValue(date);
+  return toJourneyDateTimeLocalValue(value);
 }
 
 function warningClass(severity: string) {
@@ -269,8 +270,7 @@ function timeValue(value: string | null) {
 }
 
 function dateValue(value: string | null) {
-  if (!value || !/^\d{4}-\d{2}-\d{2}/.test(value)) return null;
-  return value.slice(0, 10);
+  return journeyDateKey(value);
 }
 
 function addDateDays(value: string, days: number) {
@@ -285,8 +285,7 @@ function normalizeDateParam(value: string | null) {
 
 function localDateTimeIso(date: string | null, time: string) {
   if (!date) return null;
-  const value = new Date(`${date}T${time}:00`);
-  return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  return `${date}T${time}:00`;
 }
 
 function makeDraftId(prefix: string) {
@@ -1840,9 +1839,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                       value={toInputDateTime(draft.planned_start)}
                       onChange={(event) =>
                         updateDraft(draft.clientId, {
-                          planned_start: event.target.value
-                            ? new Date(event.target.value).toISOString()
-                            : null,
+                          planned_start: event.target.value || null,
                         })
                       }
                       className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
@@ -1852,9 +1849,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                       value={toInputDateTime(draft.planned_end)}
                       onChange={(event) =>
                         updateDraft(draft.clientId, {
-                          planned_end: event.target.value
-                            ? new Date(event.target.value).toISOString()
-                            : null,
+                          planned_end: event.target.value || null,
                         })
                       }
                       className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
@@ -2143,9 +2138,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                             day_date: event.target.value
                               ? event.target.value.slice(0, 10)
                               : reservation.day_date,
-                            starts_at: event.target.value
-                              ? new Date(event.target.value).toISOString()
-                              : null,
+                            starts_at: event.target.value || null,
                           })
                         }
                         className="w-full rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
@@ -2160,9 +2153,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                         value={toInputDateTime(reservation.ends_at)}
                         onChange={(event) =>
                           updateReservationDraft(reservation.clientId, {
-                            ends_at: event.target.value
-                              ? new Date(event.target.value).toISOString()
-                              : null,
+                            ends_at: event.target.value || null,
                           })
                         }
                         className="w-full rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
@@ -2657,9 +2648,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                         value={toInputDateTime(draft.planned_start)}
                         onChange={(event) =>
                           updateDraft(draft.clientId, {
-                            planned_start: event.target.value
-                              ? new Date(event.target.value).toISOString()
-                              : null,
+                            planned_start: event.target.value || null,
                           })
                         }
                         className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
@@ -2669,9 +2658,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                         value={toInputDateTime(draft.planned_end)}
                         onChange={(event) =>
                           updateDraft(draft.clientId, {
-                            planned_end: event.target.value
-                              ? new Date(event.target.value).toISOString()
-                              : null,
+                            planned_end: event.target.value || null,
                           })
                         }
                         className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
@@ -2928,9 +2915,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                       day_date: event.target.value
                         ? event.target.value.slice(0, 10)
                         : reservation.day_date,
-                      starts_at: event.target.value
-                        ? new Date(event.target.value).toISOString()
-                        : null,
+                      starts_at: event.target.value || null,
                     })
                   }
                   className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
@@ -2940,9 +2925,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                   value={toInputDateTime(reservation.ends_at)}
                   onChange={(event) =>
                     updateReservationDraft(reservation.clientId, {
-                      ends_at: event.target.value
-                        ? new Date(event.target.value).toISOString()
-                        : null,
+                      ends_at: event.target.value || null,
                     })
                   }
                   className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"

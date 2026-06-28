@@ -23,6 +23,7 @@ import {
 } from "@/lib/geo";
 import { geocodePlace } from "@/lib/geocoding";
 import { getErrorMessage } from "@/lib/errors";
+import { formatJourneyTime, journeyDateKey } from "@/lib/format";
 import { getCurrentUser } from "@/lib/supabase/auth";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import { getActiveJourneyMembers } from "@/lib/journeys/stats";
@@ -202,12 +203,20 @@ function dateKey(value: string | null | undefined) {
   return value?.slice(0, 10) ?? null;
 }
 
+function plannerDateKey(value: string | null | undefined) {
+  return journeyDateKey(value);
+}
+
 function timeLabel(value: string | null | undefined) {
   if (!value) return "";
   return new Date(value).toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function plannerTimeLabel(value: string | null | undefined) {
+  return value ? formatJourneyTime(value) : "";
 }
 
 function compactDate(value: string, t: ReturnType<typeof useI18n>["t"]) {
@@ -275,8 +284,8 @@ function shouldShowScheduleStopOnDay(
 ) {
   if (dayDate === "unscheduled") return true;
 
-  const startDate = dateKey(startValue);
-  const endDate = dateKey(endValue);
+  const startDate = plannerDateKey(startValue);
+  const endDate = plannerDateKey(endValue);
 
   if (startDate && endDate && startDate !== endDate) {
     return dayDate === startDate || dayDate === endDate;
@@ -628,7 +637,7 @@ function eventStop(
 
   return {
     id: `event-${event.id}`,
-    label: timeLabel(event.plannedStart) || event.title,
+    label: plannerTimeLabel(event.plannedStart) || event.title,
     title: event.title,
     subtitle: event.locationName,
     description: event.description,
@@ -658,7 +667,7 @@ function linkedMemoryCoordinates(
           reservation,
           day,
           objects,
-          timeLabel(reservation.startsAt) || reservation.title,
+          plannerTimeLabel(reservation.startsAt) || reservation.title,
           reservation.reservationType === "hotel" ? "hotel" : "place",
           trip,
           geocodedCoordinates,
@@ -1205,8 +1214,8 @@ function JourneyMapContent() {
             reservation,
             day,
             mapObjects,
-            timeLabel(
-              dateKey(reservation.startsAt) === day.day.dayDate
+            plannerTimeLabel(
+              plannerDateKey(reservation.startsAt) === day.day.dayDate
                 ? reservation.startsAt
                 : reservation.endsAt,
             ) || reservation.title,
@@ -1310,8 +1319,8 @@ function JourneyMapContent() {
         reservation,
         selectedDay,
         mapObjects,
-        timeLabel(
-          dateKey(reservation.startsAt) === selectedDay.day.dayDate
+        plannerTimeLabel(
+          plannerDateKey(reservation.startsAt) === selectedDay.day.dayDate
             ? reservation.startsAt
             : reservation.endsAt,
         ) || reservation.title,

@@ -1,5 +1,5 @@
 import type { ItineraryEvent } from "@/types";
-import { formatTime } from "@/lib/format";
+import { formatJourneyTime } from "@/lib/format";
 
 export function ItineraryEventCard({ event }: { event: ItineraryEvent }) {
   return (
@@ -18,7 +18,7 @@ export function ItineraryEventCard({ event }: { event: ItineraryEvent }) {
         </div>
         {event.plannedStart ? (
           <p className="shrink-0 text-sm font-bold text-emerald-800">
-            {formatTime(event.plannedStart)}
+            {formatJourneyTime(event.plannedStart)}
           </p>
         ) : null}
       </div>

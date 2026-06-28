@@ -11,6 +11,7 @@ import {
   writeTodayScopedValue,
 } from "@/lib/day-view-storage";
 import { getErrorMessage } from "@/lib/errors";
+import { formatJourneyTime } from "@/lib/format";
 import { getActiveJourneyMembers } from "@/lib/journeys/stats";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import { getLedgerData } from "@/lib/supabase/ledger";
@@ -58,12 +59,7 @@ function longDateLabel(value: string, locale: string) {
 
 function timeLabel(value: string | null | undefined, locale: string) {
   if (!value) return locale === "zh-CN" ? "时间待定" : "Time TBD";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return locale === "zh-CN" ? "时间待定" : "Time TBD";
-  return date.toLocaleTimeString(locale === "zh-CN" ? "zh-CN" : "en", {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return formatJourneyTime(value, locale) || (locale === "zh-CN" ? "时间待定" : "Time TBD");
 }
 
 function isOfficialTripDay(value: string, trip: Trip | null) {

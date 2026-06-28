@@ -12,6 +12,7 @@ import type {
   UpdateItineraryEventInput,
   UpdateItineraryReservationInput,
 } from "@/types";
+import { floatingDateTimeToStorageIso } from "@/lib/format";
 import { getCurrentUser } from "./auth";
 import { supabase } from "./client";
 
@@ -322,6 +323,8 @@ export async function createItineraryEvent(input: CreateItineraryEventInput) {
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  const plannedStart = floatingDateTimeToStorageIso(input.plannedStart);
+  const plannedEnd = floatingDateTimeToStorageIso(input.plannedEnd);
   const { error } = await supabase.from("itinerary_events").insert({
     id,
     trip_id: input.tripId,
@@ -331,10 +334,8 @@ export async function createItineraryEvent(input: CreateItineraryEventInput) {
     description: input.description || null,
     event_type: input.eventType,
     location_name: input.locationName || null,
-    planned_start: input.plannedStart
-      ? new Date(input.plannedStart).toISOString()
-      : null,
-    planned_end: input.plannedEnd ? new Date(input.plannedEnd).toISOString() : null,
+    planned_start: plannedStart,
+    planned_end: plannedEnd,
     booking_reference: input.bookingReference || null,
     url: input.url || null,
     source_text: input.sourceText || null,
@@ -377,10 +378,8 @@ export async function createItineraryEvent(input: CreateItineraryEventInput) {
     description: input.description || null,
     eventType: input.eventType,
     locationName: input.locationName || null,
-    plannedStart: input.plannedStart
-      ? new Date(input.plannedStart).toISOString()
-      : null,
-    plannedEnd: input.plannedEnd ? new Date(input.plannedEnd).toISOString() : null,
+    plannedStart,
+    plannedEnd,
     bookingReference: input.bookingReference || null,
     url: input.url || null,
     orderIndex: 0,
@@ -411,6 +410,8 @@ export async function createItineraryReservation(
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  const startsAt = floatingDateTimeToStorageIso(input.startsAt);
+  const endsAt = floatingDateTimeToStorageIso(input.endsAt);
   const { error } = await supabase.from("itinerary_reservations").insert({
     id,
     trip_id: input.tripId,
@@ -419,8 +420,8 @@ export async function createItineraryReservation(
     title: input.title,
     provider: input.provider || null,
     location_name: input.locationName || null,
-    starts_at: input.startsAt ? new Date(input.startsAt).toISOString() : null,
-    ends_at: input.endsAt ? new Date(input.endsAt).toISOString() : null,
+    starts_at: startsAt,
+    ends_at: endsAt,
     confirmation_code: input.confirmationCode || null,
     url: input.url || null,
     source_text: input.sourceText || null,
@@ -458,8 +459,8 @@ export async function createItineraryReservation(
     title: input.title,
     provider: input.provider || null,
     location_name: input.locationName || null,
-    starts_at: input.startsAt ? new Date(input.startsAt).toISOString() : null,
-    ends_at: input.endsAt ? new Date(input.endsAt).toISOString() : null,
+    starts_at: startsAt,
+    ends_at: endsAt,
     confirmation_code: input.confirmationCode || null,
     url: input.url || null,
     source_text: input.sourceText || null,
@@ -478,10 +479,8 @@ export async function updateItineraryEvent(input: UpdateItineraryEventInput) {
     description: input.description?.trim() || null,
     event_type: input.eventType,
     location_name: input.locationName?.trim() || null,
-    planned_start: input.plannedStart
-      ? new Date(input.plannedStart).toISOString()
-      : null,
-    planned_end: input.plannedEnd ? new Date(input.plannedEnd).toISOString() : null,
+    planned_start: floatingDateTimeToStorageIso(input.plannedStart),
+    planned_end: floatingDateTimeToStorageIso(input.plannedEnd),
     booking_reference: input.bookingReference?.trim() || null,
     url: input.url?.trim() || null,
     status: input.status ?? "planned",
@@ -514,8 +513,8 @@ export async function updateItineraryReservation(
     title: input.title.trim(),
     provider: input.provider?.trim() || null,
     location_name: input.locationName?.trim() || null,
-    starts_at: input.startsAt ? new Date(input.startsAt).toISOString() : null,
-    ends_at: input.endsAt ? new Date(input.endsAt).toISOString() : null,
+    starts_at: floatingDateTimeToStorageIso(input.startsAt),
+    ends_at: floatingDateTimeToStorageIso(input.endsAt),
     confirmation_code: input.confirmationCode?.trim() || null,
     url: input.url?.trim() || null,
     status: input.status ?? "planned",

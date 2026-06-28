@@ -14,6 +14,7 @@ import {
   getItineraryRatingSummaries,
   itineraryRatingKey,
 } from "./itinerary-ratings";
+import { journeyDateKey } from "@/lib/format";
 import { supabase } from "./client";
 import { getCurrentUser } from "./auth";
 
@@ -57,16 +58,7 @@ function mapTripDay(row: TripDayRow): TripDay {
 }
 
 function dateKey(value: string | null | undefined) {
-  if (!value) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
-  const date = new Date(value);
-  if (!Number.isNaN(date.getTime())) {
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
-      2,
-      "0",
-    )}-${String(date.getDate()).padStart(2, "0")}`;
-  }
-  return value.slice(0, 10);
+  return journeyDateKey(value);
 }
 
 function coversDate(

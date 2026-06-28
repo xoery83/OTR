@@ -1,5 +1,5 @@
 import type { ItineraryEvent } from "@/types";
-import { formatTime } from "@/lib/format";
+import { formatJourneyTime } from "@/lib/format";
 
 export function ActivityCard({ activity }: { activity: ItineraryEvent }) {
   const participantNames = activity.participants
@@ -12,7 +12,7 @@ export function ActivityCard({ activity }: { activity: ItineraryEvent }) {
     <article className="group rounded-2xl border border-emerald-100 bg-emerald-50/60 p-3 transition hover:border-emerald-200 hover:bg-emerald-50">
       <div className="grid grid-cols-[auto_1fr_auto] gap-3">
         <div className="w-12 pt-1 text-xs font-bold text-emerald-800">
-          {activity.plannedStart ? formatTime(activity.plannedStart) : "Any"}
+          {activity.plannedStart ? formatJourneyTime(activity.plannedStart) : "Any"}
         </div>
         <div className="min-w-0 space-y-1">
           <span className="inline-flex rounded-full bg-white px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-emerald-800">

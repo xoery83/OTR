@@ -10,7 +10,7 @@ import { createBackgroundJob } from "@/lib/background-jobs/client";
 import { executeCaptureAction } from "@/lib/capture-ai/actions";
 import { detectCaptureIntent } from "@/lib/capture-ai/client";
 import { getErrorMessage } from "@/lib/errors";
-import { formatDayLabel } from "@/lib/format";
+import { formatDayLabel, formatJourneyTime } from "@/lib/format";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { compressImageFile, type CompressedImage } from "@/lib/images";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
@@ -168,12 +168,7 @@ function formatPlannerDayText(value: string) {
 
 function formatPlannerTimeText(value: string | null | undefined) {
   if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleTimeString("zh-CN", {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return formatJourneyTime(value, "zh-CN") || null;
 }
 
 function buildPlannerLinkIndex(

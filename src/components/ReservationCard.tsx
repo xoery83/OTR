@@ -1,5 +1,5 @@
 import type { ItineraryReservation } from "@/types";
-import { formatDateTime, formatTime } from "@/lib/format";
+import { formatDateTime, formatJourneyTime } from "@/lib/format";
 
 const reservationLabels: Record<ItineraryReservation["reservationType"], string> = {
   flight: "Flight",
@@ -12,7 +12,7 @@ const reservationLabels: Record<ItineraryReservation["reservationType"], string>
 };
 
 function timeRange(start: string | null, end: string | null) {
-  if (start && end) return `${formatTime(start)} - ${formatTime(end)}`;
+  if (start && end) return `${formatJourneyTime(start)} - ${formatJourneyTime(end)}`;
   if (start) return formatDateTime(start);
   if (end) return `Until ${formatDateTime(end)}`;
   return null;

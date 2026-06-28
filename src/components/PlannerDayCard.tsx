@@ -23,7 +23,12 @@ import {
   type PlannerV2Day,
 } from "@/lib/supabase/planner-v2";
 import { getApproxExchangeRate } from "@/lib/exchange-rates";
-import { formatTime, toDateTimeLocalValue } from "@/lib/format";
+import {
+  formatJourneyTime,
+  journeyDateKey,
+  toDateTimeLocalValue,
+  toJourneyDateTimeLocalValue,
+} from "@/lib/format";
 import { getErrorMessage } from "@/lib/errors";
 import { compressImageFile, type CompressedImage } from "@/lib/images";
 import { getCurrentUser } from "@/lib/supabase/auth";
@@ -644,7 +649,7 @@ function formatPlannerDayLabel(value: string, locale: Locale) {
 }
 
 function dateOnly(value: string | null | undefined) {
-  return value ? value.slice(0, 10) : null;
+  return journeyDateKey(value);
 }
 
 function looksLikeFlightItem(item: StoryItem) {
@@ -687,7 +692,7 @@ function meaningfulComparableParts(values: Array<string | null | undefined>) {
 }
 
 function toLocalInputValue(value: string | null) {
-  return value ? toDateTimeLocalValue(new Date(value)) : "";
+  return toJourneyDateTimeLocalValue(value);
 }
 
 function normalizeCurrency(value: string, fallbackCurrency: string) {
@@ -3026,7 +3031,7 @@ export function PlannerDayCard({
                           isFlightItem ? "text-sky-800" : "text-emerald-800"
                         }`}
                       >
-                        {item.time ? formatTime(item.time) : t("planner.anytime")}
+                        {item.time ? formatJourneyTime(item.time) : t("planner.anytime")}
                       </span>
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-semibold text-stone-950">
