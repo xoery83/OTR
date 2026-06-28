@@ -60,6 +60,31 @@ function splitNames(value: string | undefined) {
     .filter(Boolean);
 }
 
+function dateToTime(date: string | null | undefined) {
+  if (!date) return NaN;
+  return new Date(`${date}T00:00:00Z`).getTime();
+}
+
+function addIsoDays(date: string, days: number) {
+  const cursor = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(cursor.getTime())) return date;
+  cursor.setUTCDate(cursor.getUTCDate() + days);
+  return cursor.toISOString().slice(0, 10);
+}
+
+function accommodationLedgerEndDate(
+  startDate: string | null | undefined,
+  checkoutDate: string | null | undefined,
+) {
+  if (!checkoutDate) return startDate ?? null;
+  const start = dateToTime(startDate);
+  const checkout = dateToTime(checkoutDate);
+  if (!Number.isFinite(start) || !Number.isFinite(checkout) || checkout <= start) {
+    return startDate ?? checkoutDate;
+  }
+  return addIsoDays(checkoutDate, -1);
+}
+
 function emptyParsed(warnings: string[] = []): AiItineraryResponse {
   return {
     days: [],
@@ -448,6 +473,9 @@ function parseInlineReservationExpense(blockText: string): LocalExpense | null {
 
   const category = isCarRental ? "car" : "hotel";
   const title = isCarRental ? "租车费用" : "住宿费用";
+  const ledgerEndDate = isAccommodation
+    ? accommodationLedgerEndDate(range?.startDate, range?.endDate)
+    : range?.endDate ?? range?.startDate ?? null;
   const linkedTitle = isAccommodation
     ? fieldValue(blockText, ["Hotel", "酒店", "住宿", "Accommodation"])
     : null;
@@ -461,7 +489,7 @@ function parseInlineReservationExpense(blockText: string): LocalExpense | null {
     accounting_mode: "shared",
     expense_date: range?.startDate ?? null,
     start_date: range?.startDate ?? null,
-    end_date: range?.endDate ?? range?.startDate ?? null,
+    end_date: ledgerEndDate,
     original_amount: money.amount,
     original_currency: money.currency,
     payer_name: fieldValue(blockText, ["Paid by", "付款人", "支付人"]) ?? null,
@@ -560,6 +588,10 @@ function parseNaturalAccommodationExpense(blockText: string): LocalExpense | nul
   const targetMatch = target.match(/^(.+?)\s+in\s+(.+)$/i);
   const hotel = compactWhitespace(targetMatch?.[1] ?? target);
   const location = compactWhitespace(targetMatch?.[2]);
+  const ledgerEndDate = accommodationLedgerEndDate(
+    stayRange.startDate,
+    stayRange.endDate,
+  );
 
   return {
     title: `${hotel} accommodation`,
@@ -567,7 +599,7 @@ function parseNaturalAccommodationExpense(blockText: string): LocalExpense | nul
     accounting_mode: "shared",
     expense_date: stayRange.startDate,
     start_date: stayRange.startDate,
-    end_date: stayRange.endDate,
+    end_date: ledgerEndDate,
     original_amount: money.amount,
     original_currency: money.currency,
     payer_name: payer || null,
@@ -621,13 +653,15 @@ function parseExpenseBlock(blockText: string): LocalExpense | null {
 
   if ((!money && !amountUnavailable) || !checkIn) return null;
 
+  const ledgerEndDate = accommodationLedgerEndDate(checkIn, checkOut);
+
   return {
     title: hotel ? `${hotel} accommodation` : "Accommodation expense",
     category: category || "Accommodation",
     accounting_mode: "shared",
     expense_date: checkIn,
     start_date: checkIn,
-    end_date: checkOut || checkIn,
+    end_date: ledgerEndDate,
     original_amount: money?.amount ?? null,
     original_currency: money?.currency ?? "CNY",
     payer_name: payer || null,

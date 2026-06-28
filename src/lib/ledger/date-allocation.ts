@@ -5,8 +5,6 @@ export type LedgerAllocationRange = {
   endDate: string | null;
 };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 function dateValue(date: string) {
   return new Date(`${date}T00:00:00Z`).getTime();
 }
@@ -30,10 +28,6 @@ function isValidRange(startDate: string, endDate: string) {
   return Number.isFinite(start) && Number.isFinite(end) && end >= start;
 }
 
-function isHotelEntry(entry: LedgerEntry) {
-  return entry.category === "hotel";
-}
-
 function allocationDatesInclusive(startDate: string, endDate: string) {
   const start = new Date(`${startDate}T00:00:00`);
   const end = new Date(`${endDate}T00:00:00`);
@@ -51,26 +45,6 @@ function allocationDatesInclusive(startDate: string, endDate: string) {
   return dates;
 }
 
-function allocationDatesByNights(startDate: string, endDate: string) {
-  const start = dateValue(startDate);
-  const end = dateValue(endDate);
-
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-    return [startDate];
-  }
-
-  const nights = Math.max(1, Math.floor((end - start) / DAY_MS));
-  const dates: string[] = [];
-  let cursor = new Date(`${startDate}T00:00:00`);
-
-  for (let index = 0; index < nights && dates.length < 90; index += 1) {
-    dates.push(dateKey(cursor));
-    cursor = addDays(cursor, 1);
-  }
-
-  return dates;
-}
-
 export function getLedgerAllocationDates(
   entry: LedgerEntry,
   range?: LedgerAllocationRange,
@@ -79,10 +53,6 @@ export function getLedgerAllocationDates(
   const endDate = range?.endDate ?? entry.endDate ?? startDate;
 
   if (!startDate || !endDate) return [entry.expenseDate];
-
-  if (isHotelEntry(entry)) {
-    return allocationDatesByNights(startDate, endDate);
-  }
 
   const dates = allocationDatesInclusive(startDate, endDate);
   return dates.length > 0 ? dates : [entry.expenseDate];

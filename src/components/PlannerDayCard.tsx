@@ -462,7 +462,7 @@ function storyItems(plannerDay: PlannerV2Day): StoryItem[] {
           detail: item.description,
           location: item.locationName,
           kind: item.eventType,
-          note: isAiRoute ? item.description : item.sourceText || item.description,
+          note: item.description || item.sourceText,
           sourceText: item.sourceText,
           itineraryEventId: item.id,
           itineraryReservationId: item.reservationId,
@@ -1227,28 +1227,7 @@ export function PlannerDayCard({
   const reservationsById = new Map(
     plannerDay.reservations.map((reservation) => [reservation.id, reservation]),
   );
-  const activitiesById = new Map(
-    plannerDay.activities.map((activity) => [activity.id, activity]),
-  );
   function linkedLedgerRange(entry: LedgerEntry) {
-    if (entry.itineraryReservationId) {
-      const reservation = reservationsById.get(entry.itineraryReservationId);
-      if (reservation) {
-        const startDate = dateOnly(reservation.startsAt) ?? dateOnly(reservation.endsAt);
-        const endDate = dateOnly(reservation.endsAt) ?? startDate;
-        return { startDate, endDate };
-      }
-    }
-
-    if (entry.itineraryEventId) {
-      const activity = activitiesById.get(entry.itineraryEventId);
-      if (activity) {
-        const startDate = dateOnly(activity.plannedStart) ?? dateOnly(activity.plannedEnd);
-        const endDate = dateOnly(activity.plannedEnd) ?? startDate;
-        return { startDate, endDate };
-      }
-    }
-
     return {
       startDate: entry.startDate,
       endDate: entry.endDate,
@@ -1847,7 +1826,8 @@ export function PlannerDayCard({
       itemType: item.itemType,
       title: item.title,
       typeValue: item.typeValue,
-      description: item.note ?? "",
+      description:
+        item.itemType === "event" ? item.detail ?? item.note ?? "" : item.note ?? "",
       locationName: item.location ?? "",
       startsAt: toLocalInputValue(item.startsAt),
       endsAt: toLocalInputValue(item.endsAt),
