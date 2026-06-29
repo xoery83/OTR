@@ -104,7 +104,7 @@ function DayContent() {
           href={`/trips/${tripId}/timeline`}
           className="rounded-2xl bg-emerald-100 px-4 py-3 text-center text-sm font-bold text-emerald-900"
         >
-          Back to timeline
+          Back to album
         </Link>
       </div>
 

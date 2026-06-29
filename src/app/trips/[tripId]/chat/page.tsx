@@ -4,8 +4,10 @@ import { useParams } from "next/navigation";
 import type { PointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
+import { PhotoLightbox } from "@/components/PhotoLightbox";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { getErrorMessage } from "@/lib/errors";
+import { getPhotoFacesForAssets } from "@/lib/supabase/media-assets";
 import {
   getJourneyChatMessages,
   getOlderJourneyChatMessages,
@@ -17,7 +19,7 @@ import {
 } from "@/lib/supabase/chat";
 import { supabase } from "@/lib/supabase/client";
 import { getTrip } from "@/lib/supabase/trips";
-import type { JourneyChatMessage, Trip } from "@/types";
+import type { JourneyChatMessage, PhotoFace, Trip } from "@/types";
 
 const commonEmojis = [
   "😀",
@@ -45,6 +47,19 @@ const commonEmojis = [
   "⭐",
   "📷",
 ];
+
+type LocalChatPendingStatus = "uploading" | "failed";
+
+function getLocalPendingStatus(message: JourneyChatMessage) {
+  const value = message.metadata?.pendingStatus;
+  return value === "uploading" || value === "failed" ? value : null;
+}
+
+function isSafariBrowser() {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  return /Safari/i.test(ua) && !/(Chrome|CriOS|FxiOS|Edg|OPR)/i.test(ua);
+}
 
 function formatMessageTime(value: string) {
   const date = new Date(value);
@@ -86,13 +101,16 @@ function MessageBubble({
   mine,
   onOpenImage,
   onRevoke,
+  onMediaLoad,
 }: {
   message: JourneyChatMessage;
   mine: boolean;
   onOpenImage: (message: JourneyChatMessage) => void;
   onRevoke: (message: JourneyChatMessage) => void;
+  onMediaLoad: () => void;
 }) {
   const fromTimeline = message.sourceType === "timeline_memory";
+  const pendingStatus = getLocalPendingStatus(message);
 
   if (message.deletedAt) {
     return (
@@ -134,6 +152,7 @@ function MessageBubble({
               <img
                 src={message.mediaDisplayUrl}
                 alt={message.textContent || "聊天图片"}
+                onLoad={onMediaLoad}
                 className="max-h-56 w-48 object-cover"
               />
             </button>
@@ -152,7 +171,7 @@ function MessageBubble({
                     : "语音"}
                 </span>
               </div>
-              {message.mediaDisplayUrl ? (
+              {message.mediaDisplayUrl && pendingStatus !== "uploading" ? (
                 <audio src={message.mediaDisplayUrl} controls className="mt-2 h-8 w-full" />
               ) : null}
               {message.transcriptText ? (
@@ -161,7 +180,13 @@ function MessageBubble({
                 </div>
               ) : (
                 <div className="mt-2 text-xs font-bold text-stone-500">
-                  {message.transcriptStatus === "failed" ? "转文字失败" : "正在转文字"}
+                  {pendingStatus === "uploading"
+                    ? "发送中，上传完成后可播放"
+                    : pendingStatus === "failed"
+                      ? "发送失败"
+                      : message.transcriptStatus === "failed"
+                        ? "转文字失败"
+                        : "正在转文字"}
                 </div>
               )}
             </div>
@@ -173,7 +198,7 @@ function MessageBubble({
             </div>
           ) : null}
 
-          {mine ? (
+          {mine && !pendingStatus ? (
             <button
               type="button"
               onClick={() => onRevoke(message)}
@@ -190,51 +215,24 @@ function MessageBubble({
 
 function ImageViewer({
   message,
+  faces,
   onClose,
 }: {
   message: JourneyChatMessage | null;
+  faces: PhotoFace[];
   onClose: () => void;
 }) {
   if (!message?.mediaDisplayUrl) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-black/95 text-white">
-      <div className="flex items-center justify-between px-4 py-4">
-        <div>
-          <div className="text-sm font-black">{message.senderName || "Traveler"}</div>
-          <div className="text-xs text-white/60">{formatMessageTime(message.createdAt)}</div>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-full bg-white/10 px-4 py-2 text-sm font-black"
-        >
-          关闭
-        </button>
-      </div>
-      <div className="flex min-h-0 flex-1 items-center justify-center p-3">
-        <img
-          src={message.mediaDisplayUrl}
-          alt={message.textContent || "聊天图片"}
-          className="max-h-full max-w-full object-contain"
-        />
-      </div>
-      {(message.textContent || message.photoAsset?.providerWebUrl) ? (
-        <div className="space-y-2 px-4 pb-8 text-sm">
-          {message.textContent ? <div>{message.textContent}</div> : null}
-          {message.photoAsset?.providerWebUrl ? (
-            <a
-              href={message.photoAsset.providerWebUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex rounded-full bg-white px-4 py-2 font-black text-stone-950"
-            >
-              打开原图
-            </a>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
+    <PhotoLightbox
+      imageUrl={message.mediaDisplayUrl}
+      title={message.textContent || "图片"}
+      subtitle={`${message.senderName || "Traveler"} · ${formatMessageTime(message.createdAt)}`}
+      photo={message.photoAsset}
+      faces={faces}
+      onClose={onClose}
+    />
   );
 }
 
@@ -242,13 +240,18 @@ function ChatContent() {
   const params = useParams<{ tripId: string }>();
   const tripId = params.tripId;
   const listRef = useRef<HTMLDivElement | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const recordingStartedAtRef = useRef<number | null>(null);
+  const hasPrimedSafariMicrophoneRef = useRef(false);
   const hasMarkedReadRef = useRef(false);
+  const initialAutoScrollUntilRef = useRef(0);
+  const dismissedUnreadMessageIdRef = useRef<string | null>(null);
   const [trip, setTrip] = useState<Trip | null>(null);
   const [messages, setMessages] = useState<JourneyChatMessage[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [firstUnreadMessageId, setFirstUnreadMessageId] = useState<string | null>(null);
+  const [showUnreadJump, setShowUnreadJump] = useState(false);
   const [hasMoreBefore, setHasMoreBefore] = useState(false);
   const [text, setText] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -256,15 +259,25 @@ function ChatContent() {
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voiceMode, setVoiceMode] = useState(false);
+  const [isPrimingMicrophone, setIsPrimingMicrophone] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
   const [activeImage, setActiveImage] = useState<JourneyChatMessage | null>(null);
+  const [activeImageFaces, setActiveImageFaces] = useState<PhotoFace[]>([]);
 
   const scrollToBottom = useCallback(() => {
     window.requestAnimationFrame(() => {
       const list = listRef.current;
+      bottomRef.current?.scrollIntoView({ block: "end" });
       if (list) list.scrollTop = list.scrollHeight;
     });
   }, []);
+
+  const scheduleBottomLock = useCallback(() => {
+    scrollToBottom();
+    window.setTimeout(scrollToBottom, 80);
+    window.setTimeout(scrollToBottom, 260);
+    window.setTimeout(scrollToBottom, 700);
+  }, [scrollToBottom]);
 
   const load = useCallback(async (mode: "initial" | "refresh" = "refresh") => {
     const [tripData, bundle] = await Promise.all([
@@ -274,23 +287,57 @@ function ChatContent() {
     setTrip(tripData);
     setMessages(bundle.messages);
     setCurrentUserId(bundle.currentUserId);
-    setFirstUnreadMessageId(bundle.firstUnreadMessageId);
+    setFirstUnreadMessageId(
+      bundle.firstUnreadMessageId &&
+        bundle.firstUnreadMessageId !== dismissedUnreadMessageIdRef.current
+        ? bundle.firstUnreadMessageId
+        : null,
+    );
     setHasMoreBefore(bundle.hasMoreBefore);
+    if (mode === "initial") {
+      initialAutoScrollUntilRef.current = Date.now() + 1800;
+    }
     if (!hasMarkedReadRef.current) {
       hasMarkedReadRef.current = true;
       await markJourneyChatRead(tripId).catch(() => null);
     }
     window.dispatchEvent(new CustomEvent("otr:chat-changed"));
     if (mode === "initial" || isNearBottom()) {
-      scrollToBottom();
+      scheduleBottomLock();
     }
-  }, [scrollToBottom, tripId]);
+  }, [scheduleBottomLock, tripId]);
 
   function isNearBottom() {
     const list = listRef.current;
     if (!list) return true;
     return list.scrollHeight - list.scrollTop - list.clientHeight < 180;
   }
+
+  const updateUnreadJumpVisibility = useCallback(() => {
+    if (
+      !firstUnreadMessageId ||
+      dismissedUnreadMessageIdRef.current === firstUnreadMessageId
+    ) {
+      setShowUnreadJump(false);
+      return;
+    }
+
+    const list = listRef.current;
+    if (!list) {
+      setShowUnreadJump(false);
+      return;
+    }
+
+    const unreadElement = document.getElementById(`chat-message-${firstUnreadMessageId}`);
+    if (!unreadElement) {
+      setShowUnreadJump(hasMoreBefore);
+      return;
+    }
+
+    const listRect = list.getBoundingClientRect();
+    const unreadRect = unreadElement.getBoundingClientRect();
+    setShowUnreadJump(unreadRect.bottom < listRect.top + 16);
+  }, [firstUnreadMessageId, hasMoreBefore]);
 
   const loadOlderMessages = useCallback(async () => {
     const first = messages[0];
@@ -397,10 +444,38 @@ function ChatContent() {
   }, [messages.length, tripId]);
 
   useEffect(() => {
+    if (!isLoading && messages.length > 0 && initialAutoScrollUntilRef.current > Date.now()) {
+      scheduleBottomLock();
+    }
+  }, [isLoading, messages.length, scheduleBottomLock]);
+
+  useEffect(() => {
     return () => {
       document.body.classList.remove("otr-chat-keyboard-active");
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const assetId = activeImage?.photoAsset?.id ?? activeImage?.mediaAssetId;
+    setActiveImageFaces([]);
+    if (!assetId) return;
+    const resolvedAssetId = assetId;
+
+    async function loadFaces() {
+      try {
+        const groups = await getPhotoFacesForAssets([resolvedAssetId]);
+        if (!cancelled) setActiveImageFaces(groups[resolvedAssetId] ?? []);
+      } catch {
+        if (!cancelled) setActiveImageFaces([]);
+      }
+    }
+
+    void loadFaces();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeImage]);
 
   useEffect(() => {
     const list = listRef.current;
@@ -411,11 +486,16 @@ function ChatContent() {
       if (currentList.scrollTop < 96) {
         void loadOlderMessages();
       }
+      updateUnreadJumpVisibility();
     }
 
     currentList.addEventListener("scroll", handleScroll, { passive: true });
     return () => currentList.removeEventListener("scroll", handleScroll);
-  }, [loadOlderMessages]);
+  }, [loadOlderMessages, updateUnreadJumpVisibility]);
+
+  useEffect(() => {
+    window.requestAnimationFrame(updateUnreadJumpVisibility);
+  }, [messages, updateUnreadJumpVisibility]);
 
   const recorder = useVoiceRecorder({
     maxDurationMs: 90_000,
@@ -452,20 +532,64 @@ function ChatContent() {
   const sendVoice = useCallback(
     async (file: File, durationMs: number | null) => {
       if (isSending) return;
+      const pendingId = `pending-voice-${crypto.randomUUID()}`;
+      const now = new Date().toISOString();
+      const pendingMessage: JourneyChatMessage = {
+        id: pendingId,
+        tripId,
+        userId: currentUserId,
+        journeyMemberId: null,
+        messageType: "voice",
+        textContent: null,
+        mediaAssetId: null,
+        memoryEntryId: null,
+        mediaUrl: null,
+        voiceDurationMs: durationMs,
+        transcriptText: null,
+        transcriptStatus: "processing",
+        sourceType: "chat",
+        sourceId: null,
+        deletedAt: null,
+        deletedBy: null,
+        metadata: { pendingStatus: "uploading" satisfies LocalChatPendingStatus },
+        createdAt: now,
+        updatedAt: now,
+        senderName: "我",
+        senderAvatarUrl: null,
+        mediaDisplayUrl: null,
+        photoAsset: null,
+      };
+
       setIsSending(true);
       setError(null);
+      setMessages((current) => [...current, pendingMessage]);
+      scheduleBottomLock();
       try {
         const message = await sendVoiceChatMessage(tripId, file, durationMs);
-        setMessages((current) => [...current, message]);
-        scrollToBottom();
+        setMessages((current) => {
+          if (!current.some((item) => item.id === pendingId)) return [...current, message];
+          return current.map((item) => (item.id === pendingId ? message : item));
+        });
+        scheduleBottomLock();
         window.dispatchEvent(new CustomEvent("otr:chat-changed"));
       } catch (sendError) {
+        setMessages((current) =>
+          current.map((item) =>
+            item.id === pendingId
+              ? {
+                  ...item,
+                  transcriptStatus: "failed",
+                  metadata: { ...item.metadata, pendingStatus: "failed" },
+                }
+              : item,
+          ),
+        );
         setError(getErrorMessage(sendError, "语音发送失败。"));
       } finally {
         setIsSending(false);
       }
     },
-    [isSending, scrollToBottom, tripId],
+    [currentUserId, isSending, scheduleBottomLock, tripId],
   );
 
   async function sendImage(file: File | null) {
@@ -499,32 +623,61 @@ function ChatContent() {
     }
   }
 
+  async function primeSafariMicrophone() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError("当前浏览器不支持语音录制。");
+      return;
+    }
+    setIsPrimingMicrophone(true);
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+      hasPrimedSafariMicrophoneRef.current = true;
+      setError("麦克风权限已开启，请重新按住说话。");
+    } catch (primeError) {
+      setError(getErrorMessage(primeError, "无法打开麦克风权限。"));
+    } finally {
+      setIsPrimingMicrophone(false);
+    }
+  }
+
   function startHoldToTalk(event: PointerEvent<HTMLButtonElement>) {
+    if (isSafariBrowser() && !hasPrimedSafariMicrophoneRef.current) {
+      void primeSafariMicrophone();
+      return;
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
     recordingStartedAtRef.current = Date.now();
     void recorder.start();
   }
 
   function stopHoldToTalk(event: PointerEvent<HTMLButtonElement>) {
-    event.currentTarget.releasePointerCapture(event.pointerId);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
     recorder.stop();
   }
 
   async function jumpToFirstUnread() {
-    if (!firstUnreadMessageId) return;
-    if (!document.getElementById(`chat-message-${firstUnreadMessageId}`)) {
+    const unreadId = firstUnreadMessageId;
+    if (!unreadId) return;
+    dismissedUnreadMessageIdRef.current = unreadId;
+    setFirstUnreadMessageId(null);
+    setShowUnreadJump(false);
+
+    if (!document.getElementById(`chat-message-${unreadId}`)) {
       setIsLoadingOlder(true);
-      await loadOlderMessagesUntil(firstUnreadMessageId).catch((jumpError) => {
+      await loadOlderMessagesUntil(unreadId).catch((jumpError) => {
         setError(getErrorMessage(jumpError, "定位新消息失败。"));
       });
       setIsLoadingOlder(false);
     }
     window.requestAnimationFrame(() => {
       document
-        .getElementById(`chat-message-${firstUnreadMessageId}`)
+        .getElementById(`chat-message-${unreadId}`)
         ?.scrollIntoView({ block: "center", behavior: "smooth" });
     });
-    setFirstUnreadMessageId(null);
   }
 
   const content = useMemo(() => {
@@ -539,7 +692,7 @@ function ChatContent() {
     if (messages.length === 0) {
       return (
         <div className="flex h-full items-center justify-center px-8 text-center text-sm font-bold text-white/80">
-          还没有聊天消息。Timeline 的新动态和群聊里的照片会自动出现在这里。
+          还没有聊天消息。相册里的新动态和群聊里的照片会自动出现在这里。
         </div>
       );
     }
@@ -577,10 +730,16 @@ function ChatContent() {
                 mine={mine}
                 onOpenImage={setActiveImage}
                 onRevoke={revoke}
+                onMediaLoad={() => {
+                  if (Date.now() < initialAutoScrollUntilRef.current || isNearBottom()) {
+                    scheduleBottomLock();
+                  }
+                }}
               />
             </div>
           );
         })}
+        <div ref={bottomRef} className="h-px" />
       </div>
     );
   }, [
@@ -614,12 +773,12 @@ function ChatContent() {
 
       <div
         ref={listRef}
-        className="min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(0,105,82,0.24),rgba(0,105,82,0.12)),linear-gradient(135deg,#b9e5d8,#e8f5ef_48%,#bfded5)] pb-[176px] pt-20 md:pb-4 md:pt-2"
+        className="otr-chat-message-list min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(0,105,82,0.24),rgba(0,105,82,0.12)),linear-gradient(135deg,#b9e5d8,#e8f5ef_48%,#bfded5)] pb-[176px] pt-20 md:pb-4 md:pt-2"
       >
         {content}
       </div>
 
-      {firstUnreadMessageId ? (
+      {showUnreadJump ? (
         <button
           type="button"
           onClick={() => void jumpToFirstUnread()}
@@ -644,7 +803,7 @@ function ChatContent() {
         </div>
       ) : null}
 
-      <div className="fixed inset-x-0 bottom-[82px] z-30 border-t border-white/40 bg-[#e4f4ef]/95 px-3 py-2 shadow-[0_-12px_30px_rgba(0,0,0,0.08)] backdrop-blur md:static md:shrink-0">
+      <div className="otr-chat-input-bar fixed inset-x-0 bottom-[82px] z-30 border-t border-white/40 bg-[#e4f4ef]/95 px-3 py-2 shadow-[0_-12px_30px_rgba(0,0,0,0.08)] backdrop-blur md:static md:shrink-0">
         {showEmoji ? (
           <div className="mx-auto mb-2 grid max-w-3xl grid-cols-8 gap-1 rounded-2xl bg-white p-2 shadow-sm">
             {commonEmojis.map((emoji) => (
@@ -676,10 +835,10 @@ function ChatContent() {
               onPointerDown={startHoldToTalk}
               onPointerUp={stopHoldToTalk}
               onPointerCancel={stopHoldToTalk}
-              disabled={isSending}
+              disabled={isSending || isPrimingMicrophone}
               className="h-11 flex-1 rounded-2xl bg-white text-base font-black text-stone-900 shadow-sm active:bg-emerald-50"
             >
-              按住 说话
+              {isPrimingMicrophone ? "正在开启麦克风..." : "按住 说话"}
             </button>
           ) : (
             <textarea
@@ -733,7 +892,11 @@ function ChatContent() {
         </div>
       </div>
 
-      <ImageViewer message={activeImage} onClose={() => setActiveImage(null)} />
+      <ImageViewer
+        message={activeImage}
+        faces={activeImageFaces}
+        onClose={() => setActiveImage(null)}
+      />
     </div>
   );
 }

@@ -8,6 +8,16 @@ import type { MemoryEntry } from "@/types";
 import { formatTime } from "@/lib/format";
 import type { MemoryEngagement } from "@/lib/supabase/memories";
 
+type PreviewGroup =
+  | {
+      type: "album";
+      memories: MemoryEntry[];
+    }
+  | {
+      type: "card";
+      memory: MemoryEntry;
+    };
+
 export function DayMemoryPreview({
   tripId,
   date,
@@ -20,7 +30,7 @@ export function DayMemoryPreview({
   date: string;
   memories: MemoryEntry[];
   imageUrls?: Record<string, string>;
-  onOpenImage?: (image: { src: string; alt: string }) => void;
+  onOpenImage?: (image: { src: string; alt: string; memoryId: string }) => void;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const { t } = useI18n();
@@ -35,6 +45,28 @@ export function DayMemoryPreview({
         .slice(0, 5),
     [memories],
   );
+  const previewGroups = useMemo(() => {
+    return latestMemories.reduce<PreviewGroup[]>((groups, memory) => {
+      const isPurePhoto =
+        memory.type === "photo" &&
+        Boolean(memory.mediaUrl && imageUrls[memory.mediaUrl]) &&
+        !memory.content.trim();
+
+      if (!isPurePhoto) {
+        groups.push({ type: "card", memory });
+        return groups;
+      }
+
+      const previous = groups[groups.length - 1];
+      if (previous?.type === "album") {
+        previous.memories.push(memory);
+      } else {
+        groups.push({ type: "album", memories: [memory] });
+      }
+
+      return groups;
+    }, []);
+  }, [imageUrls, latestMemories]);
 
   return (
     <div className="space-y-3">
@@ -44,7 +76,47 @@ export function DayMemoryPreview({
         </p>
       ) : (
         <div className="grid gap-2">
-          {latestMemories.map((memory) => {
+          {previewGroups.map((group) => {
+            if (group.type === "album") {
+              return (
+                <div
+                  key={group.memories.map((memory) => memory.id).join("-")}
+                  className="grid grid-cols-3 gap-1"
+                >
+                  {group.memories.map((memory) => {
+                    const imageUrl = memory.mediaUrl
+                      ? imageUrls[memory.mediaUrl]
+                      : null;
+                    if (!imageUrl) return null;
+
+                    return (
+                      <button
+                        type="button"
+                        key={memory.id}
+                        onClick={() =>
+                          onOpenImage?.({
+                            src: imageUrl,
+                            alt: t("planner.memory.imagePreview"),
+                            memoryId: memory.id,
+                          })
+                        }
+                        className="group relative aspect-square overflow-hidden rounded-xl bg-stone-100 text-left shadow-sm transition hover:opacity-90"
+                        title={t("planner.memory.openImage")}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={imageUrl}
+                          alt=""
+                          className="h-full w-full object-cover"
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            }
+
+            const memory = group.memory;
             const imageUrl = memory.mediaUrl ? imageUrls[memory.mediaUrl] : null;
 
             return (
@@ -71,6 +143,7 @@ export function DayMemoryPreview({
                         onOpenImage?.({
                           src: imageUrl,
                           alt: memory.content || t("planner.memory.imagePreview"),
+                          memoryId: memory.id,
                         })
                       }
                       className="size-16 shrink-0 overflow-hidden rounded-xl bg-stone-100 shadow-sm ring-1 ring-stone-100 transition hover:opacity-90"

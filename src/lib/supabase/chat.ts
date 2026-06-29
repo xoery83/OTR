@@ -116,6 +116,39 @@ function mapMessage(row: ChatMessageRow): JourneyChatMessage {
   };
 }
 
+function getMessageMemoryKey(message: JourneyChatMessage) {
+  return message.memoryEntryId ?? message.sourceId ?? null;
+}
+
+function dedupeMessagesByMemory(messages: JourneyChatMessage[]) {
+  const keyedIndexes = new Map<string, number>();
+  const deduped: JourneyChatMessage[] = [];
+
+  for (const message of messages) {
+    const key = getMessageMemoryKey(message);
+    if (!key) {
+      deduped.push(message);
+      continue;
+    }
+
+    const existingIndex = keyedIndexes.get(key);
+    if (existingIndex === undefined) {
+      keyedIndexes.set(key, deduped.length);
+      deduped.push(message);
+      continue;
+    }
+
+    const existing = deduped[existingIndex];
+    const shouldReplace =
+      existing.sourceType === "timeline_memory" && message.sourceType !== "timeline_memory";
+    if (shouldReplace) {
+      deduped[existingIndex] = message;
+    }
+  }
+
+  return deduped;
+}
+
 function mapPhotoAsset(row: MediaRow, displayUrl?: string | null) {
   return {
     id: row.id,
@@ -161,10 +194,17 @@ function mapPhotoAsset(row: MediaRow, displayUrl?: string | null) {
 }
 
 function messageTextFromMemory(memory: MemorySyncRow) {
-  if (memory.type === "photo") return memory.content?.trim() || "图片";
-  if (memory.type === "voice") return memory.content?.trim() || "语音";
-  if (memory.type === "location") return memory.content?.trim() || "位置";
-  return memory.content?.trim() || "";
+  const content = cleanSyncedMemoryContent(memory.content);
+  if (memory.type === "photo") return content || "图片";
+  if (memory.type === "voice") return content || "语音";
+  if (memory.type === "location") return content || "位置";
+  return content;
+}
+
+function cleanSyncedMemoryContent(content: string | null) {
+  return (content ?? "")
+    .replace(/^__otr_reply_parent:[0-9a-f-]+__\s*/i, "")
+    .trim();
 }
 
 function messageTypeFromMemory(memory: MemorySyncRow): JourneyChatMessage["messageType"] {
@@ -352,7 +392,7 @@ export async function getJourneyChatMessages(
   const rows = (data ?? []) as ChatMessageRow[];
   const hasMoreBefore = rows.length > limit;
   const selectedRows = rows.slice(0, limit).reverse();
-  const messages = await enrichMessages(selectedRows.map(mapMessage));
+  const messages = await enrichMessages(dedupeMessagesByMemory(selectedRows.map(mapMessage)));
   const lastReadAt = readState?.last_read_at ?? null;
   const firstUnreadMessageId =
     !options?.before && lastReadAt && currentUserId
@@ -455,29 +495,55 @@ export async function sendImageChatMessage(
   );
   const user = await getCurrentUser();
   if (!user) throw new Error("You must be logged in to send a photo.");
+  const journeyMemberId = await getCurrentJourneyMemberId(tripId, user.id);
 
-  const { data, error } = await supabase
-    .from("journey_chat_messages")
-    .insert({
-      trip_id: tripId,
+  try {
+    const { data: existingRows } = await supabase
+      .from("journey_chat_messages")
+      .select("*")
+      .eq("trip_id", tripId)
+      .or(`memory_entry_id.eq.${memory.id},source_id.eq.${memory.id}`)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const existing = (existingRows ?? [])[0] as ChatMessageRow | undefined;
+    const payload = {
       user_id: user.id,
-      journey_member_id: await getCurrentJourneyMemberId(tripId, user.id),
+      journey_member_id: journeyMemberId,
       message_type: "image",
       text_content: caption.trim() || null,
       media_asset_id: memory.mediaAssetId,
       memory_entry_id: memory.id,
       media_url: memory.mediaUrl,
       source_type: "chat",
+      source_id: null,
       metadata: {
         originalFileName: file.name,
       },
-    })
-    .select("*")
-    .single();
+    };
 
-  compressedImage.previewUrl && URL.revokeObjectURL(compressedImage.previewUrl);
-  if (error) throw error;
-  return (await enrichMessages([mapMessage(data as ChatMessageRow)]))[0];
+    const query = existing
+      ? supabase
+          .from("journey_chat_messages")
+          .update(payload)
+          .eq("id", existing.id)
+          .select("*")
+          .single()
+      : supabase
+          .from("journey_chat_messages")
+          .insert({
+            trip_id: tripId,
+            ...payload,
+          })
+          .select("*")
+          .single();
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return (await enrichMessages([mapMessage(data as ChatMessageRow)]))[0];
+  } finally {
+    compressedImage.previewUrl && URL.revokeObjectURL(compressedImage.previewUrl);
+  }
 }
 
 export async function sendVoiceChatMessage(
@@ -522,22 +588,6 @@ export async function sendVoiceChatMessage(
 
   if (mediaError) throw mediaError;
 
-  await uploadVoiceToGoogleDrive({
-    tripId,
-    mediaAssetId,
-    file,
-  }).catch(() => null);
-
-  let transcriptText: string | null = null;
-  let transcriptStatus: JourneyChatMessage["transcriptStatus"] = "pending";
-  try {
-    const transcript = await requestVoiceTranscription({ tripId, audio: file });
-    transcriptText = transcript.transcript;
-    transcriptStatus = "completed";
-  } catch {
-    transcriptStatus = "failed";
-  }
-
   const { data, error } = await supabase
     .from("journey_chat_messages")
     .insert({
@@ -545,19 +595,65 @@ export async function sendVoiceChatMessage(
       user_id: user.id,
       journey_member_id: await getCurrentJourneyMemberId(tripId, user.id),
       message_type: "voice",
-      text_content: transcriptText,
+      text_content: null,
       media_asset_id: mediaAssetId,
       media_url: path,
       voice_duration_ms: durationMs ?? null,
-      transcript_text: transcriptText,
-      transcript_status: transcriptStatus,
+      transcript_text: null,
+      transcript_status: "processing",
       source_type: "chat",
     })
     .select("*")
     .single();
 
   if (error) throw error;
-  return (await enrichMessages([mapMessage(data as ChatMessageRow)]))[0];
+  const message = mapMessage(data as ChatMessageRow);
+
+  void finishVoiceChatMessage({
+    tripId,
+    messageId: message.id,
+    mediaAssetId,
+    file,
+  });
+
+  return (await enrichMessages([message]))[0];
+}
+
+async function finishVoiceChatMessage(input: {
+  tripId: string;
+  messageId: string;
+  mediaAssetId: string;
+  file: File;
+}) {
+  void uploadVoiceToGoogleDrive({
+    tripId: input.tripId,
+    mediaAssetId: input.mediaAssetId,
+    file: input.file,
+  }).catch(() => null);
+
+  try {
+    const transcript = await requestVoiceTranscription({
+      tripId: input.tripId,
+      audio: input.file,
+    });
+    await supabase
+      .from("journey_chat_messages")
+      .update({
+        text_content: transcript.transcript,
+        transcript_text: transcript.transcript,
+        transcript_status: "completed",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", input.messageId);
+  } catch {
+    await supabase
+      .from("journey_chat_messages")
+      .update({
+        transcript_status: "failed",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", input.messageId);
+  }
 }
 
 async function uploadVoiceToGoogleDrive(input: {

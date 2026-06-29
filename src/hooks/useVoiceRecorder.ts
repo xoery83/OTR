@@ -26,6 +26,7 @@ export function useVoiceRecorder({
   const heardSpeechRef = useRef(false);
   const isStartingRef = useRef(false);
   const isStoppingRef = useRef(false);
+  const shouldStopAfterStartRef = useRef(false);
   const hasQueuedRecordingRef = useRef(false);
   const onRecordingCompleteRef = useRef(onRecordingComplete);
   const onErrorRef = useRef(onError);
@@ -57,10 +58,17 @@ export function useVoiceRecorder({
     heardSpeechRef.current = false;
     isStartingRef.current = false;
     isStoppingRef.current = false;
+    shouldStopAfterStartRef.current = false;
   }, []);
 
   const stop = useCallback(() => {
     if (isStoppingRef.current) return;
+
+    if (isStartingRef.current && !mediaRecorderRef.current) {
+      shouldStopAfterStartRef.current = true;
+      setIsRecording(false);
+      return;
+    }
 
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== "inactive") {
@@ -122,10 +130,18 @@ export function useVoiceRecorder({
     }
 
     isStartingRef.current = true;
+    shouldStopAfterStartRef.current = false;
     hasQueuedRecordingRef.current = false;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (shouldStopAfterStartRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        cleanup();
+        setIsRecording(false);
+        return;
+      }
+
       const chunks: BlobPart[] = [];
       const recorder = new MediaRecorder(stream, {
         mimeType: MediaRecorder.isTypeSupported("audio/webm")

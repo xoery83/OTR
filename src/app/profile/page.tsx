@@ -105,6 +105,8 @@ type FavoriteMemorySummary = MemoryEntry & {
   tripDestination: string;
 };
 
+type ProfilePanel = "basic" | "ledger" | "favorites" | "friends" | "account";
+
 function emptyCategoryTotals() {
   return ledgerCategories.reduce(
     (totals, category) => ({ ...totals, [category]: 0 }),
@@ -288,6 +290,14 @@ function ProfileContent({ user }: { user: User }) {
   const [isLedgerLoading, setIsLedgerLoading] = useState(true);
   const [ledgerUnlocked, setLedgerUnlocked] = useState(false);
   const [ledgerSearchQuery, setLedgerSearchQuery] = useState("");
+  const [isLedgerSearchActive, setIsLedgerSearchActive] = useState(false);
+  const [expandedPanels, setExpandedPanels] = useState<Record<ProfilePanel, boolean>>({
+    basic: false,
+    ledger: false,
+    favorites: false,
+    friends: false,
+    account: false,
+  });
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -508,6 +518,36 @@ function ProfileContent({ user }: { user: User }) {
     [journeys, membersByTrip, user],
   );
 
+  useEffect(() => {
+    if (!isLedgerSearchActive) return;
+
+    document.body.classList.add("otr-mobile-search-active");
+
+    return () => {
+      document.body.classList.remove("otr-mobile-search-active");
+    };
+  }, [isLedgerSearchActive]);
+
+  function openLedgerSearch() {
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      setIsLedgerSearchActive(true);
+    }
+  }
+
+  function closeLedgerSearch() {
+    setIsLedgerSearchActive(false);
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+
+  function togglePanel(panel: ProfilePanel) {
+    setExpandedPanels((current) => ({
+      ...current,
+      [panel]: !current[panel],
+    }));
+  }
+
   async function handleLogout() {
     await logout();
     router.replace("/login");
@@ -542,9 +582,15 @@ function ProfileContent({ user }: { user: User }) {
     }
   }
 
+  const basicOpen = expandedPanels.basic;
+  const ledgerOpen = expandedPanels.ledger || isLedgerSearchActive;
+  const favoritesOpen = expandedPanels.favorites;
+  const friendsOpen = expandedPanels.friends;
+  const accountOpen = expandedPanels.account;
+
   return (
-    <div className="space-y-6">
-      <section>
+    <div className={isLedgerSearchActive ? "space-y-0 md:space-y-6" : "space-y-6"}>
+      <section className={isLedgerSearchActive ? "hidden md:block" : undefined}>
         <p className="text-sm font-semibold text-emerald-700">Profile</p>
         <h1 className="mt-1 text-3xl font-semibold text-stone-950">
           {profile?.displayName ?? "Your profile"}
@@ -552,7 +598,11 @@ function ProfileContent({ user }: { user: User }) {
         <p className="mt-2 text-sm text-stone-500">{user.email}</p>
       </section>
 
-      <section className="rounded-3xl bg-white p-5 shadow-sm">
+      <section
+        className={`rounded-3xl bg-white p-5 shadow-sm ${
+          isLedgerSearchActive ? "hidden md:block" : ""
+        }`}
+      >
         <div className="flex items-center gap-4">
           <div className="grid size-16 place-items-center overflow-hidden rounded-2xl bg-emerald-100 text-xl font-bold text-emerald-800">
             {profile?.avatarUrl ? (
@@ -591,56 +641,87 @@ function ProfileContent({ user }: { user: User }) {
         </div>
       </section>
 
-      <section className="space-y-4 rounded-3xl bg-white p-5 shadow-sm">
-        <div>
-          <h2 className="text-xl font-semibold">Basic fields</h2>
-          <p className="mt-1 text-sm text-stone-500">
-            全局 AKA 会在创建新 Journey 时自动带入你的旅程成员昵称。
-          </p>
-        </div>
-        {error ? (
-          <p className="rounded-2xl bg-red-50 p-3 text-sm font-medium text-red-700">
-            {error}
-          </p>
-        ) : null}
-        {notice ? (
-          <p className="rounded-2xl bg-emerald-50 p-3 text-sm font-medium text-emerald-800">
-            {notice}
-          </p>
-        ) : null}
-        <input
-          value={displayName}
-          onChange={(event) => setDisplayName(event.target.value)}
-          placeholder="Display name"
-          className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
-        />
-        <input
-          value={globalAka}
-          onChange={(event) => setGlobalAka(event.target.value)}
-          placeholder="Global AKA, separated by spaces, commas, / or ;"
-          className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
-        />
-        <CurrencyCombobox
-          value={globalBaseCurrency}
-          onChange={setGlobalBaseCurrency}
-          label="全局账本基准货币"
-        />
-        <div className="rounded-2xl bg-stone-50 px-4 py-3 text-sm font-bold text-stone-600">
-          当前级别：{accountRoleLabels[profile?.accountRole ?? "free_user"]}
-        </div>
+      <section
+        className={`space-y-4 rounded-3xl bg-white p-5 shadow-sm ${
+          isLedgerSearchActive ? "hidden md:block" : ""
+        }`}
+      >
         <button
           type="button"
-          onClick={saveProfile}
-          disabled={isSaving || !displayName.trim()}
-          className="w-full rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:bg-stone-300"
+          onClick={() => togglePanel("basic")}
+          className="flex w-full items-start justify-between gap-3 text-left"
         >
-          {isSaving ? "Saving..." : "Save profile"}
+          <span>
+            <span className="block text-xl font-semibold">Basic fields</span>
+            <span className="mt-1 block text-sm text-stone-500">
+              全局 AKA、基准货币和账户级别。
+            </span>
+          </span>
+          <span className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-black text-stone-600">
+            {basicOpen ? "收起" : "展开"}
+          </span>
         </button>
+        {basicOpen ? (
+          <>
+            {error ? (
+              <p className="rounded-2xl bg-red-50 p-3 text-sm font-medium text-red-700">
+                {error}
+              </p>
+            ) : null}
+            {notice ? (
+              <p className="rounded-2xl bg-emerald-50 p-3 text-sm font-medium text-emerald-800">
+                {notice}
+              </p>
+            ) : null}
+            <input
+              value={displayName}
+              onChange={(event) => setDisplayName(event.target.value)}
+              placeholder="Display name"
+              className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
+            />
+            <input
+              value={globalAka}
+              onChange={(event) => setGlobalAka(event.target.value)}
+              placeholder="Global AKA, separated by spaces, commas, / or ;"
+              className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
+            />
+            <CurrencyCombobox
+              value={globalBaseCurrency}
+              onChange={setGlobalBaseCurrency}
+              label="全局账本基准货币"
+            />
+            <div className="rounded-2xl bg-stone-50 px-4 py-3 text-sm font-bold text-stone-600">
+              当前级别：{accountRoleLabels[profile?.accountRole ?? "free_user"]}
+            </div>
+            <button
+              type="button"
+              onClick={saveProfile}
+              disabled={isSaving || !displayName.trim()}
+              className="w-full rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:bg-stone-300"
+            >
+              {isSaving ? "Saving..." : "Save profile"}
+            </button>
+          </>
+        ) : null}
       </section>
 
-      <section className="space-y-4 rounded-3xl bg-white p-5 shadow-sm">
-        <div className="flex items-start justify-between gap-3">
-          <div>
+      <section
+        className={
+          isLedgerSearchActive
+            ? "contents md:block md:space-y-4 md:rounded-3xl md:bg-white md:p-5 md:shadow-sm"
+            : "space-y-4 rounded-3xl bg-white p-5 shadow-sm"
+        }
+      >
+        <div
+          className={`flex items-start justify-between gap-3 ${
+            isLedgerSearchActive ? "hidden md:flex" : ""
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => togglePanel("ledger")}
+            className="min-w-0 text-left"
+          >
             <p className="text-sm font-bold text-emerald-800">
               {t("profile.ledger.eyebrow")}
             </p>
@@ -650,17 +731,23 @@ function ProfileContent({ user }: { user: User }) {
             <p className="mt-1 text-sm text-stone-500">
               {t("profile.ledger.description")}
             </p>
-          </div>
+          </button>
           <button
             type="button"
-            onClick={() => setLedgerUnlocked((current) => !current)}
+            onClick={() => {
+              if (!ledgerOpen) {
+                togglePanel("ledger");
+                return;
+              }
+              setLedgerUnlocked((current) => !current);
+            }}
             className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-700"
           >
-            {ledgerUnlocked ? "锁定" : "解锁"}
+            {ledgerOpen ? (ledgerUnlocked ? "锁定" : "解锁") : "展开"}
           </button>
         </div>
 
-        {!ledgerUnlocked ? (
+        {ledgerOpen ? !ledgerUnlocked ? (
           <div className="rounded-3xl border border-stone-200 bg-stone-50 p-5">
             <p className="text-2xl font-black text-stone-400">锁定</p>
             <p className="mt-2 text-sm text-stone-500">
@@ -677,14 +764,48 @@ function ProfileContent({ user }: { user: User }) {
           </div>
         ) : (
           <>
-            <div className="rounded-2xl bg-stone-50 p-2">
+            <div
+              className={`${
+                isLedgerSearchActive
+                  ? "fixed inset-x-0 top-0 z-[2147482600] flex items-center gap-2 border-b border-stone-200 bg-white p-3 shadow-lg md:static md:block md:rounded-2xl md:border-0 md:bg-stone-50 md:p-2 md:shadow-none"
+                  : "rounded-2xl bg-stone-50 p-2"
+              }`}
+            >
               <input
+                type="search"
+                enterKeyHint="search"
+                inputMode="search"
+                autoComplete="off"
                 value={ledgerSearchQuery}
                 onChange={(event) => setLedgerSearchQuery(event.target.value)}
+                onFocus={openLedgerSearch}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.currentTarget.blur();
+                  }
+                }}
                 placeholder="搜索所有旅程费用..."
-                className="min-h-10 w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm font-semibold outline-none focus:border-emerald-300"
+                className="min-h-11 min-w-0 flex-1 rounded-xl border border-stone-200 bg-white px-3 py-2 text-base font-semibold outline-none focus:border-emerald-300 md:min-h-10 md:w-full md:text-sm"
               />
+              {ledgerSearchQuery.trim() ? (
+                <button
+                  type="button"
+                  onClick={() => setLedgerSearchQuery("")}
+                  className="shrink-0 rounded-full bg-white px-3 py-2 text-xs font-bold text-stone-600 shadow-sm md:hidden"
+                >
+                  清空搜索
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={closeLedgerSearch}
+                className="shrink-0 rounded-full px-3 py-2 text-sm font-black text-emerald-800 md:hidden"
+              >
+                {t("common.cancel")}
+              </button>
             </div>
+
+            {isLedgerSearchActive ? <div className="h-12 md:hidden" /> : null}
 
             {ledgerSearchQuery.trim() ? (
               <div className="space-y-2">
@@ -738,6 +859,10 @@ function ProfileContent({ user }: { user: User }) {
                   </>
                 )}
               </div>
+            ) : isLedgerSearchActive ? (
+              <p className="rounded-2xl border border-dashed border-stone-200 bg-white p-4 text-sm text-stone-500">
+                输入关键词搜索所有旅程里分摊到你身上的费用。
+              </p>
             ) : (
               <>
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -871,12 +996,20 @@ function ProfileContent({ user }: { user: User }) {
               </>
             )}
           </>
-        )}
+        ) : null}
       </section>
 
-      <section className="space-y-4 rounded-3xl bg-white p-5 shadow-sm">
-        <div className="flex items-start justify-between gap-3">
-          <div>
+      <section
+        className={`space-y-4 rounded-3xl bg-white p-5 shadow-sm ${
+          isLedgerSearchActive ? "hidden md:block" : ""
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => togglePanel("favorites")}
+          className="flex w-full items-start justify-between gap-3 text-left"
+        >
+          <span>
             <p className="text-sm font-bold text-emerald-800">Favorites</p>
             <h2 className="mt-1 text-xl font-semibold text-stone-950">
               我的收藏
@@ -884,61 +1017,63 @@ function ProfileContent({ user }: { user: User }) {
             <p className="mt-1 text-sm text-stone-500">
               跨旅程保存的照片和文字记忆。
             </p>
-          </div>
-          <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-800">
-            {favoriteMemories.length} 条
           </span>
-        </div>
-        {favoriteMemories.length === 0 ? (
-          <p className="rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
-            还没有收藏的记忆。
-          </p>
-        ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-            {favoriteMemories.map((memory) => (
-              <button
-                key={memory.id}
-                type="button"
-                onClick={() => setSelectedFavorite(memory)}
-                className="group relative aspect-square overflow-hidden rounded-2xl border border-stone-100 bg-emerald-50 text-left shadow-sm transition hover:border-emerald-200 hover:shadow-md"
-              >
-                {memory.type === "photo" && memory.mediaUrl ? (
-                  favoriteImageUrls[memory.mediaUrl] ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={favoriteImageUrls[memory.mediaUrl]}
-                      alt={memory.content || "Favorite memory"}
-                      className="size-full object-cover transition duration-200 group-hover:scale-[1.03]"
-                    />
+          <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-800">
+            {favoritesOpen ? "收起" : `${favoriteMemories.length} 条`}
+          </span>
+        </button>
+        {favoritesOpen ? (
+          favoriteMemories.length === 0 ? (
+            <p className="rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
+              还没有收藏的记忆。
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+              {favoriteMemories.map((memory) => (
+                <button
+                  key={memory.id}
+                  type="button"
+                  onClick={() => setSelectedFavorite(memory)}
+                  className="group relative aspect-square overflow-hidden rounded-2xl border border-stone-100 bg-emerald-50 text-left shadow-sm transition hover:border-emerald-200 hover:shadow-md"
+                >
+                  {memory.type === "photo" && memory.mediaUrl ? (
+                    favoriteImageUrls[memory.mediaUrl] ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={favoriteImageUrls[memory.mediaUrl]}
+                        alt={memory.content || "Favorite memory"}
+                        className="size-full object-cover transition duration-200 group-hover:scale-[1.03]"
+                      />
+                    ) : (
+                      <div className="grid size-full place-items-center bg-stone-100 text-3xl">
+                        IMG
+                      </div>
+                    )
                   ) : (
-                    <div className="grid size-full place-items-center bg-stone-100 text-3xl">
-                      IMG
+                    <div className="flex size-full flex-col justify-between p-3">
+                      <p className="line-clamp-5 text-sm font-semibold leading-5 text-stone-800">
+                        {memory.content || "Memory"}
+                      </p>
+                      <span className="text-xs font-black text-emerald-800">
+                        TEXT
+                      </span>
                     </div>
-                  )
-                ) : (
-                  <div className="flex size-full flex-col justify-between p-3">
-                    <p className="line-clamp-5 text-sm font-semibold leading-5 text-stone-800">
-                      {memory.content || "Memory"}
-                    </p>
-                    <span className="text-xs font-black text-emerald-800">
-                      TEXT
-                    </span>
+                  )}
+                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/35 to-transparent p-2 text-white">
+                    <p className="truncate text-xs font-black">{memory.tripName}</p>
+                    <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-bold">
+                      <span>
+                        {formatShortDate(memory.capturedAt, locale)} ·{" "}
+                        {memory.favoriteCount ?? 0} 收藏
+                      </span>
+                      <span>{memory.likeCount ?? 0} 赞</span>
+                    </div>
                   </div>
-                )}
-                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/35 to-transparent p-2 text-white">
-                  <p className="truncate text-xs font-black">{memory.tripName}</p>
-                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-bold">
-                    <span>
-                      {formatShortDate(memory.capturedAt, locale)} ·{" "}
-                      {memory.favoriteCount ?? 0} 收藏
-                    </span>
-                    <span>{memory.likeCount ?? 0} 赞</span>
-                  </div>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
+                </button>
+              ))}
+            </div>
+          )
+        ) : null}
       </section>
 
       {selectedFavorite ? (
@@ -1033,68 +1168,108 @@ function ProfileContent({ user }: { user: User }) {
         </div>
       ) : null}
 
-      <section className="space-y-4 rounded-3xl bg-white p-5 shadow-sm">
-        <div>
-          <p className="text-sm font-bold text-emerald-800">Friends</p>
-          <h2 className="mt-1 text-xl font-semibold text-stone-950">
-            我的朋友
-          </h2>
-          <p className="mt-1 text-sm text-stone-500">
-            按共同组队次数排序。只有填写了邮箱的旅程成员会合并为同一个朋友。
-          </p>
-        </div>
-        {friends.length === 0 ? (
-          <p className="rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
-            还没有可统计的朋友。
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {friends.slice(0, 20).map((friend) => (
-              <article
-                key={friend.email}
-                className="flex items-center justify-between gap-3 rounded-2xl border border-stone-200 p-3"
-              >
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-emerald-100 text-sm font-black text-emerald-800">
-                    {friend.avatarUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={friend.avatarUrl}
-                        alt=""
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      friend.displayName.slice(0, 1).toUpperCase()
-                    )}
+      <section
+        className={`space-y-4 rounded-3xl bg-white p-5 shadow-sm ${
+          isLedgerSearchActive ? "hidden md:block" : ""
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => togglePanel("friends")}
+          className="flex w-full items-start justify-between gap-3 text-left"
+        >
+          <span>
+            <p className="text-sm font-bold text-emerald-800">Friends</p>
+            <h2 className="mt-1 text-xl font-semibold text-stone-950">
+              我的朋友
+            </h2>
+            <p className="mt-1 text-sm text-stone-500">
+              按共同组队次数排序。
+            </p>
+          </span>
+          <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-800">
+            {friendsOpen ? "收起" : `${friends.length} 位`}
+          </span>
+        </button>
+        {friendsOpen ? (
+          friends.length === 0 ? (
+            <p className="rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
+              还没有可统计的朋友。
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {friends.slice(0, 20).map((friend) => (
+                <article
+                  key={friend.email}
+                  className="flex items-center justify-between gap-3 rounded-2xl border border-stone-200 p-3"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-emerald-100 text-sm font-black text-emerald-800">
+                      {friend.avatarUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={friend.avatarUrl}
+                          alt=""
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        friend.displayName.slice(0, 1).toUpperCase()
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="truncate text-sm font-black text-stone-950">
+                        {friend.displayName}
+                      </h3>
+                      <p className="truncate text-xs text-stone-500">
+                        {friend.email}
+                      </p>
+                      <p className="mt-0.5 truncate text-xs text-stone-400">
+                        {friend.journeys.slice(0, 3).join(" · ")}
+                      </p>
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <h3 className="truncate text-sm font-black text-stone-950">
-                      {friend.displayName}
-                    </h3>
-                    <p className="truncate text-xs text-stone-500">
-                      {friend.email}
-                    </p>
-                    <p className="mt-0.5 truncate text-xs text-stone-400">
-                      {friend.journeys.slice(0, 3).join(" · ")}
-                    </p>
-                  </div>
-                </div>
-                <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-800">
-                  {friend.journeyCount} 次
-                </span>
-              </article>
-            ))}
-          </div>
-        )}
+                  <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-800">
+                    {friend.journeyCount} 次
+                  </span>
+                </article>
+              ))}
+            </div>
+          )
+        ) : null}
       </section>
 
-      <button
-        type="button"
-        onClick={handleLogout}
-        className="w-full rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white"
+      <section
+        className={`space-y-4 rounded-3xl bg-white p-5 shadow-sm ${
+          isLedgerSearchActive ? "hidden md:block" : ""
+        }`}
       >
-        Logout
-      </button>
+        <button
+          type="button"
+          onClick={() => togglePanel("account")}
+          className="flex w-full items-center justify-between gap-3 text-left"
+        >
+          <span>
+            <span className="block text-sm font-bold text-emerald-800">
+              Account
+            </span>
+            <span className="mt-1 block text-xl font-semibold text-stone-950">
+              账户操作
+            </span>
+          </span>
+          <span className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-black text-stone-600">
+            {accountOpen ? "收起" : "展开"}
+          </span>
+        </button>
+        {accountOpen ? (
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="w-full rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white"
+          >
+            Logout
+          </button>
+        ) : null}
+      </section>
     </div>
   );
 }

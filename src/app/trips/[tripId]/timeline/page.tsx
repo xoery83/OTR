@@ -42,7 +42,7 @@ import type {
   PhotoFace,
 } from "@/types";
 
-type TimelineView = "feed" | "timeline" | "album" | "favorites" | "debug";
+type TimelineView = "timeline" | "album" | "favorites" | "debug";
 
 type TimelineSessionState = {
   view?: TimelineView;
@@ -88,7 +88,7 @@ function parseTimelineView(value: string | null): TimelineView {
     return value;
   }
 
-  return "feed";
+  return "album";
 }
 
 type TimelineItem = {
@@ -112,6 +112,9 @@ type LinkedPlannerItem = {
   timeLabel: string | null;
   title: string;
 };
+
+const INITIAL_TIMELINE_GROUP_COUNT = 4;
+const TIMELINE_GROUP_BATCH_SIZE = 3;
 
 function getLocalDateKey(value: string) {
   const date = new Date(value);
@@ -511,30 +514,20 @@ function looksLikeExpenseReply(value: string) {
 
 function ReplyBubble({
   reply,
-  currentUserId,
   onEngagementChange,
   onOpenPhoto,
 }: {
   reply: TimelineItem;
-  currentUserId: string;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
   onOpenPhoto?: (item: TimelineItem) => void;
 }) {
   const { t } = useI18n();
-  const mine = reply.memory.userId === currentUserId;
-  const bubbleTone = mine
-    ? "bg-emerald-700 text-white rounded-tr-sm"
-    : "bg-white text-stone-950 rounded-tl-sm";
 
   return (
-    <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-      <div className={`max-w-[88%] ${mine ? "text-right" : "text-left"}`}>
-        <div
-          className={`mb-1 flex items-center gap-2 px-1 ${
-            mine ? "justify-end" : "justify-start"
-          }`}
-        >
-          <p className="text-xs font-bold text-emerald-900">
+    <div className="border-t border-stone-100 pt-3 first:border-t-0 first:pt-0">
+      <div className="min-w-0">
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <p className="min-w-0 truncate text-xs font-bold text-stone-500">
             {reply.memory.contributorName || "旅伴"} 说
           </p>
           <MemoryEngagementActions
@@ -543,7 +536,7 @@ function ReplyBubble({
             compact
           />
         </div>
-        <div className={`rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${bubbleTone}`}>
+        <div className="text-sm leading-6 text-stone-800">
           {reply.memory.type === "photo" && reply.photo?.displayUrl ? (
             <button
               type="button"
@@ -804,45 +797,38 @@ function CompactMemoryCard({
           />
         </button>
       ) : (
-        <div className="bg-emerald-50/70 px-4 py-4 sm:px-5">
-          <div className="flex items-start gap-3">
-            <div className="grid size-12 shrink-0 place-items-center rounded-full bg-emerald-700 text-lg font-black text-white shadow-sm">
-              {(item.memory.contributorName || "OTR").slice(0, 1).toUpperCase()}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <p className="shrink-0 text-sm font-black text-emerald-900">
-                  {t("timeline.memory.said", {
-                    name: item.memory.contributorName || t("timeline.traveler"),
-                  })}
-                </p>
-                {item.linkedPlannerItem ? (
-                  <Link
-                    href={item.linkedPlannerItem.href}
-                    title={[
-                      item.linkedPlannerItem.dayLabel,
-                      item.linkedPlannerItem.timeLabel,
-                      item.linkedPlannerItem.title,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                    className="min-w-0 truncate rounded-full bg-emerald-100/70 px-2 py-0.5 text-xs font-black text-emerald-900 underline decoration-emerald-300 underline-offset-2"
-                  >
-                    {[
-                      item.linkedPlannerItem.dayLabel,
-                      item.linkedPlannerItem.timeLabel,
-                      item.linkedPlannerItem.title,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </Link>
-                ) : null}
-              </div>
-              <div className="mt-2 rounded-2xl rounded-tl-sm bg-white px-4 py-3 text-xl font-medium leading-8 text-stone-950 shadow-sm">
-                {item.memory.content || t("timeline.memory.textFallback")}
-              </div>
-            </div>
+        <div className="px-4 pt-4 sm:px-5">
+          <div className="flex min-w-0 items-center gap-2">
+            <p className="shrink-0 text-sm font-black text-stone-900">
+              {t("timeline.memory.said", {
+                name: item.memory.contributorName || t("timeline.traveler"),
+              })}
+            </p>
+            {item.linkedPlannerItem ? (
+              <Link
+                href={item.linkedPlannerItem.href}
+                title={[
+                  item.linkedPlannerItem.dayLabel,
+                  item.linkedPlannerItem.timeLabel,
+                  item.linkedPlannerItem.title,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+                className="min-w-0 truncate rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-black text-emerald-900 underline decoration-emerald-200 underline-offset-2"
+              >
+                {[
+                  item.linkedPlannerItem.dayLabel,
+                  item.linkedPlannerItem.timeLabel,
+                  item.linkedPlannerItem.title,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </Link>
+            ) : null}
           </div>
+          <p className="mt-2 whitespace-pre-wrap text-base font-medium leading-7 text-stone-950">
+            {item.memory.content || t("timeline.memory.textFallback")}
+          </p>
         </div>
       )}
       <div className="p-4">
@@ -938,12 +924,11 @@ function CompactMemoryCard({
         ) : null}
         <ItemMeta item={item} hidePlannerLink={!isPhoto} />
         {item.replies.length > 0 ? (
-          <div className="mt-4 space-y-3 rounded-3xl bg-emerald-50/50 p-3">
+          <div className="mt-4 space-y-3 rounded-2xl bg-stone-50 p-3">
             {item.replies.map((reply) => (
               <ReplyBubble
                 key={reply.id}
                 reply={reply}
-                currentUserId={currentUserId}
                 onEngagementChange={onEngagementChange}
                 onOpenPhoto={onOpenPhoto}
               />
@@ -1053,18 +1038,80 @@ function flattenTimelineItems(items: TimelineItem[]): TimelineItem[] {
 
 function TimelinePhotoLightbox({
   item,
+  members,
+  tripId,
   onClose,
+  onFaceConfirmed,
   onEngagementChange,
 }: {
   item: TimelineItem | null;
+  members: JourneyMember[];
+  tripId: string;
   onClose: () => void;
+  onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const { t } = useI18n();
+  const [selectedPersonName, setSelectedPersonName] = useState<string | null>(null);
+  const [selectedFace, setSelectedFace] = useState<{
+    assetId: string;
+    face: PhotoFace;
+  } | null>(null);
+  const [confirmingFaceId, setConfirmingFaceId] = useState<string | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedPersonName(null);
+    setSelectedFace(null);
+    setConfirmError(null);
+  }, [item?.id]);
 
   if (!item?.photo?.displayUrl) return null;
 
-  const summary = getAiSummary(item.photo);
+  function openFaceAssignment() {
+    if (!item?.photo) return;
+    const unassignedFace = item.faces.find(
+      (face) => face.recognitionStatus !== "confirmed",
+    );
+    if (!unassignedFace) return;
+
+    setSelectedPersonName(null);
+    setSelectedFace({
+      assetId: item.photo.id,
+      face: unassignedFace,
+    });
+    setConfirmError(null);
+  }
+
+  function closeFaceAssignment() {
+    setSelectedFace(null);
+    setConfirmError(null);
+  }
+
+  async function confirmFace(member: JourneyMember) {
+    if (!selectedFace) return;
+
+    setConfirmingFaceId(selectedFace.face.id);
+    setConfirmError(null);
+
+    try {
+      const updated = await requestFaceConfirmation({
+        faceId: selectedFace.face.id,
+        tripId,
+        journeyMemberId: member.id,
+      });
+      onFaceConfirmed(selectedFace.assetId, updated);
+      setSelectedFace(null);
+    } catch (error) {
+      setConfirmError(
+        error instanceof Error
+          ? error.message
+          : t("timeline.debug.error.confirmFace"),
+      );
+    } finally {
+      setConfirmingFaceId(null);
+    }
+  }
 
   return (
     <div
@@ -1113,61 +1160,167 @@ function TimelinePhotoLightbox({
         </div>
 
         <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <div className="grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black">
+          <div
+            className="relative grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black"
+            style={{
+              aspectRatio:
+                item.photo.width && item.photo.height
+                  ? `${item.photo.width} / ${item.photo.height}`
+                  : "4 / 3",
+            }}
+          >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={item.photo.displayUrl}
               alt={item.memory.content || t("timeline.photo.alt")}
-              className="max-h-full max-w-full object-contain"
+              className="h-full w-full object-cover"
             />
+            {item.faces.map((face) => {
+              const boxStyle = getFaceBoxStyle(face, item.photo!);
+              if (!boxStyle) return null;
+
+              const isSelected =
+                selectedFace?.assetId === item.photo!.id &&
+                selectedFace.face.id === face.id;
+              const isPersonSelected =
+                Boolean(selectedPersonName) && face.recognizedName === selectedPersonName;
+              if (!isSelected && !isPersonSelected) return null;
+
+              const faceName = face.recognizedName || t("timeline.debug.confirmFace");
+
+              return (
+                <button
+                  type="button"
+                  key={face.id}
+                  onClick={() =>
+                    face.recognitionStatus === "confirmed"
+                      ? setSelectedPersonName(face.recognizedName ?? null)
+                      : setSelectedFace({
+                          assetId: item.photo!.id,
+                          face,
+                        })
+                  }
+                  aria-label={t("timeline.debug.selectFace", { name: faceName })}
+                  className={`absolute rounded-xl border-2 transition ${
+                    isSelected
+                      ? "border-amber-300 bg-amber-300/20"
+                      : "border-emerald-300 bg-emerald-300/15"
+                  }`}
+                  style={boxStyle}
+                >
+                  <span
+                    className={`absolute left-1 top-1 max-w-28 truncate rounded-full px-2 py-1 text-[11px] font-black shadow-sm ${
+                      isSelected
+                        ? "bg-amber-300 text-stone-950"
+                        : "bg-emerald-600 text-white"
+                    }`}
+                  >
+                    {faceName}
+                  </span>
+                </button>
+              );
+            })}
           </div>
 
           <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-4">
             <div className="space-y-4">
-              {summary ? (
-                <p className="rounded-2xl bg-emerald-50 p-3 text-sm leading-6 text-emerald-950">
-                  {summary}
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
+                  {t("timeline.album.people")}
                 </p>
-              ) : null}
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {item.peopleNames.length > 0 ? (
+                    item.peopleNames.map((name) => {
+                      const active = selectedPersonName === name;
 
-              {item.peopleNames.length > 0 ? (
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
-                    {t("timeline.album.people")}
-                  </p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {item.peopleNames.map((name) => (
-                      <span
-                        key={name}
-                        className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-900"
+                      return (
+                        <button
+                          type="button"
+                          key={name}
+                          onClick={() => {
+                            setSelectedFace(null);
+                            setConfirmError(null);
+                            setSelectedPersonName((current) =>
+                              current === name ? null : name,
+                            );
+                          }}
+                          className={`rounded-full px-3 py-1 text-xs font-black ${
+                            active
+                              ? "bg-emerald-700 text-white"
+                              : "bg-emerald-100 text-emerald-900"
+                          }`}
+                        >
+                          {name}
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <span className="text-sm font-semibold text-stone-500">
+                      {t("timeline.album.noPeople")}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {selectedFace?.assetId === item.photo.id ? (
+                <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-800">
+                        {t("timeline.debug.confirmFace")}
+                      </p>
+                      <h4 className="mt-1 text-lg font-semibold text-stone-950">
+                        {t("timeline.debug.whoIsThis")}
+                      </h4>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closeFaceAssignment}
+                      className="rounded-full bg-white px-3 py-2 text-xs font-black text-stone-700 shadow-sm"
+                    >
+                      {t("common.close")}
+                    </button>
+                  </div>
+                  {confirmError ? (
+                    <p className="mt-2 text-xs font-semibold text-red-700">
+                      {confirmError}
+                    </p>
+                  ) : null}
+                  <div className="mt-4 grid grid-cols-1 gap-2">
+                    {members.map((member) => (
+                      <button
+                        type="button"
+                        key={member.id}
+                        onClick={() => confirmFace(member)}
+                        disabled={confirmingFaceId === selectedFace.face.id}
+                        className="flex items-center gap-2 rounded-2xl bg-white p-3 text-left text-sm font-bold text-stone-900 shadow-sm disabled:opacity-60"
                       >
-                        {name}
-                      </span>
+                        {member.avatarUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={member.avatarUrl}
+                            alt=""
+                            className="size-8 rounded-full object-cover"
+                          />
+                        ) : (
+                          <span className="grid size-8 place-items-center rounded-full bg-emerald-100 text-xs text-emerald-900">
+                            {member.displayName.slice(0, 1).toUpperCase()}
+                          </span>
+                        )}
+                        <span className="truncate">{member.displayName}</span>
+                      </button>
                     ))}
                   </div>
                 </div>
+              ) : item.hasUnassignedFaces ? (
+                <button
+                  type="button"
+                  onClick={openFaceAssignment}
+                  className="w-full rounded-full bg-amber-300 px-4 py-3 text-sm font-black text-stone-950"
+                >
+                  {t("timeline.album.assignFaces")}
+                </button>
               ) : null}
-
-              {item.photo.sceneTags && item.photo.sceneTags.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {item.photo.sceneTags.slice(0, 10).map((tag) => (
-                    <span
-                      key={tag}
-                      className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-700"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-
-              {item.photo.ocrText ? (
-                <p className="rounded-2xl bg-stone-50 p-3 text-sm leading-6 text-stone-700">
-                  {t("timeline.debug.ocr")} {item.photo.ocrText}
-                </p>
-              ) : null}
-
-              <ItemMeta item={item} />
             </div>
           </aside>
         </div>
@@ -1248,30 +1401,101 @@ function TrueTimelineView({
   onOpenPhoto?: (item: TimelineItem) => void;
 }) {
   const { t } = useI18n();
-  const dates = [
-    ...new Set([initialDate, ...items.map((item) => item.dateKey)].filter(Boolean)),
-  ].sort() as string[];
+  const dates = useMemo(
+    () =>
+      [
+        ...new Set(
+          [initialDate, ...items.map((item) => item.dateKey)].filter(
+            (date): date is string => Boolean(date),
+          ),
+        ),
+      ].sort((left, right) => right.localeCompare(left)) as string[],
+    [initialDate, items],
+  );
   const [selectedDate, setSelectedDate] = useState<string | null>(initialDate ?? null);
-
+  const dateSectionRefs = useRef<Record<string, HTMLElement | null>>({});
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const [visibleGroupCount, setVisibleGroupCount] = useState(() => {
+    const initialDateIndex = initialDate ? dates.indexOf(initialDate) : -1;
+    return Math.max(INITIAL_TIMELINE_GROUP_COUNT, initialDateIndex + 1);
+  });
+  const groupedItems = useMemo(
+    () =>
+      dates.map((date) => ({
+        date,
+        items: items
+          .filter((item) => item.dateKey === date)
+          .sort(
+            (left, right) =>
+              new Date(left.capturedAt).getTime() -
+              new Date(right.capturedAt).getTime(),
+          ),
+      })),
+    [dates, items],
+  );
   const activeDate =
     selectedDate && dates.includes(selectedDate)
       ? selectedDate
       : getNearestDate(dates);
-  const dayItems = activeDate
-    ? items
-        .filter((item) => item.dateKey === activeDate)
-        .sort(
-          (left, right) =>
-            new Date(left.capturedAt).getTime() -
-            new Date(right.capturedAt).getTime(),
-        )
-    : [];
+  const visibleGroups = groupedItems.slice(0, visibleGroupCount);
+  const hasMoreGroups = visibleGroupCount < groupedItems.length;
+
+  useEffect(() => {
+    setVisibleGroupCount((current) => {
+      const selectedDateIndex = activeDate ? dates.indexOf(activeDate) : -1;
+      return Math.min(
+        groupedItems.length,
+        Math.max(current, INITIAL_TIMELINE_GROUP_COUNT, selectedDateIndex + 1),
+      );
+    });
+  }, [activeDate, dates, groupedItems.length]);
+
+  useEffect(() => {
+    if (!hasMoreGroups) return;
+    const target = loadMoreRef.current;
+    if (!target) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        setVisibleGroupCount((current) =>
+          Math.min(groupedItems.length, current + TIMELINE_GROUP_BATCH_SIZE),
+        );
+      },
+      { rootMargin: "600px 0px" },
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [groupedItems.length, hasMoreGroups, visibleGroupCount]);
+
+  useEffect(() => {
+    if (!activeDate) return;
+    const target = dateSectionRefs.current[activeDate];
+    if (!target) return;
+
+    const timer = window.setTimeout(() => {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [activeDate, visibleGroupCount]);
+
+  function selectDate(date: string) {
+    const dateIndex = dates.indexOf(date);
+    if (dateIndex >= 0) {
+      setVisibleGroupCount((current) =>
+        Math.min(groupedItems.length, Math.max(current, dateIndex + 1)),
+      );
+    }
+    setSelectedDate(date);
+  }
 
   if (!activeDate) return null;
 
   return (
     <section className="space-y-4">
-      <div className="sticky top-0 z-20 -mx-4 overflow-x-auto border-y border-emerald-100 bg-stone-50/95 px-4 py-3 backdrop-blur">
+      <div className="otr-timeline-date-strip sticky top-[9.75rem] z-20 -mx-4 overflow-x-auto border-y border-emerald-100 bg-stone-50/95 px-4 py-3 shadow-sm backdrop-blur md:top-[8.25rem]">
         <div className="flex gap-2">
           {dates.map((date) => {
             const active = activeDate === date;
@@ -1281,7 +1505,7 @@ function TrueTimelineView({
               <button
                 type="button"
                 key={date}
-                onClick={() => setSelectedDate(date)}
+                onClick={() => selectDate(date)}
                 className={`shrink-0 rounded-2xl border px-4 py-2 text-sm font-black ${
                   active
                     ? "border-emerald-700 bg-emerald-700 text-white"
@@ -1300,29 +1524,50 @@ function TrueTimelineView({
         </div>
       </div>
 
-      <div className="rounded-3xl bg-white p-4 shadow-sm">
-        <h2 className="text-2xl font-semibold text-stone-950">
-          {formatDayLabel(activeDate)}
-        </h2>
-        <p className="mt-1 text-sm text-stone-500">
-          {t("timeline.true.count", { count: dayItems.length })}
-        </p>
-      </div>
+      <div className="space-y-7">
+        {visibleGroups.map((group) => (
+          <section
+            key={group.date}
+            ref={(element) => {
+              dateSectionRefs.current[group.date] = element;
+            }}
+            className="scroll-mt-72 space-y-3 md:scroll-mt-56"
+          >
+            <div className="rounded-3xl bg-white p-4 shadow-sm">
+              <h2 className="text-2xl font-semibold text-stone-950">
+                {formatDayLabel(group.date)}
+              </h2>
+              <p className="mt-1 text-sm text-stone-500">
+                {t("timeline.true.count", { count: group.items.length })}
+              </p>
+            </div>
 
-      <div className="-mx-4 grid grid-cols-2 gap-2 sm:mx-0 sm:gap-3 lg:grid-cols-4">
-        {dayItems.map((item) => (
-          <CompactMemoryCard
-            key={item.id}
-            item={item}
-            tripId={tripId}
-            currentUserId={currentUserId}
-            onSave={onSaveMemory}
-            onDelete={onDeleteMemory}
-            onReplyCreated={onReplyCreated}
-            onEngagementChange={onEngagementChange}
-            onOpenPhoto={onOpenPhoto}
-          />
+            <div className="-mx-4 columns-2 gap-2 space-y-2 sm:mx-0 sm:gap-3 sm:space-y-3 xl:columns-3">
+              {group.items.map((item) => (
+                <div key={item.id} className="break-inside-avoid pb-2 sm:pb-3">
+                  <CompactMemoryCard
+                    item={item}
+                    tripId={tripId}
+                    currentUserId={currentUserId}
+                    onSave={onSaveMemory}
+                    onDelete={onDeleteMemory}
+                    onReplyCreated={onReplyCreated}
+                    onEngagementChange={onEngagementChange}
+                    onOpenPhoto={onOpenPhoto}
+                  />
+                </div>
+              ))}
+            </div>
+          </section>
         ))}
+        {hasMoreGroups ? (
+          <div
+            ref={loadMoreRef}
+            className="py-6 text-center text-sm font-bold text-stone-500"
+          >
+            {t("timeline.true.loadingMore")}
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -1330,7 +1575,6 @@ function TrueTimelineView({
 
 function AlbumView({
   items,
-  onOpenDebug,
   members,
   tripId,
   onFaceConfirmed,
@@ -1339,13 +1583,12 @@ function AlbumView({
   items: TimelineItem[];
   members: JourneyMember[];
   tripId: string;
-  onOpenDebug: () => void;
   onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const { t } = useI18n();
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
-  const [showInfo, setShowInfo] = useState(true);
+  const [selectedPersonName, setSelectedPersonName] = useState<string | null>(null);
   const [selectedFace, setSelectedFace] = useState<{
     assetId: string;
     face: PhotoFace;
@@ -1359,6 +1602,27 @@ function AlbumView({
 
   function closeViewer() {
     setActiveItemId(null);
+    setSelectedPersonName(null);
+    setSelectedFace(null);
+    setConfirmError(null);
+  }
+
+  function openFaceAssignment() {
+    if (!activeItem?.photo) return;
+    const unassignedFace = activeItem.faces.find(
+      (face) => face.recognitionStatus !== "confirmed",
+    );
+    if (!unassignedFace) return;
+
+    setSelectedPersonName(null);
+    setSelectedFace({
+      assetId: activeItem.photo.id,
+      face: unassignedFace,
+    });
+    setConfirmError(null);
+  }
+
+  function closeFaceAssignment() {
     setSelectedFace(null);
     setConfirmError(null);
   }
@@ -1397,7 +1661,7 @@ function AlbumView({
             key={item.id}
             onClick={() => {
               setActiveItemId(item.id);
-              setShowInfo(true);
+              setSelectedPersonName(null);
               setSelectedFace(null);
               setConfirmError(null);
             }}
@@ -1456,15 +1720,6 @@ function AlbumView({
                   compact
                   className="rounded-full bg-white/10 px-1 py-1 text-white"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowInfo((current) => !current)}
-                  className="rounded-full bg-white/15 px-3 py-2 text-xs font-black text-white"
-                >
-                  {showInfo
-                    ? t("timeline.album.hideInfo")
-                    : t("timeline.album.showInfo")}
-                </button>
                 {activeItem.photo.providerWebUrl ? (
                   <a
                     href={activeItem.photo.providerWebUrl}
@@ -1501,27 +1756,32 @@ function AlbumView({
                   alt={activeItem.memory.content || t("timeline.photo.alt")}
                   className="h-full w-full object-cover"
                 />
-                {showInfo
-                  ? activeItem.faces.map((face, index) => {
+                {activeItem.faces.map((face) => {
                       const boxStyle = getFaceBoxStyle(face, activeItem.photo!);
                       if (!boxStyle) return null;
 
-                      const faceName =
-                        face.recognizedName ||
-                        t("timeline.debug.face", { number: index + 1 });
                       const isSelected =
                         selectedFace?.assetId === activeItem.photo!.id &&
                         selectedFace.face.id === face.id;
+                      const isPersonSelected =
+                        Boolean(selectedPersonName) &&
+                        face.recognizedName === selectedPersonName;
+                      if (!isSelected && !isPersonSelected) return null;
+
+                      const faceName =
+                        face.recognizedName || t("timeline.debug.confirmFace");
 
                       return (
                         <button
                           type="button"
                           key={face.id}
                           onClick={() =>
-                            setSelectedFace({
-                              assetId: activeItem.photo!.id,
-                              face,
-                            })
+                            face.recognitionStatus === "confirmed"
+                              ? setSelectedPersonName(face.recognizedName ?? null)
+                              : setSelectedFace({
+                                  assetId: activeItem.photo!.id,
+                                  face,
+                                })
                           }
                           aria-label={t("timeline.debug.selectFace", {
                             name: faceName,
@@ -1529,86 +1789,83 @@ function AlbumView({
                           className={`absolute rounded-xl border-2 transition ${
                             isSelected
                               ? "border-amber-300 bg-amber-300/20"
-                              : face.recognitionStatus === "confirmed"
-                                ? "border-emerald-300 bg-emerald-300/15"
-                                : "border-white bg-white/10"
+                              : "border-emerald-300 bg-emerald-300/15"
                           }`}
                           style={boxStyle}
                         >
                           <span
                             className={`absolute left-1 top-1 max-w-28 truncate rounded-full px-2 py-1 text-[11px] font-black shadow-sm ${
-                              face.recognitionStatus === "confirmed"
-                                ? "bg-emerald-600 text-white"
-                                : "bg-white text-stone-950"
+                              isSelected
+                                ? "bg-amber-300 text-stone-950"
+                                : "bg-emerald-600 text-white"
                             }`}
                           >
                             {faceName}
                           </span>
                         </button>
                       );
-                    })
-                  : null}
+                    })}
               </div>
 
-              {showInfo ? (
-                <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-4">
-                  <div className="space-y-4">
-                    <div>
-                      <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
-                        {t("timeline.album.people")}
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {activeItem.peopleNames.length > 0 ? (
-                          activeItem.peopleNames.map((name) => (
-                            <span
+              <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-4">
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
+                      {t("timeline.album.people")}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {activeItem.peopleNames.length > 0 ? (
+                        activeItem.peopleNames.map((name) => {
+                          const active = selectedPersonName === name;
+
+                          return (
+                            <button
+                              type="button"
                               key={name}
-                              className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-900"
+                              onClick={() => {
+                                setSelectedFace(null);
+                                setConfirmError(null);
+                                setSelectedPersonName((current) =>
+                                  current === name ? null : name,
+                                );
+                              }}
+                              className={`rounded-full px-3 py-1 text-xs font-black ${
+                                active
+                                  ? "bg-emerald-700 text-white"
+                                  : "bg-emerald-100 text-emerald-900"
+                              }`}
                             >
                               {name}
-                            </span>
-                          ))
-                        ) : (
-                          <span className="text-sm font-semibold text-stone-500">
-                            {t("timeline.album.noPeople")}
-                          </span>
-                        )}
-                      </div>
+                            </button>
+                          );
+                        })
+                      ) : (
+                        <span className="text-sm font-semibold text-stone-500">
+                          {t("timeline.album.noPeople")}
+                        </span>
+                      )}
                     </div>
+                  </div>
 
-                    {getAiSummary(activeItem.photo) ? (
-                      <p className="rounded-2xl bg-emerald-50 p-3 text-sm leading-6 text-emerald-950">
-                        {getAiSummary(activeItem.photo)}
-                      </p>
-                    ) : null}
-
-                    {activeItem.photo.sceneTags &&
-                    activeItem.photo.sceneTags.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {activeItem.photo.sceneTags.slice(0, 8).map((tag) => (
-                          <span
-                            key={tag}
-                            className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-700"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-
-                    {activeItem.photo.ocrText ? (
-                      <p className="line-clamp-4 rounded-2xl bg-stone-50 p-3 text-sm leading-6 text-stone-700">
-                        {t("timeline.debug.ocr")} {activeItem.photo.ocrText}
-                      </p>
-                    ) : null}
-
-                    {selectedFace?.assetId === activeItem.photo.id ? (
-                      <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-4">
+                  {selectedFace?.assetId === activeItem.photo.id ? (
+                    <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
                         <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-800">
                           {t("timeline.debug.confirmFace")}
                         </p>
                         <h4 className="mt-1 text-lg font-semibold text-stone-950">
                           {t("timeline.debug.whoIsThis")}
                         </h4>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={closeFaceAssignment}
+                          className="rounded-full bg-white px-3 py-2 text-xs font-black text-stone-700 shadow-sm"
+                        >
+                          {t("common.close")}
+                        </button>
+                      </div>
                         {confirmError ? (
                           <p className="mt-2 text-xs font-semibold text-red-700">
                             {confirmError}
@@ -1640,10 +1897,10 @@ function AlbumView({
                           ))}
                         </div>
                       </div>
-                    ) : activeItem.hasUnassignedFaces ? (
+                  ) : activeItem.hasUnassignedFaces ? (
                       <button
                         type="button"
-                        onClick={onOpenDebug}
+                        onClick={openFaceAssignment}
                         className="w-full rounded-full bg-amber-300 px-4 py-3 text-sm font-black text-stone-950"
                       >
                         {t("timeline.album.assignFaces")}
@@ -1651,7 +1908,6 @@ function AlbumView({
                     ) : null}
                   </div>
                 </aside>
-              ) : null}
             </div>
           </div>
         </div>
@@ -2224,6 +2480,7 @@ function TimelineContent({ user }: { user: User }) {
   const { t } = useI18n();
   const tripId = params.tripId;
   const initialTimelineDate = searchParams.get("date");
+  const requestedView = searchParams.get("view");
   const initialView = parseTimelineView(searchParams.get("view"));
   const targetAssetId = searchParams.get("asset");
   const initialSession = readTimelineSession(tripId);
@@ -2236,7 +2493,7 @@ function TimelineContent({ user }: { user: User }) {
   const [members, setMembers] = useState<JourneyMember[]>([]);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const [view, setView] = useState<TimelineView>(
-    targetAssetId ? "debug" : (initialSession?.view ?? initialView),
+    targetAssetId ? "debug" : requestedView ? initialView : "album",
   );
   const [query, setQuery] = useState(initialSession?.query ?? "");
   const mineOnly = false;
@@ -2466,6 +2723,62 @@ function TimelineContent({ user }: { user: User }) {
     };
   }, [isMobileSearchActive]);
 
+  useEffect(() => {
+    document.body.classList.remove("otr-album-immersive");
+    if (!["album", "timeline", "favorites"].includes(view) || isMobileSearchActive) {
+      return;
+    }
+
+    let previousY = window.scrollY;
+    let isImmersive = false;
+    let scrollIntent = 0;
+
+    const setImmersive = (enabled: boolean) => {
+      if (isImmersive === enabled) return;
+      isImmersive = enabled;
+      document.body.classList.toggle("otr-album-immersive", enabled);
+    };
+
+    const handleScroll = () => {
+      if (window.innerWidth >= 768) {
+        setImmersive(false);
+        previousY = window.scrollY;
+        return;
+      }
+
+      const currentY = window.scrollY;
+      const delta = currentY - previousY;
+      if (Math.abs(delta) < 3) return;
+
+      if (currentY < 80) {
+        setImmersive(false);
+        scrollIntent = 0;
+      } else if (delta > 0) {
+        scrollIntent = Math.min(80, Math.max(0, scrollIntent) + delta);
+        if (scrollIntent > 28) {
+          setImmersive(true);
+        }
+      } else {
+        scrollIntent = Math.max(-80, Math.min(0, scrollIntent) + delta);
+        if (scrollIntent < -42) {
+          setImmersive(false);
+        }
+      }
+
+      previousY = currentY;
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("resize", handleScroll);
+    handleScroll();
+
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("resize", handleScroll);
+      document.body.classList.remove("otr-album-immersive");
+    };
+  }, [isMobileSearchActive, view]);
+
   function closeMobileSearch() {
     setIsMobileSearchActive(false);
     if (document.activeElement instanceof HTMLElement) {
@@ -2551,23 +2864,21 @@ function TimelineContent({ user }: { user: User }) {
       </section>
 
       <div
-        className={`space-y-2 p-3 backdrop-blur md:sticky md:top-0 md:z-30 md:rounded-3xl md:bg-stone-50/95 md:shadow-sm ${
+        className={`otr-timeline-toolbar space-y-2 p-3 backdrop-blur md:sticky md:top-0 md:z-30 md:rounded-3xl md:bg-stone-50/95 md:shadow-sm ${
           isMobileSearchActive
             ? "fixed inset-x-0 top-0 z-[2147482600] rounded-none border-b border-stone-200 bg-white shadow-lg md:sticky"
             : "sticky top-0 z-30 rounded-3xl bg-stone-50/95 shadow-sm"
         }`}
       >
         <div
-          className={`grid-cols-5 gap-1 rounded-2xl border border-stone-200 bg-white p-1 md:grid ${
+          className={`grid-cols-3 gap-1 rounded-2xl border border-stone-200 bg-white p-1 md:grid ${
             isMobileSearchActive ? "hidden" : "grid"
           }`}
         >
           {[
-            ["feed", t("timeline.tab.feed")],
-            ["timeline", t("timeline.tab.timeline")],
             ["album", t("timeline.tab.album")],
+            ["timeline", t("timeline.tab.timeline")],
             ["favorites", t("timeline.tab.favorites")],
-            ["debug", t("timeline.tab.debug")],
           ].map(([mode, label]) => (
             <button
               type="button"
@@ -2681,19 +2992,6 @@ function TimelineContent({ user }: { user: User }) {
         </div>
       ) : null}
 
-      {view === "feed" ? (
-        <UploadFeedView
-          items={filteredItems}
-          tripId={tripId}
-          currentUserId={user.id}
-          onSaveMemory={handleSaveMemory}
-          onDeleteMemory={handleDeleteMemory}
-          onReplyCreated={refreshMemorySnapshot}
-          onEngagementChange={handleMemoryEngagementChange}
-          onOpenPhoto={(item) => setActivePhotoItemId(item.id)}
-        />
-      ) : null}
-
       {view === "timeline" ? (
         <TrueTimelineView
           key={initialTimelineDate ?? "nearest"}
@@ -2728,7 +3026,6 @@ function TimelineContent({ user }: { user: User }) {
           members={members}
           tripId={tripId}
           onFaceConfirmed={handleFaceConfirmed}
-          onOpenDebug={() => setView("debug")}
           onEngagementChange={handleMemoryEngagementChange}
         />
       ) : null}
@@ -2746,7 +3043,10 @@ function TimelineContent({ user }: { user: User }) {
 
       <TimelinePhotoLightbox
         item={activePhotoItem}
+        members={members}
+        tripId={tripId}
         onClose={() => setActivePhotoItemId(null)}
+        onFaceConfirmed={handleFaceConfirmed}
         onEngagementChange={handleMemoryEngagementChange}
       />
     </div>

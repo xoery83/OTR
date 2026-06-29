@@ -18,6 +18,7 @@ type MobileNavIcon =
   | "chat"
   | "people"
   | "timeline"
+  | "album"
   | "highlights"
   | "settings";
 
@@ -129,6 +130,15 @@ function Icon({ name }: { name: MobileNavIcon }) {
           <circle cx="12" cy="17" r="2" />
           <path d="M14 7h5" />
           <path d="M5 17h5" />
+        </svg>
+      );
+    case "album":
+      return (
+        <svg {...common}>
+          <rect x="5" y="5" width="14" height="14" rx="3" />
+          <path d="M8 5.5V4a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v9" />
+          <circle cx="10" cy="10" r="1.4" />
+          <path d="m7.5 16 3.2-3.2 2.1 2.1 1.5-1.5 2.2 2.6" />
         </svg>
       );
     case "highlights":
@@ -331,7 +341,7 @@ export function BottomNav() {
     {
       labelKey: "nav.timeline",
       href: `/trips/${activeTripId}/timeline`,
-      icon: "timeline",
+      icon: "album",
     },
     {
       labelKey: "nav.highlights",

@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import {
+  type CSSProperties,
   type ChangeEvent,
   type FormEvent,
   useCallback,
@@ -53,7 +54,12 @@ import {
   getSignedMemoryImageUrls,
   type MemoryEngagement,
 } from "@/lib/supabase/memories";
-import { requestVoiceTranscription } from "@/lib/supabase/media-assets";
+import {
+  getMediaAssetsByMemoryIds,
+  getPhotoFacesForAssets,
+  requestFaceConfirmation,
+  requestVoiceTranscription,
+} from "@/lib/supabase/media-assets";
 import type {
   JourneyMember,
   ItineraryEventType,
@@ -65,6 +71,8 @@ import type {
   LedgerCategory,
   LedgerEntry,
   MemoryEntry,
+  PhotoAssetWithMemory,
+  PhotoFace,
 } from "@/types";
 import { DayMemoryPreview } from "./DayMemoryPreview";
 
@@ -616,6 +624,38 @@ function money(amount: number, currency: string, locale: Locale) {
     currency,
     maximumFractionDigits: 0,
   }).format(amount);
+}
+
+function getFaceBoxStyle(
+  face: PhotoFace,
+  photo: PhotoAssetWithMemory,
+): CSSProperties | null {
+  const imageWidth = photo.width ?? 0;
+  const imageHeight = photo.height ?? 0;
+  const x = Number(face.boundingBox.x);
+  const y = Number(face.boundingBox.y);
+  const width = Number(face.boundingBox.width);
+  const height = Number(face.boundingBox.height);
+
+  if (
+    !imageWidth ||
+    !imageHeight ||
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    left: `${Math.max(0, (x / imageWidth) * 100)}%`,
+    top: `${Math.max(0, (y / imageHeight) * 100)}%`,
+    width: `${Math.min(100, (width / imageWidth) * 100)}%`,
+    height: `${Math.min(100, (height / imageHeight) * 100)}%`,
+  };
 }
 
 function formatPlannerDayLabel(value: string, locale: Locale) {
@@ -1278,7 +1318,20 @@ export function PlannerDayCard({
   const [imagePreview, setImagePreview] = useState<{
     src: string;
     alt: string;
+    memoryId: string;
   } | null>(null);
+  const [photoAssetsByMemoryId, setPhotoAssetsByMemoryId] = useState<
+    Record<string, PhotoAssetWithMemory>
+  >({});
+  const [facesByAssetId, setFacesByAssetId] = useState<Record<string, PhotoFace[]>>(
+    {},
+  );
+  const [selectedPreviewFace, setSelectedPreviewFace] = useState<{
+    assetId: string;
+    face: PhotoFace;
+  } | null>(null);
+  const [confirmingFaceId, setConfirmingFaceId] = useState<string | null>(null);
+  const [previewFaceError, setPreviewFaceError] = useState<string | null>(null);
   const [preparingAttachmentId, setPreparingAttachmentId] = useState<
     string | null
   >(null);
@@ -1476,6 +1529,47 @@ export function PlannerDayCard({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photoMemoryPathKey]);
+
+  const photoMemoryIdKey = memories
+    .filter((memory) => memory.type === "photo")
+    .map((memory) => memory.id)
+    .sort()
+    .join("|");
+
+  useEffect(() => {
+    const photoMemoryIds = memories
+      .filter((memory) => memory.type === "photo")
+      .map((memory) => memory.id);
+    if (!photoMemoryIds.length) return;
+
+    let isMounted = true;
+
+    getMediaAssetsByMemoryIds(photoMemoryIds)
+      .then(async (assets) => {
+        const faces = await getPhotoFacesForAssets(assets.map((asset) => asset.id));
+        if (!isMounted) return;
+        setPhotoAssetsByMemoryId(
+          assets.reduce<Record<string, PhotoAssetWithMemory>>((groups, asset) => {
+            if (asset.memoryEntryId) {
+              groups[asset.memoryEntryId] = {
+                ...asset,
+                memory: memories.find((memory) => memory.id === asset.memoryEntryId) ?? null,
+                displayUrl: asset.compressedFilePath
+                  ? imageUrlByMemoryPath[asset.compressedFilePath]
+                  : undefined,
+              };
+            }
+            return groups;
+          }, {}),
+        );
+        setFacesByAssetId(faces);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [imageUrlByMemoryPath, memories, photoMemoryIdKey]);
 
   const appendMemoryText = useCallback(
     (itemId: string, nextText: string) => {
@@ -1707,6 +1801,42 @@ export function PlannerDayCard({
       ...current,
       [memoryId]: engagement,
     }));
+  }
+
+  function findMemoryById(memoryId: string) {
+    const inline = Object.values(inlineMemories)
+      .flat()
+      .find((memory) => memory.id === memoryId);
+    const persisted = memories.find((memory) => memory.id === memoryId);
+    return inline || persisted ? memoryWithEngagement(inline ?? persisted!) : null;
+  }
+
+  async function confirmPreviewFace(member: JourneyMember) {
+    if (!selectedPreviewFace) return;
+
+    setConfirmingFaceId(selectedPreviewFace.face.id);
+    setPreviewFaceError(null);
+
+    try {
+      const updatedFace = await requestFaceConfirmation({
+        faceId: selectedPreviewFace.face.id,
+        tripId,
+        journeyMemberId: member.id,
+      });
+      setFacesByAssetId((current) => ({
+        ...current,
+        [selectedPreviewFace.assetId]: (
+          current[selectedPreviewFace.assetId] ?? []
+        ).map((face) => (face.id === updatedFace.id ? updatedFace : face)),
+      }));
+      setSelectedPreviewFace(null);
+    } catch (error) {
+      setPreviewFaceError(
+        getErrorMessage(error, t("timeline.debug.error.confirmFace")),
+      );
+    } finally {
+      setConfirmingFaceId(null);
+    }
   }
 
   function currentMemberAliases() {
@@ -2382,6 +2512,36 @@ export function PlannerDayCard({
     }
   }
 
+  const activePreviewMemory = imagePreview
+    ? findMemoryById(imagePreview.memoryId)
+    : null;
+  const activePreviewPhoto = imagePreview
+    ? photoAssetsByMemoryId[imagePreview.memoryId] ?? null
+    : null;
+  const activePreviewFaces = activePreviewPhoto
+    ? facesByAssetId[activePreviewPhoto.id] ?? []
+    : [];
+  const activePreviewPeople = activePreviewFaces.reduce<
+    { name: string; face: PhotoFace }[]
+  >((people, face) => {
+    if (
+      face.recognizedName &&
+      !people.some((person) => person.name === face.recognizedName)
+    ) {
+      people.push({ name: face.recognizedName, face });
+    }
+    return people;
+  }, []);
+  const selectedPreviewFaceOnActivePhoto =
+    selectedPreviewFace && selectedPreviewFace.assetId === activePreviewPhoto?.id
+      ? selectedPreviewFace
+      : null;
+  const firstUnconfirmedPreviewFace =
+    activePreviewFaces.find((face) => face.recognitionStatus !== "confirmed") ??
+    null;
+  const activePreviewImageSrc =
+    activePreviewPhoto?.displayUrl ?? imagePreview?.src ?? "";
+
   return (
     <article className="overflow-hidden border-y border-stone-200 bg-white shadow-none md:rounded-[28px] md:border md:shadow-sm">
       <header className="bg-[#fff8ec] px-3 py-4 sm:p-5">
@@ -2792,6 +2952,7 @@ export function PlannerDayCard({
                           setImagePreview({
                             src: imageUrlByMemoryPath[memory.mediaUrl!],
                             alt: memory.content || t("planner.memory.imagePreview"),
+                            memoryId: memory.id,
                           })
                         }
                         className="mt-2 block w-full overflow-hidden rounded-xl text-left"
@@ -3181,6 +3342,7 @@ export function PlannerDayCard({
                                       alt:
                                         memory.content ||
                                         t("planner.memory.imagePreview"),
+                                      memoryId: memory.id,
                                     })
                                   }
                                   className="mt-2 block w-full overflow-hidden rounded-xl text-left"
@@ -4765,27 +4927,253 @@ export function PlannerDayCard({
         </div>
       ) : null}
       {imagePreview ? (
-        <div className="fixed inset-0 z-[2147482500] bg-stone-950/90 p-3">
+        <div className="fixed inset-0 z-[2147482500] bg-stone-950/92 p-3 backdrop-blur-sm sm:p-6">
           <button
             type="button"
             aria-label={t("common.close")}
             className="absolute inset-0"
-            onClick={() => setImagePreview(null)}
+            onClick={() => {
+              setImagePreview(null);
+              setSelectedPreviewFace(null);
+              setPreviewFaceError(null);
+            }}
           />
-          <div className="relative z-[1] flex h-full flex-col items-center justify-center gap-3">
-            <button
-              type="button"
-              onClick={() => setImagePreview(null)}
-              className="self-end rounded-full bg-white/10 px-4 py-2 text-sm font-bold text-white backdrop-blur"
-            >
-              {t("common.close")}
-            </button>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={imagePreview.src}
-              alt={imagePreview.alt}
-              className="max-h-[84vh] max-w-full rounded-2xl object-contain shadow-2xl"
-            />
+          <div className="relative z-[1] mx-auto flex h-full max-w-6xl flex-col gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {activePreviewMemory ? (
+                  <MemoryEngagementActions
+                    memory={activePreviewMemory}
+                    onChange={handleMemoryEngagementChange}
+                    compact
+                  />
+                ) : null}
+                {activePreviewPhoto?.providerWebUrl ? (
+                  <a
+                    href={activePreviewPhoto.providerWebUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full bg-white px-3 py-2 text-xs font-black text-stone-950"
+                  >
+                    {t("timeline.album.openDrive")}
+                  </a>
+                ) : null}
+                {firstUnconfirmedPreviewFace && activePreviewPhoto ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedPreviewFace({
+                        assetId: activePreviewPhoto.id,
+                        face: firstUnconfirmedPreviewFace,
+                      })
+                    }
+                    className="rounded-full bg-amber-300 px-3 py-2 text-xs font-black text-stone-950"
+                  >
+                    {t("timeline.album.assignFaces")}
+                  </button>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setImagePreview(null);
+                  setSelectedPreviewFace(null);
+                  setPreviewFaceError(null);
+                }}
+                className="rounded-full bg-white/15 px-4 py-2 text-sm font-bold text-white backdrop-blur"
+              >
+                {t("common.close")}
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black p-2">
+                <div
+                  className="relative max-h-full max-w-full overflow-hidden rounded-2xl"
+                  style={{
+                    aspectRatio:
+                      activePreviewPhoto?.width && activePreviewPhoto.height
+                        ? `${activePreviewPhoto.width} / ${activePreviewPhoto.height}`
+                        : undefined,
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={activePreviewImageSrc}
+                    alt={imagePreview.alt}
+                    className="h-full max-h-[78vh] w-full object-contain shadow-2xl"
+                  />
+                  {activePreviewPhoto && selectedPreviewFaceOnActivePhoto
+                    ? [selectedPreviewFaceOnActivePhoto.face].map((face) => {
+                        const boxStyle = getFaceBoxStyle(face, activePreviewPhoto);
+                        if (!boxStyle) return null;
+
+                        const faceName =
+                          face.recognizedName ||
+                          t("timeline.debug.face", {
+                            number:
+                              activePreviewFaces.findIndex(
+                                (item) => item.id === face.id,
+                              ) + 1,
+                          });
+
+                        return (
+                          <button
+                            type="button"
+                            key={face.id}
+                            onClick={() =>
+                              setSelectedPreviewFace({
+                                assetId: activePreviewPhoto.id,
+                                face,
+                              })
+                            }
+                            aria-label={t("timeline.debug.selectFace", {
+                              name: faceName,
+                            })}
+                            className={`absolute rounded-xl border-2 transition ${
+                              face.recognitionStatus === "confirmed"
+                                ? "border-emerald-300 bg-emerald-300/15"
+                                : "border-amber-300 bg-amber-300/20"
+                            }`}
+                            style={boxStyle}
+                          >
+                            <span
+                              className={`absolute left-1 top-1 max-w-28 truncate rounded-full px-2 py-1 text-[11px] font-black shadow-sm ${
+                                face.recognitionStatus === "confirmed"
+                                  ? "bg-emerald-600 text-white"
+                                  : "bg-white text-stone-950"
+                              }`}
+                            >
+                              {faceName}
+                            </span>
+                          </button>
+                        );
+                      })
+                    : null}
+                </div>
+              </div>
+
+              <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-4">
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
+                      {t("timeline.album.people")}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {activePreviewPeople.length > 0 ? (
+                        activePreviewPeople.map((person) => {
+                          const selected =
+                            selectedPreviewFaceOnActivePhoto?.face.id ===
+                            person.face.id;
+                          return (
+                            <button
+                              type="button"
+                              key={person.face.id}
+                              onClick={() => {
+                                if (!activePreviewPhoto) return;
+                                setSelectedPreviewFace({
+                                  assetId: activePreviewPhoto.id,
+                                  face: person.face,
+                                });
+                              }}
+                              className={`rounded-full px-3 py-1 text-xs font-black ${
+                                selected
+                                  ? "bg-emerald-700 text-white"
+                                  : "bg-emerald-100 text-emerald-900"
+                              }`}
+                            >
+                              {person.name}
+                            </button>
+                          );
+                        })
+                      ) : (
+                        <span className="text-sm font-semibold text-stone-500">
+                          {t("timeline.album.noPeople")}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {activePreviewMemory?.content ? (
+                    <p className="whitespace-pre-wrap rounded-2xl bg-stone-50 p-3 text-sm leading-6 text-stone-700">
+                      {activePreviewMemory.content}
+                    </p>
+                  ) : null}
+
+                  {selectedPreviewFaceOnActivePhoto &&
+                  selectedPreviewFaceOnActivePhoto.face.recognitionStatus !==
+                    "confirmed" ? (
+                    <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-800">
+                            {t("timeline.debug.confirmFace")}
+                          </p>
+                          <h4 className="mt-1 text-lg font-semibold text-stone-950">
+                            {t("timeline.debug.whoIsThis")}
+                          </h4>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedPreviewFace(null);
+                            setPreviewFaceError(null);
+                          }}
+                          className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-black text-stone-700 shadow-sm"
+                        >
+                          {t("common.close")}
+                        </button>
+                      </div>
+                      {previewFaceError ? (
+                        <p className="mt-2 text-xs font-semibold text-red-700">
+                          {previewFaceError}
+                        </p>
+                      ) : null}
+                      <div className="mt-4 grid grid-cols-1 gap-2">
+                        {activeMembers().map((member) => (
+                          <button
+                            type="button"
+                            key={member.id}
+                            onClick={() => confirmPreviewFace(member)}
+                            disabled={
+                              confirmingFaceId === selectedPreviewFace?.face.id
+                            }
+                            className="flex items-center gap-2 rounded-2xl bg-white p-3 text-left text-sm font-bold text-stone-900 shadow-sm disabled:opacity-60"
+                          >
+                            {member.avatarUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={member.avatarUrl}
+                                alt=""
+                                className="size-8 rounded-full object-cover"
+                              />
+                            ) : (
+                              <span className="grid size-8 place-items-center rounded-full bg-emerald-100 text-xs text-emerald-900">
+                                {member.displayName.slice(0, 1).toUpperCase()}
+                              </span>
+                            )}
+                            <span className="truncate">{member.displayName}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : firstUnconfirmedPreviewFace && activePreviewPhoto ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedPreviewFace({
+                          assetId: activePreviewPhoto.id,
+                          face: firstUnconfirmedPreviewFace,
+                        })
+                      }
+                      className="w-full rounded-full bg-amber-300 px-4 py-3 text-sm font-black text-stone-950"
+                    >
+                      {t("timeline.album.assignFaces")}
+                    </button>
+                  ) : null}
+                </div>
+              </aside>
+            </div>
           </div>
         </div>
       ) : null}

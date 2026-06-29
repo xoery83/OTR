@@ -1208,6 +1208,7 @@ function LedgerContent() {
   const [expenseSearchQuery, setExpenseSearchQuery] = useState(
     initialExpenseSearchQuery,
   );
+  const [isMobileSearchActive, setIsMobileSearchActive] = useState(false);
   const [showNeedsReviewOnly, setShowNeedsReviewOnly] = useState(false);
   const [showAuditPanel, setShowAuditPanel] = useState(false);
   const [auditChecks, setAuditChecks] = useState(defaultAuditChecks);
@@ -1359,11 +1360,35 @@ function LedgerContent() {
   );
   const trimmedExpenseSearchQuery = expenseSearchQuery.trim();
 
+  useEffect(() => {
+    if (!isMobileSearchActive) return;
+
+    document.body.classList.add("otr-mobile-search-active");
+
+    return () => {
+      document.body.classList.remove("otr-mobile-search-active");
+    };
+  }, [isMobileSearchActive]);
+
   function updateExpenseSearchQuery(value: string) {
     setExpenseSearchQuery(value);
     setActiveView("expenses");
     if (value.trim()) {
       setExpenseCategoryFilter("all");
+    }
+  }
+
+  function closeMobileSearch() {
+    setIsMobileSearchActive(false);
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+
+  function openMobileSearch() {
+    setActiveView("expenses");
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      setIsMobileSearchActive(true);
     }
   }
 
@@ -1619,9 +1644,15 @@ function LedgerContent() {
   }
 
   return (
-    <div className="space-y-5">
-      <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
-        <div className="space-y-3">
+    <div className={isMobileSearchActive ? "space-y-0 md:space-y-5" : "space-y-5"}>
+      <section
+        className={
+          isMobileSearchActive
+            ? "contents md:block md:rounded-3xl md:border md:border-stone-200 md:bg-white md:p-4 md:shadow-sm"
+            : "rounded-3xl border border-stone-200 bg-white p-4 shadow-sm"
+        }
+      >
+        <div className={isMobileSearchActive ? "hidden md:block md:space-y-3" : "space-y-3"}>
           <h1 className="text-3xl font-black tracking-normal text-stone-950 sm:text-4xl">
             {t("ledger.title")}
           </h1>
@@ -1650,17 +1681,33 @@ function LedgerContent() {
             </button>
           </div>
         </div>
-        {currencyError ? (
+        {currencyError && !isMobileSearchActive ? (
           <p className="mt-3 rounded-2xl bg-red-50 p-3 text-sm font-medium text-red-700">
             {currencyError}
           </p>
         ) : null}
-        <div className="mt-4 flex flex-col gap-2 rounded-2xl bg-stone-50 p-2 sm:flex-row sm:items-center">
+        <div
+          className={`flex gap-2 ${
+            isMobileSearchActive
+              ? "fixed inset-x-0 top-0 z-[2147482600] items-center border-b border-stone-200 bg-white p-3 shadow-lg md:static md:mt-4 md:flex-row md:items-center md:rounded-2xl md:border-0 md:bg-stone-50 md:p-2 md:shadow-none"
+              : "mt-4 flex-col rounded-2xl bg-stone-50 p-2 sm:flex-row sm:items-center"
+          }`}
+        >
           <input
+            type="search"
+            enterKeyHint="search"
+            inputMode="search"
+            autoComplete="off"
             value={expenseSearchQuery}
             onChange={(event) => updateExpenseSearchQuery(event.target.value)}
+            onFocus={openMobileSearch}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                event.currentTarget.blur();
+              }
+            }}
             placeholder={t("ledger.search.placeholder")}
-            className="min-h-11 flex-1 rounded-xl border border-stone-200 bg-white px-4 py-2 text-sm font-semibold text-stone-950 outline-none placeholder:text-stone-400 focus:border-emerald-300"
+            className="min-h-11 min-w-0 flex-1 rounded-xl border border-stone-200 bg-white px-4 py-2 text-base font-semibold text-stone-950 outline-none placeholder:text-stone-400 focus:border-emerald-300 md:text-sm"
           />
           {trimmedExpenseSearchQuery ? (
             <button
@@ -1671,10 +1718,21 @@ function LedgerContent() {
               {t("ledger.search.clear")}
             </button>
           ) : null}
+          <button
+            type="button"
+            onClick={closeMobileSearch}
+            className={`shrink-0 rounded-full px-3 py-2 text-sm font-black text-emerald-800 md:hidden ${
+              isMobileSearchActive ? "inline-flex" : "hidden"
+            }`}
+          >
+            {t("common.cancel")}
+          </button>
         </div>
       </section>
 
-      {showAuditPanel ? (
+      {isMobileSearchActive ? <div className="h-12 md:hidden" /> : null}
+
+      {showAuditPanel && !isMobileSearchActive ? (
         <section className="space-y-3 rounded-3xl border border-amber-100 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -1740,7 +1798,11 @@ function LedgerContent() {
         </section>
       ) : null}
 
-      <section className="-mx-1 overflow-x-auto px-1">
+      <section
+        className={`-mx-1 overflow-x-auto px-1 ${
+          isMobileSearchActive ? "hidden md:block" : ""
+        }`}
+      >
         <div
           className={`grid gap-2 sm:min-w-0 ${
             ledgerData.summary.incompleteCount > 0
@@ -1777,7 +1839,7 @@ function LedgerContent() {
         </div>
       </section>
 
-      {showForm ? (
+      {showForm && !isMobileSearchActive ? (
         <form
           onSubmit={submitExpense}
           className="space-y-4 rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm"
@@ -2082,7 +2144,11 @@ function LedgerContent() {
         </form>
       ) : null}
 
-      <section className="rounded-3xl border border-stone-200 bg-white p-2 shadow-sm">
+      <section
+        className={`rounded-3xl border border-stone-200 bg-white p-2 shadow-sm ${
+          isMobileSearchActive ? "hidden md:block" : ""
+        }`}
+      >
         <div className="grid grid-cols-4 gap-1">
           {[
             ["days", t("ledger.tabs.days")],
@@ -2106,7 +2172,7 @@ function LedgerContent() {
         </div>
       </section>
 
-      {activeView === "days" ? (
+      {activeView === "days" && !isMobileSearchActive ? (
         <DailyLedgerAnalysis
           key={initialLedgerDate ?? "nearest"}
           reports={dailyReports}
@@ -2118,9 +2184,13 @@ function LedgerContent() {
         />
       ) : null}
 
-      {activeView === "expenses" ? (
+      {activeView === "expenses" || isMobileSearchActive ? (
         <section id="ledger-expenses" className="space-y-3 scroll-mt-24">
-          <div className="overflow-x-auto rounded-3xl bg-white p-2 shadow-sm">
+          <div
+            className={`overflow-x-auto rounded-3xl bg-white p-2 shadow-sm ${
+              isMobileSearchActive ? "hidden md:block" : ""
+            }`}
+          >
             <div className="flex min-w-max gap-2">
               {(["all", ...categories] as ExpenseCategoryFilter[]).map((category) => {
                 const active = expenseCategoryFilter === category;
