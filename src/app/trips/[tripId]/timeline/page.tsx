@@ -2553,7 +2553,7 @@ function TimelineContent({ user }: { user: User }) {
       <div
         className={`space-y-2 p-3 backdrop-blur md:sticky md:top-0 md:z-30 md:rounded-3xl md:bg-stone-50/95 md:shadow-sm ${
           isMobileSearchActive
-            ? "fixed inset-x-0 top-0 z-[2147482600] rounded-none border-b border-stone-200 bg-white shadow-lg"
+            ? "sticky top-0 z-[2147482600] -mx-4 rounded-none border-b border-stone-200 bg-white shadow-lg sm:-mx-6"
             : "sticky top-0 z-30 rounded-3xl bg-stone-50/95 shadow-sm"
         }`}
       >
@@ -2651,7 +2651,6 @@ function TimelineContent({ user }: { user: User }) {
           })}
         </div>
       </div>
-      {isMobileSearchActive ? <div className="h-32 md:hidden" /> : null}
 
       {error ? (
         <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-sm font-medium text-red-700">
