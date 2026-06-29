@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
 import { getErrorMessage } from "@/lib/errors";
@@ -47,6 +47,75 @@ const storageProviders: {
     descriptionKey: "journeySettings.storage.onedrive.description",
   },
 ];
+
+function SettingsDisclosure({
+  title,
+  description,
+  toggleOpenLabel,
+  toggleCloseLabel,
+  aside,
+  tone = "default",
+  children,
+}: {
+  title: string;
+  description: string;
+  toggleOpenLabel: string;
+  toggleCloseLabel: string;
+  aside?: ReactNode;
+  tone?: "default" | "danger";
+  children: ReactNode;
+}) {
+  const isDanger = tone === "danger";
+
+  return (
+    <details
+      className={`group rounded-3xl p-5 shadow-sm ${
+        isDanger ? "border border-red-200 bg-red-50" : "bg-white"
+      }`}
+    >
+      <summary className="flex cursor-pointer list-none items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2
+            className={`text-xl font-semibold ${
+              isDanger ? "text-red-900" : "text-stone-950"
+            }`}
+          >
+            {title}
+          </h2>
+          <p
+            className={`mt-1 text-sm leading-6 ${
+              isDanger ? "text-red-800" : "text-stone-600"
+            }`}
+          >
+            {description}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {aside}
+          <span
+            className={`rounded-full px-3 py-2 text-xs font-bold ${
+              isDanger
+                ? "bg-red-100 text-red-800"
+                : "bg-stone-100 text-stone-600"
+            } group-open:hidden`}
+          >
+            {toggleOpenLabel}
+          </span>
+          <span
+            className={`hidden rounded-full px-3 py-2 text-xs font-bold ${
+              isDanger
+                ? "bg-red-100 text-red-800"
+                : "bg-stone-100 text-stone-600"
+            } group-open:inline-flex`}
+          >
+            {toggleCloseLabel}
+          </span>
+        </div>
+      </summary>
+      <div className="mt-5">{children}</div>
+    </details>
+  );
+}
 
 function SettingsContent() {
   const { t } = useI18n();
@@ -352,16 +421,13 @@ function SettingsContent() {
       ) : null}
 
       {canManageJourney ? (
-        <section className="rounded-3xl bg-white p-5 shadow-sm">
-          <div>
-            <h2 className="text-xl font-semibold text-stone-950">
-              {t("journeySettings.nameTitle")}
-            </h2>
-            <p className="mt-1 text-sm leading-6 text-stone-600">
-              {t("journeySettings.nameDescription")}
-            </p>
-          </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
+        <SettingsDisclosure
+          title={t("journeySettings.nameTitle")}
+          description={t("journeySettings.nameDescription")}
+          toggleOpenLabel={t("journeySettings.section.open")}
+          toggleCloseLabel={t("journeySettings.section.close")}
+        >
+          <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
             <input
               value={journeyName}
               onChange={(event) => setJourneyName(event.target.value)}
@@ -379,66 +445,61 @@ function SettingsContent() {
                 : t("journeySettings.saveName")}
             </button>
           </div>
-        </section>
+        </SettingsDisclosure>
       ) : null}
 
       {canManageJourney ? (
-      <section className="overflow-hidden rounded-3xl bg-white shadow-sm">
-        <div
-          className="h-48 bg-cover bg-center"
-          style={{
-            backgroundImage: `url(${
-              coverImageUrl ||
-              trip?.coverImageUrl ||
-              "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80"
-            })`,
-          }}
-        />
-        <div className="space-y-4 p-5">
-          <div>
-            <h2 className="text-xl font-semibold text-stone-950">
-              {t("journeySettings.coverTitle")}
-            </h2>
-            <p className="mt-1 text-sm leading-6 text-stone-600">
-              {t("journeySettings.coverDescription")}
-            </p>
-          </div>
-          <input
-            value={coverImageUrl}
-            onChange={(event) => setCoverImageUrl(event.target.value)}
-            placeholder="https://..."
-            className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-600"
+        <SettingsDisclosure
+          title={t("journeySettings.coverTitle")}
+          description={t("journeySettings.coverDescription")}
+          toggleOpenLabel={t("journeySettings.section.open")}
+          toggleCloseLabel={t("journeySettings.section.close")}
+        >
+          <div
+            className="-mx-5 -mt-5 h-48 bg-cover bg-center"
+            style={{
+              backgroundImage: `url(${
+                coverImageUrl ||
+                trip?.coverImageUrl ||
+                "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80"
+              })`,
+            }}
           />
-          <button
-            type="button"
-            onClick={saveCover}
-            disabled={isSavingCover}
-            className="w-full rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
-          >
-            {isSavingCover ? t("common.saving") : t("journeySettings.saveCover")}
-          </button>
-        </div>
-      </section>
+          <div className="mt-5 space-y-4">
+            <input
+              value={coverImageUrl}
+              onChange={(event) => setCoverImageUrl(event.target.value)}
+              placeholder="https://..."
+              className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-600"
+            />
+            <button
+              type="button"
+              onClick={saveCover}
+              disabled={isSavingCover}
+              className="w-full rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
+            >
+              {isSavingCover
+                ? t("common.saving")
+                : t("journeySettings.saveCover")}
+            </button>
+          </div>
+        </SettingsDisclosure>
       ) : null}
 
-      <section className="rounded-3xl bg-white p-5 shadow-sm">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-xl font-semibold text-stone-950">
-              {t("journeySettings.storageTitle")}
-            </h2>
-            <p className="mt-1 text-sm leading-6 text-stone-600">
-              {t("journeySettings.storageDescription")}
-            </p>
-          </div>
+      <SettingsDisclosure
+        title={t("journeySettings.storageTitle")}
+        description={t("journeySettings.storageDescription")}
+        toggleOpenLabel={t("journeySettings.section.open")}
+        toggleCloseLabel={t("journeySettings.section.close")}
+        aside={
           <span className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600">
             {trip?.photoStorageStatus === "connected"
               ? t("journeySettings.storage.status.connected")
               : t("journeySettings.storage.status.notConnected")}
           </span>
-        </div>
-
-        <div className="mt-5 grid gap-3">
+        }
+      >
+        <div className="grid gap-3">
           {storageProviders.map((provider) => {
             const selected = storageProvider === provider.value;
             return (
@@ -508,40 +569,40 @@ function SettingsContent() {
         ) : null}
 
         {canManageJourney ? (
-        <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={saveStoragePreference}
-            disabled={isSavingStorage}
-            className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
-          >
-            {isSavingStorage
-              ? t("journeySettings.storageSaving")
-              : t("journeySettings.storageSave")}
-          </button>
-          {storageProvider === "google_drive" ? (
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
             <button
               type="button"
-              onClick={startGoogleDriveConnection}
-              disabled={isConnectingStorage}
-              className="rounded-2xl bg-stone-950 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
+              onClick={saveStoragePreference}
+              disabled={isSavingStorage}
+              className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
             >
-              {isConnectingStorage
-                ? t("journeySettings.storage.connecting")
-                : storageConnection?.status === "connected"
-                  ? t("journeySettings.storage.reconnect")
-                  : t("journeySettings.storage.connect")}
+              {isSavingStorage
+                ? t("journeySettings.storageSaving")
+                : t("journeySettings.storageSave")}
             </button>
-          ) : (
-            <button
-              type="button"
-              disabled
-              className="rounded-2xl bg-stone-100 px-5 py-3 text-sm font-bold text-stone-400"
-            >
-              {t("journeySettings.storage.onedriveSoon")}
-            </button>
-          )}
-        </div>
+            {storageProvider === "google_drive" ? (
+              <button
+                type="button"
+                onClick={startGoogleDriveConnection}
+                disabled={isConnectingStorage}
+                className="rounded-2xl bg-stone-950 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
+              >
+                {isConnectingStorage
+                  ? t("journeySettings.storage.connecting")
+                  : storageConnection?.status === "connected"
+                    ? t("journeySettings.storage.reconnect")
+                    : t("journeySettings.storage.connect")}
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled
+                className="rounded-2xl bg-stone-100 px-5 py-3 text-sm font-bold text-stone-400"
+              >
+                {t("journeySettings.storage.onedriveSoon")}
+              </button>
+            )}
+          </div>
         ) : (
           <p className="mt-5 rounded-2xl bg-stone-50 p-4 text-sm leading-6 text-stone-600">
             {t("journeySettings.storage.ownerOnly")}
@@ -551,20 +612,19 @@ function SettingsContent() {
         <p className="mt-4 rounded-2xl bg-amber-50 p-4 text-sm leading-6 text-amber-900">
           {t("journeySettings.storage.nextStep")}
         </p>
-      </section>
+      </SettingsDisclosure>
 
-      <section className="rounded-3xl bg-white p-5 shadow-sm">
+      <SettingsDisclosure
+        title={t("journeySettings.exchangeTitle")}
+        description={t("journeySettings.exchangeDescription", {
+          baseCurrency: ledger?.baseCurrency ?? "base",
+        })}
+        toggleOpenLabel={t("journeySettings.section.open")}
+        toggleCloseLabel={t("journeySettings.section.close")}
+      >
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h2 className="text-xl font-semibold text-stone-950">
-              {t("journeySettings.exchangeTitle")}
-            </h2>
-            <p className="mt-1 text-sm leading-6 text-stone-600">
-              {t("journeySettings.exchangeDescription", {
-                baseCurrency: ledger?.baseCurrency ?? "base",
-              })}
-            </p>
-            <p className="mt-2 text-xs font-bold text-stone-500">
+            <p className="text-xs font-bold text-stone-500">
               {t("journeySettings.exchangeSnapshot")}{" "}
               {ledger?.exchangeRatesSnapshotDate ?? "-"} ·{" "}
               {ledger?.exchangeRatesSnapshotSource ?? "default_at_creation"}
@@ -614,21 +674,19 @@ function SettingsContent() {
             ))
           )}
         </div>
-      </section>
+      </SettingsDisclosure>
 
       {canManageJourney ? (
-        <section className="rounded-3xl border border-red-200 bg-red-50 p-5 shadow-sm">
-          <div>
-            <h2 className="text-xl font-semibold text-red-900">
-              {t("journeySettings.deleteTitle")}
-            </h2>
-            <p className="mt-2 text-sm leading-6 text-red-800">
-              {t("journeySettings.deleteDescription")}
-            </p>
-          </div>
+        <SettingsDisclosure
+          title={t("journeySettings.deleteTitle")}
+          description={t("journeySettings.deleteDescription")}
+          toggleOpenLabel={t("journeySettings.section.open")}
+          toggleCloseLabel={t("journeySettings.section.close")}
+          tone="danger"
+        >
           <label
             htmlFor="delete-journey-confirm"
-            className="mt-4 block text-sm font-bold text-red-900"
+            className="block text-sm font-bold text-red-900"
           >
             {t("journeySettings.deleteConfirmLabel", {
               name: trip?.name ?? "",
@@ -650,7 +708,7 @@ function SettingsContent() {
               ? t("journeySettings.deleting")
               : t("journeySettings.deleteButton")}
           </button>
-        </section>
+        </SettingsDisclosure>
       ) : null}
 
       <Link

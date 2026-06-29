@@ -4,6 +4,7 @@ import type {
   PhotoAssetWithMemory,
   PhotoFace,
 } from "@/types";
+import type { Locale } from "@/lib/i18n/dictionaries";
 import { supabase } from "./client";
 
 export type CreateMediaAssetInput = {
@@ -453,7 +454,11 @@ export async function requestFaceConfirmation(input: {
   return payload.face;
 }
 
-export async function requestPhotoIndexing(assetId: string, tripId: string) {
+export async function requestPhotoIndexing(
+  assetId: string,
+  tripId: string,
+  locale?: Locale,
+) {
   const { data } = await supabase.auth.getSession();
   const accessToken = data.session?.access_token;
 
@@ -467,7 +472,15 @@ export async function requestPhotoIndexing(assetId: string, tripId: string) {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ assetId, tripId }),
+    body: JSON.stringify({
+      assetId,
+      tripId,
+      locale:
+        locale ??
+        (typeof document !== "undefined" && document.documentElement.lang === "zh-CN"
+          ? "zh-CN"
+          : "en"),
+    }),
   });
   const payload = (await response.json()) as {
     asset?: MediaAsset;

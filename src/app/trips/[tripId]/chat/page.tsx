@@ -8,6 +8,7 @@ import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { getErrorMessage } from "@/lib/errors";
 import {
   getJourneyChatMessages,
+  getOlderJourneyChatMessages,
   markJourneyChatRead,
   revokeChatMessage,
   sendImageChatMessage,
@@ -243,11 +244,15 @@ function ChatContent() {
   const listRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const recordingStartedAtRef = useRef<number | null>(null);
+  const hasMarkedReadRef = useRef(false);
   const [trip, setTrip] = useState<Trip | null>(null);
   const [messages, setMessages] = useState<JourneyChatMessage[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [firstUnreadMessageId, setFirstUnreadMessageId] = useState<string | null>(null);
+  const [hasMoreBefore, setHasMoreBefore] = useState(false);
   const [text, setText] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voiceMode, setVoiceMode] = useState(false);
@@ -261,7 +266,7 @@ function ChatContent() {
     });
   }, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (mode: "initial" | "refresh" = "refresh") => {
     const [tripData, bundle] = await Promise.all([
       getTrip(tripId),
       getJourneyChatMessages(tripId),
@@ -269,10 +274,82 @@ function ChatContent() {
     setTrip(tripData);
     setMessages(bundle.messages);
     setCurrentUserId(bundle.currentUserId);
-    await markJourneyChatRead(tripId).catch(() => null);
+    setFirstUnreadMessageId(bundle.firstUnreadMessageId);
+    setHasMoreBefore(bundle.hasMoreBefore);
+    if (!hasMarkedReadRef.current) {
+      hasMarkedReadRef.current = true;
+      await markJourneyChatRead(tripId).catch(() => null);
+    }
     window.dispatchEvent(new CustomEvent("otr:chat-changed"));
-    scrollToBottom();
+    if (mode === "initial" || isNearBottom()) {
+      scrollToBottom();
+    }
   }, [scrollToBottom, tripId]);
+
+  function isNearBottom() {
+    const list = listRef.current;
+    if (!list) return true;
+    return list.scrollHeight - list.scrollTop - list.clientHeight < 180;
+  }
+
+  const loadOlderMessages = useCallback(async () => {
+    const first = messages[0];
+    if (!first || !hasMoreBefore || isLoadingOlder) return;
+    const list = listRef.current;
+    const previousHeight = list?.scrollHeight ?? 0;
+    setIsLoadingOlder(true);
+    try {
+      const bundle = await getOlderJourneyChatMessages({
+        tripId,
+        before: first.createdAt,
+      });
+      setMessages((current) => {
+        const existingIds = new Set(current.map((message) => message.id));
+        return [
+          ...bundle.messages.filter((message) => !existingIds.has(message.id)),
+          ...current,
+        ];
+      });
+      setHasMoreBefore(bundle.hasMoreBefore);
+      window.requestAnimationFrame(() => {
+        if (list) list.scrollTop = list.scrollHeight - previousHeight;
+      });
+    } catch (olderError) {
+      setError(getErrorMessage(olderError, "加载更早消息失败。"));
+    } finally {
+      setIsLoadingOlder(false);
+    }
+  }, [hasMoreBefore, isLoadingOlder, messages, tripId]);
+
+  const loadOlderMessagesUntil = useCallback(
+    async (targetMessageId: string) => {
+      let workingMessages = messages;
+      let workingHasMore = hasMoreBefore;
+
+      while (
+        workingHasMore &&
+        !workingMessages.some((message) => message.id === targetMessageId)
+      ) {
+        const first = workingMessages[0];
+        if (!first) break;
+        const bundle = await getOlderJourneyChatMessages({
+          tripId,
+          before: first.createdAt,
+        });
+        const existingIds = new Set(workingMessages.map((message) => message.id));
+        workingMessages = [
+          ...bundle.messages.filter((message) => !existingIds.has(message.id)),
+          ...workingMessages,
+        ];
+        workingHasMore = bundle.hasMoreBefore;
+      }
+
+      setMessages(workingMessages);
+      setHasMoreBefore(workingHasMore);
+      return workingMessages.some((message) => message.id === targetMessageId);
+    },
+    [hasMoreBefore, messages, tripId],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -281,7 +358,7 @@ function ChatContent() {
       setIsLoading(true);
       setError(null);
       try {
-        await load();
+        await load("initial");
       } catch (loadError) {
         if (!cancelled) setError(getErrorMessage(loadError, "群聊加载失败。"));
       } finally {
@@ -290,7 +367,7 @@ function ChatContent() {
     }
 
     void bootstrap();
-    const interval = window.setInterval(() => void load().catch(() => null), 20_000);
+    const interval = window.setInterval(() => void load("refresh").catch(() => null), 20_000);
     const channel = supabase
       .channel(`journey-chat-${tripId}`)
       .on(
@@ -302,7 +379,7 @@ function ChatContent() {
           filter: `trip_id=eq.${tripId}`,
         },
         () => {
-          void load().catch(() => null);
+          void load("refresh").catch(() => null);
         },
       )
       .subscribe();
@@ -318,6 +395,27 @@ function ChatContent() {
     void markJourneyChatRead(tripId).catch(() => null);
     window.dispatchEvent(new CustomEvent("otr:chat-changed"));
   }, [messages.length, tripId]);
+
+  useEffect(() => {
+    return () => {
+      document.body.classList.remove("otr-chat-keyboard-active");
+    };
+  }, []);
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const currentList = list;
+
+    function handleScroll() {
+      if (currentList.scrollTop < 96) {
+        void loadOlderMessages();
+      }
+    }
+
+    currentList.addEventListener("scroll", handleScroll, { passive: true });
+    return () => currentList.removeEventListener("scroll", handleScroll);
+  }, [loadOlderMessages]);
 
   const recorder = useVoiceRecorder({
     maxDurationMs: 90_000,
@@ -412,6 +510,23 @@ function ChatContent() {
     recorder.stop();
   }
 
+  async function jumpToFirstUnread() {
+    if (!firstUnreadMessageId) return;
+    if (!document.getElementById(`chat-message-${firstUnreadMessageId}`)) {
+      setIsLoadingOlder(true);
+      await loadOlderMessagesUntil(firstUnreadMessageId).catch((jumpError) => {
+        setError(getErrorMessage(jumpError, "定位新消息失败。"));
+      });
+      setIsLoadingOlder(false);
+    }
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById(`chat-message-${firstUnreadMessageId}`)
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+    setFirstUnreadMessageId(null);
+  }
+
   const content = useMemo(() => {
     if (isLoading) {
       return (
@@ -431,11 +546,27 @@ function ChatContent() {
 
     return (
       <div className="space-y-3 px-3 py-4">
+        {hasMoreBefore ? (
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={() => void loadOlderMessages()}
+              disabled={isLoadingOlder}
+              className="rounded-full bg-white/85 px-3 py-1 text-xs font-black text-emerald-700 shadow-sm"
+            >
+              {isLoadingOlder ? "加载中..." : "查看更早消息"}
+            </button>
+          </div>
+        ) : null}
         {messages.map((message, index) => {
           const previous = index > 0 ? messages[index - 1] : null;
           const mine = Boolean(currentUserId && message.userId === currentUserId);
           return (
-            <div key={message.id} className="space-y-2">
+            <div
+              key={message.id}
+              id={`chat-message-${message.id}`}
+              className="space-y-2 scroll-mt-24"
+            >
               {shouldShowTime(previous, message) ? (
                 <div className="mx-auto w-fit rounded-md bg-white/70 px-2 py-0.5 text-xs font-bold text-stone-500">
                   {formatMessageTime(message.createdAt)}
@@ -452,11 +583,18 @@ function ChatContent() {
         })}
       </div>
     );
-  }, [currentUserId, isLoading, messages]);
+  }, [
+    currentUserId,
+    hasMoreBefore,
+    isLoading,
+    isLoadingOlder,
+    loadOlderMessages,
+    messages,
+  ]);
 
   return (
     <div className="fixed inset-0 z-20 flex flex-col bg-[#dcefe9] md:static md:h-[calc(100vh-3rem)] md:min-h-[640px] md:overflow-hidden md:rounded-none">
-      <div className="shrink-0 border-b border-white/40 bg-white/90 px-4 pb-3 pt-4 shadow-sm backdrop-blur">
+      <div className="hidden shrink-0 border-b border-white/40 bg-white/90 px-4 pb-3 pt-4 shadow-sm backdrop-blur md:block">
         <div className="mx-auto flex max-w-3xl items-center justify-between">
           <div>
             <div className="text-xs font-black text-emerald-700">Journey 群聊</div>
@@ -476,10 +614,20 @@ function ChatContent() {
 
       <div
         ref={listRef}
-        className="min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(0,105,82,0.24),rgba(0,105,82,0.12)),linear-gradient(135deg,#b9e5d8,#e8f5ef_48%,#bfded5)] pb-[176px] pt-2 md:pb-4"
+        className="min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(0,105,82,0.24),rgba(0,105,82,0.12)),linear-gradient(135deg,#b9e5d8,#e8f5ef_48%,#bfded5)] pb-[176px] pt-20 md:pb-4 md:pt-2"
       >
         {content}
       </div>
+
+      {firstUnreadMessageId ? (
+        <button
+          type="button"
+          onClick={() => void jumpToFirstUnread()}
+          className="fixed right-4 top-24 z-40 rounded-full bg-white/95 px-4 py-2 text-sm font-black text-emerald-700 shadow-lg md:absolute md:right-6 md:top-20"
+        >
+          ↑ 新消息
+        </button>
+      ) : null}
 
       {error ? (
         <div className="fixed inset-x-4 bottom-[172px] z-40 rounded-2xl bg-red-50 px-4 py-3 text-sm font-bold text-red-700 shadow-xl md:absolute md:bottom-20 md:left-1/2 md:right-auto md:w-full md:max-w-xl md:-translate-x-1/2">
@@ -516,7 +664,7 @@ function ChatContent() {
           <button
             type="button"
             onClick={() => setVoiceMode((current) => !current)}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-2 border-stone-800 bg-white text-lg font-black"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-2xl font-black text-emerald-800 shadow-sm transition active:scale-95"
             aria-label="切换语音"
           >
             {voiceMode ? "⌨" : "◉"}
@@ -529,7 +677,7 @@ function ChatContent() {
               onPointerUp={stopHoldToTalk}
               onPointerCancel={stopHoldToTalk}
               disabled={isSending}
-              className="h-11 flex-1 rounded-xl bg-white text-base font-black text-stone-900 shadow-sm active:bg-stone-100"
+              className="h-11 flex-1 rounded-2xl bg-white text-base font-black text-stone-900 shadow-sm active:bg-emerald-50"
             >
               按住 说话
             </button>
@@ -545,6 +693,8 @@ function ChatContent() {
               }}
               rows={1}
               placeholder="输入消息..."
+              onFocus={() => document.body.classList.add("otr-chat-keyboard-active")}
+              onBlur={() => document.body.classList.remove("otr-chat-keyboard-active")}
               className="max-h-28 min-h-11 flex-1 resize-none rounded-xl border border-white bg-white px-3 py-2 text-base font-semibold leading-7 text-stone-950 shadow-sm outline-none focus:border-emerald-400"
             />
           )}
@@ -552,7 +702,7 @@ function ChatContent() {
           <button
             type="button"
             onClick={() => setShowEmoji((current) => !current)}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-2 border-stone-800 bg-white text-xl font-black"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-2xl font-black text-emerald-800 shadow-sm transition active:scale-95"
             aria-label="表情"
           >
             ☺
@@ -560,7 +710,7 @@ function ChatContent() {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-2 border-stone-800 bg-white text-2xl font-black"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-3xl font-black text-emerald-800 shadow-sm transition active:scale-95"
             aria-label="添加图片"
           >
             +

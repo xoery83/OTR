@@ -49,6 +49,7 @@ class IndexRequest(BaseModel):
     journey_id: str
     image_url: str = Field(min_length=1)
     metadata: ImageMetadata
+    language: str = "en"
     force: bool = False
 
 
@@ -202,21 +203,47 @@ def dominant_colors(image: np.ndarray, count: int = 5) -> list[str]:
     ]
 
 
-def local_caption(metadata: ImageMetadata, faces: list[dict[str, Any]], brightness: float) -> tuple[str, str | None, list[str]]:
+def normalize_language(language: str | None) -> str:
+    return "zh-CN" if language == "zh-CN" else "en"
+
+
+def language_instruction(language: str) -> str:
+    if normalize_language(language) == "zh-CN":
+        return (
+            "Return Simplified Chinese strings for caption, scene, activity, objects, "
+            "location_hint, and quality_notes. Keep OCR text in the original visible language."
+        )
+    return (
+        "Return English strings for caption, scene, activity, objects, location_hint, "
+        "and quality_notes. Keep OCR text in the original visible language."
+    )
+
+
+def local_caption(
+    metadata: ImageMetadata,
+    faces: list[dict[str, Any]],
+    brightness: float,
+    language: str,
+) -> tuple[str, str | None, list[str]]:
     objects: list[str] = []
     if faces:
-        objects.append("person")
+        objects.append("人物" if normalize_language(language) == "zh-CN" else "person")
 
     if metadata.gps_latitude is not None and metadata.gps_longitude is not None:
-        scene = "travel_location"
+        scene = "旅行地点" if normalize_language(language) == "zh-CN" else "travel_location"
     elif metadata.width and metadata.height and metadata.width > metadata.height:
-        scene = "landscape_or_wide_photo"
+        scene = "风景或宽幅照片" if normalize_language(language) == "zh-CN" else "landscape_or_wide_photo"
     else:
-        scene = "photo"
+        scene = "照片" if normalize_language(language) == "zh-CN" else "photo"
 
-    lighting = "bright" if brightness >= 0.62 else "dark" if brightness <= 0.28 else "normal light"
-    people_phrase = f" with {len(faces)} detected face{'s' if len(faces) != 1 else ''}" if faces else ""
-    caption = f"A {lighting} travel photo{people_phrase}."
+    if normalize_language(language) == "zh-CN":
+        lighting = "明亮" if brightness >= 0.62 else "偏暗" if brightness <= 0.28 else "正常光线"
+        people_phrase = f"，检测到 {len(faces)} 张人脸" if faces else ""
+        caption = f"一张{lighting}的旅行照片{people_phrase}。"
+    else:
+        lighting = "bright" if brightness >= 0.62 else "dark" if brightness <= 0.28 else "normal light"
+        people_phrase = f" with {len(faces)} detected face{'s' if len(faces) != 1 else ''}" if faces else ""
+        caption = f"A {lighting} travel photo{people_phrase}."
     return caption, scene, objects
 
 
@@ -277,17 +304,17 @@ def chat_endpoint(base_url: str) -> str:
 
 
 def should_escalate_to_vision(objects: list[str], scene: str | None, quality: float) -> tuple[bool, str | None]:
-    semantic_objects = {item for item in objects if item not in {"person", "photo"}}
+    semantic_objects = {item for item in objects if item not in {"person", "photo", "人物", "照片"}}
     if quality < 0.35:
         return True, "low_quality_local_index"
-    if scene in {None, "photo", "landscape_or_wide_photo"} and not semantic_objects:
+    if scene in {None, "photo", "landscape_or_wide_photo", "照片", "风景或宽幅照片"} and not semantic_objects:
         return True, "sparse_local_index"
     if not semantic_objects:
         return True, "missing_semantic_objects"
     return False, None
 
 
-def vision_index(image_url: str) -> dict[str, Any] | None:
+def vision_index(image_url: str, language: str) -> dict[str, Any] | None:
     if not VISION_ESCALATION_ENABLED:
         return None
 
@@ -360,7 +387,8 @@ def vision_index(image_url: str) -> dict[str, Any] | None:
                         "content": (
                             "You index travel photos for OTR. Describe visible content for search. "
                             "Do not identify people by name. Prefer concrete nouns, scene, food, activity, "
-                            "place type, and visible text. Return compact valid JSON."
+                            "place type, and visible text. "
+                            f"{language_instruction(language)} Return compact valid JSON."
                         ),
                     },
                     {
@@ -373,7 +401,8 @@ def vision_index(image_url: str) -> dict[str, Any] | None:
                                     "If there is food, restaurant context, documents, transport, scenery, "
                                     "shopping, hotel, airport, hiking, or group activity, include that explicitly. "
                                     "Return valid JSON with caption, scene, activity, objects, ocr_text, "
-                                    "location_hint, and quality_notes."
+                                    "location_hint, and quality_notes. "
+                                    f"{language_instruction(language)}"
                                 ),
                             },
                             {
@@ -442,6 +471,7 @@ def deepseek_text_rewrite(
     people_count: int,
     quality: float,
     metadata: ImageMetadata,
+    language: str,
 ) -> dict[str, Any] | None:
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
@@ -485,6 +515,7 @@ def deepseek_text_rewrite(
                             "You rewrite OTR travel image indexes from supplied facts only. "
                             "Do not invent visual details, locations, or people's names. "
                             "Remove generic phrasing such as 'normal travel photo'. "
+                            f"{language_instruction(language)} "
                             "Return compact JSON with caption, scene, objects, search_tags, "
                             "ocr_text, and quality_notes."
                         ),
@@ -525,6 +556,7 @@ def rewrite_text_index(
     people_count: int,
     quality: float,
     metadata: ImageMetadata,
+    language: str,
 ) -> dict[str, Any] | None:
     if not TEXT_REWRITE_ENABLED:
         return None
@@ -538,6 +570,7 @@ def rewrite_text_index(
         people_count=people_count,
         quality=quality,
         metadata=metadata,
+        language=language,
     )
 
 
@@ -601,6 +634,7 @@ def save_index(request: IndexRequest, result: IndexResponse, authorization: str 
                 "imageHash": result.image_hash,
                 "dominantColors": result.dominant_colors,
                 "metadata": request.metadata.model_dump(mode="json"),
+                "language": normalize_language(request.language),
             },
             "ocr_text": result.ocr_text,
             "scene_tags": [tag for tag in [result.scene, *result.objects] if tag],
@@ -653,12 +687,13 @@ def index_image(
 ) -> IndexResponse:
     try:
         _, cv_image, pil_image = fetch_image(payload.image_url)
+        language = normalize_language(payload.language)
         image_hash = str(imagehash.phash(pil_image))
         blur = blur_score(cv_image)
         brightness = brightness_score(cv_image)
         colors = dominant_colors(cv_image)
         people = face_service_detect(payload.image_url)
-        caption, scene, objects = local_caption(payload.metadata, people, brightness)
+        caption, scene, objects = local_caption(payload.metadata, people, brightness, language)
         quality = quality_score(blur, brightness)
         should_escalate, review_reason = should_escalate_to_vision(objects, scene, quality)
         model_used = "local"
@@ -667,7 +702,7 @@ def index_image(
         needs_review = should_escalate
 
         if should_escalate:
-            vision = vision_index(payload.image_url)
+            vision = vision_index(payload.image_url, language)
             if vision:
                 vision_objects = clean_tags(vision.get("objects", []))
                 caption = stringify_model_value(vision.get("caption")) or caption
@@ -692,6 +727,7 @@ def index_image(
             people_count=len(people),
             quality=quality,
             metadata=payload.metadata,
+            language=language,
         )
         if rewrite:
             caption = stringify_model_value(rewrite.get("caption")) or caption

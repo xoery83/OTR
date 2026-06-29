@@ -377,7 +377,7 @@ function PlannerContent() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 overflow-x-hidden">
       <section className="rounded-3xl border border-stone-200 bg-white px-4 py-3 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
@@ -520,7 +520,7 @@ function PlannerContent() {
       ) : null}
 
       {planner.days.length > 0 ? (
-        <section className="sticky top-16 z-10 -mx-5 border-y border-stone-200 bg-[#f7f3ea]/95 px-5 py-1.5 backdrop-blur md:top-0">
+        <section className="sticky top-16 z-10 border-y border-stone-200 bg-[#f7f3ea]/95 py-1.5 backdrop-blur md:top-0">
           <div ref={dateStripRef} className="flex gap-2 overflow-x-auto">
             {planner.days.map((plannerDay) => {
               const selected = plannerDay.day.id === selectedDay?.day.id;
@@ -573,7 +573,7 @@ function PlannerContent() {
       ) : null}
 
       {selectedDay ? (
-        <section ref={selectedDayCardRef} className="-mx-5 md:mx-0">
+        <section ref={selectedDayCardRef}>
           <PlannerDayCard
             tripId={tripId}
             plannerDay={selectedDay}

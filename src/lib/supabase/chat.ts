@@ -87,6 +87,9 @@ type MediaRow = {
 type ChatBundle = {
   messages: JourneyChatMessage[];
   currentUserId: string | null;
+  lastReadAt: string | null;
+  firstUnreadMessageId: string | null;
+  hasMoreBefore: boolean;
 };
 
 function mapMessage(row: ChatMessageRow): JourneyChatMessage {
@@ -316,23 +319,98 @@ export async function syncTimelineMemoriesToChat(tripId: string) {
   if (error) throw error;
 }
 
-export async function getJourneyChatMessages(tripId: string): Promise<ChatBundle> {
+export async function getJourneyChatMessages(
+  tripId: string,
+  options?: {
+    limit?: number;
+    before?: string | null;
+  },
+): Promise<ChatBundle> {
   await syncTimelineMemoriesToChat(tripId);
 
   const { data: userData } = await supabase.auth.getUser();
   const currentUserId = userData.user?.id ?? null;
-  const { data, error } = await supabase
+  const limit = Math.min(Math.max(options?.limit ?? 30, 1), 80);
+  const readState = currentUserId
+    ? await getJourneyChatReadState(tripId, currentUserId)
+    : null;
+
+  let query = supabase
     .from("journey_chat_messages")
     .select("*")
     .eq("trip_id", tripId)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: false })
+    .limit(limit + 1);
+
+  if (options?.before) {
+    query = query.lt("created_at", options.before);
+  }
+
+  const { data, error } = await query;
 
   if (error) throw error;
+  const rows = (data ?? []) as ChatMessageRow[];
+  const hasMoreBefore = rows.length > limit;
+  const selectedRows = rows.slice(0, limit).reverse();
+  const messages = await enrichMessages(selectedRows.map(mapMessage));
+  const lastReadAt = readState?.last_read_at ?? null;
+  const firstUnreadMessageId =
+    !options?.before && lastReadAt && currentUserId
+      ? await getFirstUnreadChatMessageId({
+          tripId,
+          userId: currentUserId,
+          lastReadAt,
+        })
+      : null;
 
   return {
-    messages: await enrichMessages(((data ?? []) as ChatMessageRow[]).map(mapMessage)),
+    messages,
     currentUserId,
+    lastReadAt,
+    firstUnreadMessageId,
+    hasMoreBefore,
   };
+}
+
+async function getFirstUnreadChatMessageId(input: {
+  tripId: string;
+  userId: string;
+  lastReadAt: string;
+}) {
+  const { data } = await supabase
+    .from("journey_chat_messages")
+    .select("id")
+    .eq("trip_id", input.tripId)
+    .is("deleted_at", null)
+    .gt("created_at", input.lastReadAt)
+    .neq("user_id", input.userId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  return (data as { id?: string } | null)?.id ?? null;
+}
+
+export async function getOlderJourneyChatMessages(input: {
+  tripId: string;
+  before: string;
+  limit?: number;
+}) {
+  return getJourneyChatMessages(input.tripId, {
+    before: input.before,
+    limit: input.limit ?? 30,
+  });
+}
+
+async function getJourneyChatReadState(tripId: string, userId: string) {
+  const { data } = await supabase
+    .from("journey_chat_read_states")
+    .select("last_read_at")
+    .eq("trip_id", tripId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  return data as { last_read_at: string | null } | null;
 }
 
 export async function sendTextChatMessage(tripId: string, text: string) {
@@ -412,7 +490,7 @@ export async function sendVoiceChatMessage(
 
   const timestamp = Date.now();
   const safeName = makeSafeFileName(file.name || "voice.webm");
-  const path = `${tripId}/${user.id}/voice/${timestamp}-${crypto.randomUUID()}-${safeName}`;
+  const path = `${tripId}/${user.id}/compressed/voice-${timestamp}-${crypto.randomUUID()}-${safeName}`;
   const { error: uploadError } = await supabase.storage
     .from("trip-media")
     .upload(path, file, {

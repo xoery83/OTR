@@ -14,7 +14,7 @@ import type {
   BackgroundJobBatch,
   BackgroundJobStatus,
 } from "@/lib/background-jobs/types";
-import type { TranslationKey } from "@/lib/i18n/dictionaries";
+import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
 import {
   requestFaceDetection,
   requestPhotoIndexing,
@@ -29,6 +29,11 @@ const FAILED_WARNING_AUTO_HIDE_MS = 18000;
 function payloadString(job: BackgroundJob, key: string) {
   const value = job.payload[key];
   return typeof value === "string" ? value : "";
+}
+
+function payloadLocale(job: BackgroundJob): Locale | undefined {
+  const value = payloadString(job, "locale");
+  return value === "zh-CN" || value === "en" ? value : undefined;
 }
 
 function isActiveStatus(status: BackgroundJobStatus) {
@@ -105,7 +110,7 @@ function isRuntimeOnlyActivity(activity: DismissibleActivity) {
   return activity.id.startsWith("runtime-");
 }
 
-async function runJob(job: BackgroundJob, t: Translate) {
+async function runJob(job: BackgroundJob, t: Translate, locale: Locale) {
   if (isPlaceholderProcessingJob(job)) return;
 
   const tripId = payloadString(job, "tripId");
@@ -120,7 +125,11 @@ async function runJob(job: BackgroundJob, t: Translate) {
       progress: 20,
       currentStep: t("activity.job.imageIndexing"),
     });
-    const asset = await requestPhotoIndexing(mediaAssetId, tripId);
+    const asset = await requestPhotoIndexing(
+      mediaAssetId,
+      tripId,
+      payloadLocale(job) ?? locale,
+    );
     await updateBackgroundJob(job.id, {
       status: "completed",
       progress: 100,
@@ -164,7 +173,7 @@ async function runJob(job: BackgroundJob, t: Translate) {
 }
 
 export function ActivityCenter() {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const [jobs, setJobs] = useState<BackgroundJob[]>([]);
   const [batches, setBatches] = useState<BackgroundJobBatch[]>([]);
   const [isOpen, setIsOpen] = useState(false);
@@ -390,7 +399,7 @@ export function ActivityCenter() {
     if (!next) return;
 
     runningJobIds.current.add(next.id);
-    runJob(next, t)
+    runJob(next, t, locale)
       .catch(async (error) => {
         await updateBackgroundJob(next.id, {
           status: "failed",
@@ -404,7 +413,7 @@ export function ActivityCenter() {
         runningJobIds.current.delete(next.id);
         void refreshJobs();
       });
-  }, [jobs, refreshJobs, t]);
+  }, [jobs, locale, refreshJobs, t]);
 
   useEffect(() => {
     if (isOpen || notice || activeCount > 0 || visibleFailedCount === 0) return;

@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase/client";
+import type { Locale } from "@/lib/i18n/dictionaries";
 import type {
   BackgroundJobBatch,
   BackgroundJob,
@@ -199,10 +200,17 @@ export async function enqueueMediaProcessingJobs(input: {
   title?: string;
   placeholder?: boolean;
   currentStep?: string | null;
+  locale?: Locale;
 }) {
+  const locale =
+    input.locale ??
+    (typeof document !== "undefined" && document.documentElement.lang === "zh-CN"
+      ? "zh-CN"
+      : "en");
   const payload = {
     tripId: input.tripId,
     mediaAssetId: input.mediaAssetId,
+    locale,
     ...(input.placeholder
       ? {
           placeholder: true,

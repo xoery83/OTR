@@ -134,6 +134,8 @@ const en = {
     "Manage the cover image, photo storage, exchange rates, and core journey configuration.",
   "journeySettings.loading": "Loading settings...",
   "journeySettings.error.load": "Could not load settings.",
+  "journeySettings.section.open": "Open",
+  "journeySettings.section.close": "Close",
   "journeySettings.nameUnchanged": "Journey name has not changed.",
   "journeySettings.coverTitle": "Cover image",
   "journeySettings.coverDescription":
@@ -842,6 +844,8 @@ const zhCN: Partial<Record<keyof typeof en, string>> = {
   "journeySettings.description": "管理封面、照片存储、汇率和这个旅程的核心配置。",
   "journeySettings.loading": "正在加载设置...",
   "journeySettings.error.load": "无法加载设置。",
+  "journeySettings.section.open": "展开",
+  "journeySettings.section.close": "收起",
   "journeySettings.nameUnchanged": "旅程名称没有变化。",
   "journeySettings.coverTitle": "封面图片",
   "journeySettings.coverDescription": "目前可以先使用图片 URL；后续可以支持上传和从旅程照片中选择。",

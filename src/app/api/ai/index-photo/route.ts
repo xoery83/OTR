@@ -1,11 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { analyzeImageForDebug } from "@/lib/ai/vision/router";
+import type { Locale } from "@/lib/i18n/dictionaries";
 import type { MediaAsset } from "@/types";
 
 type IndexPhotoRequest = {
   assetId?: string;
   tripId?: string;
+  locale?: string;
 };
 
 type MediaAssetRow = {
@@ -157,10 +159,21 @@ function getAiServerConfig() {
   return { aiServerUrl, aiServerSecret };
 }
 
+function normalizeIndexLanguage(locale: string | null | undefined): Locale {
+  return locale === "zh-CN" ? "zh-CN" : "en";
+}
+
+function indexLanguageInstruction(locale: Locale) {
+  return locale === "zh-CN"
+    ? "Return Simplified Chinese captions, scenes, objects, and search tags. Keep OCR text in the original visible language."
+    : "Return English captions, scenes, objects, and search tags. Keep OCR text in the original visible language.";
+}
+
 async function callImageIndexService(input: {
   asset: MediaAssetRow;
   imageUrl: string;
   authorization: string;
+  locale: Locale;
 }): Promise<PhotoIndexResult> {
   const { aiServerUrl, aiServerSecret } = getAiServerConfig();
   const response = await fetch(`${aiServerUrl}/image-index/index`, {
@@ -174,6 +187,7 @@ async function callImageIndexService(input: {
       media_asset_id: input.asset.id,
       journey_id: input.asset.trip_id,
       image_url: input.imageUrl,
+      language: input.locale,
       metadata: {
         file_id: input.asset.provider_file_id ?? input.asset.id,
         journey_id: input.asset.trip_id,
@@ -215,12 +229,13 @@ async function indexWithVisionFallback(input: {
   supabase: ReturnType<typeof getSupabaseForRequest>;
   asset: MediaAssetRow;
   imageUrl: string;
+  locale: Locale;
 }) {
   const analysis = await analyzeImageForDebug({
     imageUrl: input.imageUrl,
     mode: "vision",
     prompt:
-      "Analyze this travel photo for OTR image indexing. Prefer concrete visible details for search and album grouping.",
+      `Analyze this travel photo for OTR image indexing. Prefer concrete visible details for search and album grouping. ${indexLanguageInstruction(input.locale)}`,
   });
   const sceneTags = [
     ...analysis.tags,
@@ -243,6 +258,7 @@ async function indexWithVisionFallback(input: {
     model: analysis.model,
     modelUsed: `${analysis.provider}_vision`,
     confidence: analysis.confidence,
+    language: input.locale,
     rawModelResponse: analysis.rawResponse,
   };
 
@@ -288,6 +304,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as IndexPhotoRequest;
     assetId = body.assetId ?? null;
     tripId = body.tripId ?? null;
+    const locale = normalizeIndexLanguage(body.locale);
 
     if (!assetId || !tripId) {
       return jsonError("assetId and tripId are required.", 400);
@@ -337,6 +354,7 @@ export async function POST(request: Request) {
         asset,
         imageUrl: signedData.signedUrl,
         authorization: request.headers.get("authorization") ?? "",
+        locale,
       });
       const { data: currentMetadataRow } = await supabase
         .from("media_assets")
@@ -359,6 +377,7 @@ export async function POST(request: Request) {
             objects: result.objects,
             needsLlmReview: result.needs_llm_review,
             llmReviewReason: result.llm_review_reason,
+            language: locale,
           },
         })
         .eq("id", asset.id)
@@ -368,6 +387,7 @@ export async function POST(request: Request) {
         supabase,
         asset,
         imageUrl: signedData.signedUrl,
+        locale,
       });
     }
     const { data: updatedRow, error: updateError } = await supabase

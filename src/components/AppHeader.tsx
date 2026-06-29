@@ -27,6 +27,7 @@ export function AppHeader() {
   const { openCapture } = useCaptureModal();
   const tripId = getActiveTripId(pathname);
   const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
+  const isChatPage = Boolean(pathname.match(/^\/trips\/[^/]+\/chat$/));
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isJourneyMenuOpen, setIsJourneyMenuOpen] = useState(false);
   const [journeyName, setJourneyName] = useState<string | null>(null);
@@ -119,7 +120,7 @@ export function AppHeader() {
   }
 
   const journeyHeaderStyle =
-    !isMapPage && tripId && journeyCoverImageUrl
+    !isMapPage && !isChatPage && tripId && journeyCoverImageUrl
       ? {
           backgroundImage: [
             "linear-gradient(90deg, rgba(255, 253, 248, 0.96) 0%, rgba(255, 253, 248, 0.7) 22%, rgba(255, 253, 248, 0.72) 78%, rgba(255, 253, 248, 0.97) 100%)",
@@ -139,6 +140,8 @@ export function AppHeader() {
         className={
           isMapPage
             ? "fixed left-3 top-3 z-[650] md:hidden"
+            : isChatPage
+              ? "fixed inset-x-0 top-0 z-[650] border-b border-transparent bg-transparent text-white md:hidden"
             : "sticky top-0 z-[600] border-b border-emerald-100 bg-[#fffdf8]/95 backdrop-blur md:hidden"
         }
       >
@@ -155,6 +158,8 @@ export function AppHeader() {
             className={
               isMapPage
                 ? "grid size-11 place-items-center rounded-2xl bg-white/[0.78] text-left shadow-lg backdrop-blur"
+                : isChatPage
+                  ? "grid size-11 place-items-center rounded-2xl bg-emerald-700/92 text-left text-white shadow-lg backdrop-blur"
                 : "flex min-w-0 items-center gap-3 text-left"
             }
             aria-label={t("app.menu.open")}
@@ -162,7 +167,13 @@ export function AppHeader() {
             <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-emerald-700 text-sm font-bold text-white">
               O
             </span>
-            <div className={`${isMapPage ? "hidden" : "hidden min-w-0 min-[380px]:block"}`}>
+            <div
+              className={`${
+                isMapPage || isChatPage
+                  ? "hidden"
+                  : "hidden min-w-0 min-[380px]:block"
+              }`}
+            >
               <p className="text-lg font-semibold tracking-wide text-stone-950">
                 OTR
               </p>
@@ -173,14 +184,20 @@ export function AppHeader() {
           </button>
           {!isMapPage ? (
             <>
-              <p className="pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-sm font-black text-stone-900">
+              <p
+                className={`pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-sm font-black ${
+                  isChatPage ? "text-white drop-shadow" : "text-stone-900"
+                }`}
+              >
                 {tripId ? journeyName || t("common.journey") : "OTR"}
               </p>
               <div ref={journeyMenuRef} className="relative">
                 <button
                   type="button"
                   onClick={() => setIsJourneyMenuOpen((current) => !current)}
-                  className="flex shrink-0 items-center gap-1.5 rounded-full bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm"
+                  className={`flex shrink-0 items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold text-white shadow-sm ${
+                    isChatPage ? "bg-emerald-700/92 backdrop-blur" : "bg-emerald-700"
+                  }`}
                   aria-expanded={isJourneyMenuOpen}
                 >
                   <span>{t("nav.journeys")}</span>
