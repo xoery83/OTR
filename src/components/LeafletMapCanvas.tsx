@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef } from "react";
 import type {
   LatLngBoundsExpression,
   LayerGroup,
+  LeafletMouseEvent,
   Map as LeafletMap,
 } from "leaflet";
 import type { Coordinates } from "@/lib/geo";
@@ -52,6 +53,7 @@ type LeafletMapCanvasProps = {
   fitVersion?: string | number;
   fallbackCenter?: Coordinates;
   onMarkerClick?: (marker: LeafletMapMarker) => void;
+  onMapClick?: (coordinates: Coordinates) => void;
 };
 
 function markerColor(marker: LeafletMapMarker) {
@@ -144,6 +146,7 @@ export function LeafletMapCanvas({
   fitVersion,
   fallbackCenter = { latitude: 64.9631, longitude: -19.0208 },
   onMarkerClick,
+  onMapClick,
 }: LeafletMapCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
@@ -156,6 +159,7 @@ export function LeafletMapCanvas({
   );
   const initialCenterRef = useRef(center);
   const initialFitCoordinatesRef = useRef(fitCoordinates);
+  const lastFitVersionRef = useRef<string | number | undefined>(fitVersion);
 
   useEffect(() => {
     let isMounted = true;
@@ -307,7 +311,26 @@ export function LeafletMapCanvas({
 
   useEffect(() => {
     const map = mapRef.current;
+    if (!map || !onMapClick) return;
+
+    const handleClick = (event: LeafletMouseEvent) => {
+      onMapClick({
+        latitude: event.latlng.lat,
+        longitude: event.latlng.lng,
+      });
+    };
+
+    map.on("click", handleClick);
+    return () => {
+      map.off("click", handleClick);
+    };
+  }, [onMapClick]);
+
+  useEffect(() => {
+    const map = mapRef.current;
     if (!map) return;
+    if (fitVersion === lastFitVersionRef.current) return;
+    lastFitVersionRef.current = fitVersion;
 
     const boundCoordinates = fitCoordinates;
 
@@ -323,13 +346,7 @@ export function LeafletMapCanvas({
     } else {
       map.setView([center.latitude, center.longitude], 5);
     }
-
-  }, [
-    center.latitude,
-    center.longitude,
-    fitCoordinates,
-    fitVersion,
-  ]);
+  }, [center.latitude, center.longitude, fitCoordinates, fitVersion]);
 
   return <div ref={containerRef} className="h-full min-h-[360px] w-full" />;
 }

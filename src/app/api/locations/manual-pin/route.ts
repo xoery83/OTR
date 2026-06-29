@@ -1,7 +1,8 @@
 import type { NextRequest } from "next/server";
 import {
   applyManualLocation,
-  getSupabaseForRequest,
+  getAuthenticatedUserIdForRequest,
+  getPlaceServiceSupabaseForRequest,
   type LocatableItemType,
 } from "@/lib/place-service/server";
 
@@ -39,7 +40,11 @@ export async function POST(request: NextRequest) {
       return jsonError("Invalid coordinates.", 400);
     }
 
-    const supabase = getSupabaseForRequest(request);
+    const ownerUserId = await getAuthenticatedUserIdForRequest(request);
+    const supabase = await getPlaceServiceSupabaseForRequest(
+      request,
+      body.journeyId,
+    );
     const result = await applyManualLocation(supabase, {
       journeyId: body.journeyId,
       itemType: body.itemType,
@@ -48,6 +53,7 @@ export async function POST(request: NextRequest) {
       title: body.title,
       latitude: Number(body.latitude),
       longitude: Number(body.longitude),
+      ownerUserId,
     });
 
     return Response.json(result);

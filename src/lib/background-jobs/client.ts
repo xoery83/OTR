@@ -4,6 +4,7 @@ import type {
   BackgroundJob,
   CreateBackgroundJobBatchInput,
   CreateBackgroundJobInput,
+  BackgroundJobStatus,
   UpdateBackgroundJobBatchInput,
   UpdateBackgroundJobInput,
 } from "./types";
@@ -141,6 +142,55 @@ export async function updateBackgroundJob(
 
   emitBackgroundJobsChanged();
   return payload.job;
+}
+
+export async function dismissBackgroundActivity(
+  activities: Array<{
+    type: "job" | "batch";
+    id: string;
+    status: BackgroundJobStatus;
+  }>,
+) {
+  if (activities.length === 0) return 0;
+
+  const response = await fetch("/api/background-jobs/dismiss", {
+    method: "POST",
+    headers: await authHeaders(),
+    body: JSON.stringify({ activities }),
+  });
+  const payload = (await response.json()) as {
+    dismissed?: number;
+    error?: string;
+  };
+
+  if (!response.ok) {
+    throw new Error(payload.error || "Could not dismiss background activity.");
+  }
+
+  emitBackgroundJobsChanged();
+  return payload.dismissed ?? activities.length;
+}
+
+export async function listDismissedBackgroundActivity(activityKeys: string[]) {
+  if (activityKeys.length === 0) return [];
+
+  const response = await fetch("/api/background-jobs/dismissals", {
+    method: "POST",
+    headers: await authHeaders(),
+    body: JSON.stringify({ activityKeys }),
+  });
+  const payload = (await response.json()) as {
+    activityKeys?: string[];
+    error?: string;
+  };
+
+  if (!response.ok) {
+    throw new Error(
+      payload.error || "Could not load dismissed background activity.",
+    );
+  }
+
+  return payload.activityKeys ?? [];
 }
 
 export async function enqueueMediaProcessingJobs(input: {

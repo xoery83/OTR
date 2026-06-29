@@ -354,7 +354,7 @@ input[type="date"] {
     margin-top: -1rem !important;
   }
 
-  main.pb-28 {
-    padding-bottom: 5.75rem !important;
+  main.otr-page-shell {
+    padding-bottom: calc(14rem + env(safe-area-inset-bottom, 0px)) !important;
   }
 }

@@ -372,6 +372,7 @@ export async function createTextMemory(
   const now = new Date().toISOString();
   const capturedAt = new Date(input.capturedAt).toISOString();
   const encodedContent = encodeMemoryContent(content, input.parentMemoryId);
+  const locationText = input.locationName.trim() || null;
 
   const row = {
     id: memoryId,
@@ -383,7 +384,9 @@ export async function createTextMemory(
     itinerary_reservation_id: input.itineraryReservationId || null,
     type: "text",
     content: encodedContent,
-    location_name: input.locationName.trim() || null,
+    location_name: locationText,
+    location_text: locationText,
+    location_status: locationText ? "pending" : "none",
     captured_at: capturedAt,
   };
 
@@ -434,10 +437,21 @@ export async function updateMemoryEntry(input: UpdateMemoryInput) {
     throw new Error("You must be logged in to update a memory.");
   }
 
-  const patch: Partial<MemoryRow> = {};
+  const patch: Record<string, string | boolean | null> = {};
   if (input.content !== undefined) patch.content = input.content.trim();
   if (input.locationName !== undefined) {
-    patch.location_name = input.locationName?.trim() || null;
+    const locationText = input.locationName?.trim() || null;
+    patch.location_name = locationText;
+    patch.location_text = locationText;
+    patch.location_status = locationText ? "pending" : "none";
+    patch.location_lat = null;
+    patch.location_lng = null;
+    patch.place_id = null;
+    patch.location_provider = null;
+    patch.location_provider_place_id = null;
+    patch.geocoded_at = null;
+    patch.geocode_error = null;
+    patch.manual_location = false;
   }
   if (input.capturedAt !== undefined) {
     patch.captured_at = new Date(input.capturedAt).toISOString();
@@ -533,6 +547,7 @@ export async function createPhotoMemory(
 
   const memoryId = crypto.randomUUID();
   const encodedCaption = encodeMemoryContent(caption, input.parentMemoryId);
+  const locationText = input.locationName.trim() || null;
 
   const memoryRow = {
     id: memoryId,
@@ -545,7 +560,9 @@ export async function createPhotoMemory(
     type: "photo",
     content: encodedCaption || null,
     media_url: compressedFilePath,
-    location_name: input.locationName.trim() || null,
+    location_name: locationText,
+    location_text: locationText,
+    location_status: locationText ? "pending" : "none",
     captured_at: capturedAt,
   };
 

@@ -779,6 +779,7 @@ export async function createLedgerEntry(input: CreateLedgerEntryInput) {
     participantMemberIds.length > 0
       ? Number((baseAmount / participantMemberIds.length).toFixed(2))
       : null;
+  const locationText = input.addressText?.trim() || null;
 
   const { data, error } = await supabase
     .from("ledger_entries")
@@ -802,8 +803,10 @@ export async function createLedgerEntry(input: CreateLedgerEntryInput) {
       exchange_rate_date: rateSnapshot.rateDate,
       exchange_rate_source: rateSnapshot.source,
       payer_member_id: input.payerMemberId || null,
-      address_text: input.addressText?.trim() || null,
-      location_source: input.addressText?.trim() ? "manual" : null,
+      address_text: locationText,
+      location_text: locationText,
+      location_status: locationText ? "pending" : "none",
+      location_source: null,
       status:
         input.accountingMode === "shared" &&
         (!input.payerMemberId || participantMemberIds.length === 0)
@@ -857,6 +860,7 @@ export async function updateLedgerEntry(input: UpdateLedgerEntryInput) {
     participantMemberIds.length > 0
       ? Number((baseAmount / participantMemberIds.length).toFixed(2))
       : null;
+  const locationText = input.addressText?.trim() || null;
 
   const { error } = await supabase
     .from("ledger_entries")
@@ -876,8 +880,20 @@ export async function updateLedgerEntry(input: UpdateLedgerEntryInput) {
       exchange_rate_date: rateSnapshot.rateDate,
       exchange_rate_source: rateSnapshot.source,
       payer_member_id: input.payerMemberId || null,
-      address_text: input.addressText?.trim() || null,
-      location_source: input.addressText?.trim() ? "manual" : null,
+      address_text: locationText,
+      location_text: locationText,
+      location_status: locationText ? "pending" : "none",
+      location_lat: null,
+      location_lng: null,
+      place_id: null,
+      location_provider: null,
+      location_provider_place_id: null,
+      geocoded_at: null,
+      geocode_error: null,
+      manual_location: false,
+      latitude: null,
+      longitude: null,
+      location_source: null,
       status:
         input.accountingMode === "shared" &&
         (!input.payerMemberId || participantMemberIds.length === 0)

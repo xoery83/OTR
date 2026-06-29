@@ -44,7 +44,7 @@ export default function RootLayout({
             <SidebarNav />
             <AppHeader />
             <ActivityCenter />
-            <main className="mx-auto w-full max-w-3xl px-5 pb-28 pt-6 md:ml-44 md:pb-10 lg:max-w-5xl">
+            <main className="otr-page-shell mx-auto w-full max-w-3xl px-5 pb-28 pt-6 md:ml-44 md:pb-10 lg:max-w-5xl">
               {children}
             </main>
             <BottomNav />

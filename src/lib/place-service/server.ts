@@ -21,6 +21,9 @@ export type LocatableItemType =
 export type LocatableItem = {
   itemType: LocatableItemType;
   itemId: string;
+  sourceItemType?: string | null;
+  sourceItemId?: string | null;
+  ownerUserId?: string | null;
   journeyId: string;
   title: string;
   locationText: string;
@@ -79,6 +82,8 @@ export type ResolveLocationResult = {
   status: LocationStatus;
   itemType: LocatableItemType;
   itemId: string;
+  title?: string;
+  locationText?: string;
   coordinates: Coordinates | null;
   placeId: string | null;
   provider: string | null;
@@ -131,6 +136,34 @@ export function getSupabaseForRequest(request: Request) {
   });
 }
 
+export async function getPlaceServiceSupabaseForRequest(
+  request: Request,
+  journeyId: string,
+) {
+  const userClient = getSupabaseForRequest(request);
+  const { error } = await userClient
+    .from("trips")
+    .select("id")
+    .eq("id", journeyId)
+    .single();
+  if (error) throw error;
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) return userClient;
+
+  return createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+export async function getAuthenticatedUserIdForRequest(request: Request) {
+  const userClient = getSupabaseForRequest(request);
+  const { data, error } = await userClient.auth.getUser();
+  if (error) throw error;
+  return data.user?.id ?? null;
+}
+
 function normalizeLocationText(value: string) {
   return value
     .trim()
@@ -143,6 +176,15 @@ function normalizeLocationText(value: string) {
 
 function compact(value: string | null | undefined) {
   return value?.trim().replace(/\s+/g, " ") || null;
+}
+
+function firstText(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const text = value.trim();
+    if (text) return text;
+  }
+  return "";
 }
 
 function numberValue(value: unknown) {
@@ -222,7 +264,16 @@ function shouldRetry(item: LocatableItem, force: boolean) {
 
 function sourceTypeForItem(itemType: LocatableItemType) {
   if (itemType === "memory") return "memory";
+  if (itemType === "media_asset") return "media_asset";
   return itemType;
+}
+
+function sourceTypeForMapObject(item: LocatableItem) {
+  return item.sourceItemType ?? sourceTypeForItem(item.itemType);
+}
+
+function sourceIdForMapObject(item: LocatableItem) {
+  return item.sourceItemId ?? item.itemId;
 }
 
 function mapTypeForReservation(type: string | null) {
@@ -589,7 +640,8 @@ async function updateItemLocation(
   patch: Record<string, unknown>,
 ) {
   const table = tableForItem(item.itemType);
-  await supabase.from(table).update(patch).eq("id", item.itemId);
+  const { error } = await supabase.from(table).update(patch).eq("id", item.itemId);
+  if (error) throw error;
 }
 
 function tableForItem(itemType: LocatableItemType) {
@@ -606,25 +658,25 @@ async function upsertMapObject(
   candidate: PlaceCandidate,
   placeId: string | null,
 ) {
-  if (item.itemType === "ledger_entry" || item.itemType === "media_asset") return;
   const now = new Date().toISOString();
   const payload = {
     journey_id: item.journeyId,
     type: item.mapType,
-    source_type: sourceTypeForItem(item.itemType),
-    source_id: item.itemId,
+    source_type: sourceTypeForMapObject(item),
+    source_id: sourceIdForMapObject(item),
     title: item.title,
     description: candidate.formattedAddress,
     latitude: candidate.coordinates.latitude,
     longitude: candidate.coordinates.longitude,
     timestamp: item.timestamp,
+    owner_user_id: item.ownerUserId ?? null,
     visibility: "journey",
     metadata: { provider: candidate.provider, confidence: candidate.confidence },
     location_text: item.locationText,
     location_status: "resolved",
     place_id: placeId,
-    provider: candidate.provider,
-    provider_place_id: candidate.providerPlaceId,
+    location_provider: candidate.provider,
+    location_provider_place_id: candidate.providerPlaceId,
     geocoded_at: now,
     geocode_error: null,
   };
@@ -632,13 +684,19 @@ async function upsertMapObject(
     .from("journey_map_objects")
     .select("id")
     .eq("journey_id", item.journeyId)
-    .eq("source_type", sourceTypeForItem(item.itemType))
-    .eq("source_id", item.itemId)
+    .eq("source_type", sourceTypeForMapObject(item))
+    .eq("source_id", sourceIdForMapObject(item))
     .maybeSingle();
+  if (existing.error) throw existing.error;
   if (existing.data?.id) {
-    await supabase.from("journey_map_objects").update(payload).eq("id", existing.data.id);
+    const { error } = await supabase
+      .from("journey_map_objects")
+      .update(payload)
+      .eq("id", existing.data.id);
+    if (error) throw error;
   } else {
-    await supabase.from("journey_map_objects").insert(payload);
+    const { error } = await supabase.from("journey_map_objects").insert(payload);
+    if (error) throw error;
   }
 }
 
@@ -650,12 +708,13 @@ async function applyResolvedPlace(
 ) {
   const now = new Date().toISOString();
   await updateItemLocation(supabase, item, {
+    location_text: item.locationText,
     location_lat: candidate.coordinates.latitude,
     location_lng: candidate.coordinates.longitude,
     location_status: "resolved",
     place_id: placeId,
-    provider: candidate.provider,
-    provider_place_id: candidate.providerPlaceId,
+    location_provider: candidate.provider,
+    location_provider_place_id: candidate.providerPlaceId,
     geocoded_at: now,
     geocode_error: null,
     location_confidence: candidate.confidence,
@@ -703,6 +762,34 @@ export async function resolveLocationItem(
       error: "flight_items_do_not_render_on_map",
     };
   }
+  const existingCoordinates = validCoordinates(item.locationLat, item.locationLng);
+  if (existingCoordinates) {
+    const candidate: PlaceCandidate = {
+      displayName: item.title,
+      formattedAddress: item.locationText || null,
+      coordinates: existingCoordinates,
+      provider: item.manualLocation ? "manual" : "existing",
+      providerPlaceId: null,
+      confidence: item.manualLocation ? 0.95 : 0.9,
+      source: item.manualLocation ? "manual" : "existing_coordinates",
+      rawQuery: item.locationText || item.title,
+      rawResponse: { existingCoordinates: true },
+    };
+    await applyResolvedPlace(supabase, item, candidate, null);
+    return {
+      status: item.manualLocation ? "manual" : "resolved",
+      itemType: item.itemType,
+      itemId: item.itemId,
+      coordinates: existingCoordinates,
+      placeId: null,
+      provider: "existing",
+      providerPlaceId: null,
+      displayName: item.title,
+      formattedAddress: item.locationText,
+      error: null,
+    };
+  }
+
   if (!shouldRetry(item, Boolean(options.force))) {
     return {
       status: "none",
@@ -715,22 +802,6 @@ export async function resolveLocationItem(
       displayName: null,
       formattedAddress: null,
       error: "skipped",
-    };
-  }
-
-  const existingCoordinates = validCoordinates(item.locationLat, item.locationLng);
-  if (existingCoordinates) {
-    return {
-      status: item.manualLocation ? "manual" : "resolved",
-      itemType: item.itemType,
-      itemId: item.itemId,
-      coordinates: existingCoordinates,
-      placeId: null,
-      provider: "existing",
-      providerPlaceId: null,
-      displayName: item.title,
-      formattedAddress: item.locationText,
-      error: null,
     };
   }
 
@@ -835,8 +906,9 @@ function mapReservationRow(row: Record<string, unknown>): LocatableItem {
     itemType: "itinerary_reservation",
     itemId: String(row.id),
     journeyId: String(row.trip_id),
+    ownerUserId: row.created_by ? String(row.created_by) : null,
     title: String(row.title ?? "Reservation"),
-    locationText: String(row.location_text ?? row.location_name ?? ""),
+    locationText: firstText(row.location_text, row.location_name),
     locationStatus: (row.location_status as LocationStatus | null) ?? "none",
     locationLat: numberValue(row.location_lat),
     locationLng: numberValue(row.location_lng),
@@ -854,8 +926,9 @@ function mapEventRow(row: Record<string, unknown>): LocatableItem {
     itemType: "itinerary_event",
     itemId: String(row.id),
     journeyId: String(row.trip_id),
+    ownerUserId: row.created_by ? String(row.created_by) : null,
     title: String(row.title ?? "Plan"),
-    locationText: String(row.location_text ?? row.location_name ?? ""),
+    locationText: firstText(row.location_text, row.location_name),
     locationStatus: (row.location_status as LocationStatus | null) ?? "none",
     locationLat: numberValue(row.location_lat),
     locationLng: numberValue(row.location_lng),
@@ -873,8 +946,9 @@ function mapMemoryRow(row: Record<string, unknown>): LocatableItem {
     itemType: "memory",
     itemId: String(row.id),
     journeyId: String(row.trip_id),
+    ownerUserId: row.user_id ? String(row.user_id) : null,
     title: String(row.content ?? row.location_name ?? "Memory"),
-    locationText: String(row.location_text ?? row.location_name ?? ""),
+    locationText: firstText(row.location_text, row.location_name),
     locationStatus: (row.location_status as LocationStatus | null) ?? "none",
     locationLat: numberValue(row.location_lat),
     locationLng: numberValue(row.location_lng),
@@ -892,8 +966,9 @@ function mapLedgerRow(row: Record<string, unknown>): LocatableItem {
     itemType: "ledger_entry",
     itemId: String(row.id),
     journeyId: String(row.journey_id),
+    ownerUserId: row.created_by_user_id ? String(row.created_by_user_id) : null,
     title: String(row.title ?? "Ledger entry"),
-    locationText: String(row.location_text ?? row.address_text ?? ""),
+    locationText: firstText(row.location_text, row.address_text),
     locationStatus: (row.location_status as LocationStatus | null) ?? "none",
     locationLat: numberValue(row.location_lat ?? row.latitude),
     locationLng: numberValue(row.location_lng ?? row.longitude),
@@ -906,36 +981,65 @@ function mapLedgerRow(row: Record<string, unknown>): LocatableItem {
   };
 }
 
+function mapMediaAssetRow(row: Record<string, unknown>): LocatableItem {
+  const memoryEntryId = row.memory_entry_id ? String(row.memory_entry_id) : null;
+  return {
+    itemType: "media_asset",
+    itemId: String(row.id),
+    sourceItemType: memoryEntryId ? "memory" : "media_asset",
+    sourceItemId: memoryEntryId ?? String(row.id),
+    journeyId: String(row.trip_id),
+    ownerUserId: row.user_id ? String(row.user_id) : null,
+    title: "Photo",
+    locationText: firstText(row.location_text),
+    locationStatus: (row.location_status as LocationStatus | null) ?? "none",
+    locationLat: numberValue(row.location_lat ?? row.gps_latitude),
+    locationLng: numberValue(row.location_lng ?? row.gps_longitude),
+    geocodedAt: row.geocoded_at ? String(row.geocoded_at) : null,
+    geocodeError: row.geocode_error ? String(row.geocode_error) : null,
+    geocodeAttempts: Number(row.geocode_attempts ?? 0),
+    manualLocation: Boolean(row.manual_location),
+    timestamp: row.taken_at ? String(row.taken_at) : row.created_at ? String(row.created_at) : null,
+    mapType: "memory",
+  };
+}
+
 async function fetchLocatableItems(supabase: SupabaseClient, journeyId: string) {
   const [
     reservations,
     events,
     memories,
     ledgers,
+    mediaAssets,
   ] = await Promise.all([
     supabase
       .from("itinerary_reservations")
       .select("*")
       .eq("trip_id", journeyId)
-      .not("location_text", "is", null),
+      .or("location_text.not.is.null,location_name.not.is.null"),
     supabase
       .from("itinerary_events")
       .select("*")
       .eq("trip_id", journeyId)
-      .not("location_text", "is", null),
+      .or("location_text.not.is.null,location_name.not.is.null"),
     supabase
       .from("memory_entries")
       .select("*")
       .eq("trip_id", journeyId)
-      .not("location_text", "is", null),
+      .or("location_text.not.is.null,location_name.not.is.null"),
     supabase
       .from("ledger_entries")
       .select("*")
       .eq("journey_id", journeyId)
-      .not("location_text", "is", null),
+      .or("location_text.not.is.null,address_text.not.is.null"),
+    supabase
+      .from("media_assets")
+      .select("*")
+      .eq("trip_id", journeyId)
+      .or("location_text.not.is.null,gps_latitude.not.is.null"),
   ]);
 
-  for (const result of [reservations, events, memories, ledgers]) {
+  for (const result of [reservations, events, memories, ledgers, mediaAssets]) {
     if (result.error) throw result.error;
   }
 
@@ -944,18 +1048,119 @@ async function fetchLocatableItems(supabase: SupabaseClient, journeyId: string) 
     ...((events.data ?? []) as Record<string, unknown>[]).map(mapEventRow),
     ...((memories.data ?? []) as Record<string, unknown>[]).map(mapMemoryRow),
     ...((ledgers.data ?? []) as Record<string, unknown>[]).map(mapLedgerRow),
-  ].filter((item) => item.locationText.trim());
+    ...((mediaAssets.data ?? []) as Record<string, unknown>[]).map(mapMediaAssetRow),
+  ].filter((item) => item.locationText.trim() || validCoordinates(item.locationLat, item.locationLng));
+}
+
+async function fetchLocatableItem(
+  supabase: SupabaseClient,
+  journeyId: string,
+  itemType: LocatableItemType,
+  itemId: string,
+) {
+  if (itemType === "itinerary_reservation") {
+    const { data, error } = await supabase
+      .from("itinerary_reservations")
+      .select("*")
+      .eq("trip_id", journeyId)
+      .eq("id", itemId)
+      .maybeSingle();
+    if (error) throw error;
+    return data ? mapReservationRow(data as Record<string, unknown>) : null;
+  }
+
+  if (itemType === "itinerary_event") {
+    const { data, error } = await supabase
+      .from("itinerary_events")
+      .select("*")
+      .eq("trip_id", journeyId)
+      .eq("id", itemId)
+      .maybeSingle();
+    if (error) throw error;
+    return data ? mapEventRow(data as Record<string, unknown>) : null;
+  }
+
+  if (itemType === "memory") {
+    const { data, error } = await supabase
+      .from("memory_entries")
+      .select("*")
+      .eq("trip_id", journeyId)
+      .eq("id", itemId)
+      .maybeSingle();
+    if (error) throw error;
+    return data ? mapMemoryRow(data as Record<string, unknown>) : null;
+  }
+
+  if (itemType === "ledger_entry") {
+    const { data, error } = await supabase
+      .from("ledger_entries")
+      .select("*")
+      .eq("journey_id", journeyId)
+      .eq("id", itemId)
+      .maybeSingle();
+    if (error) throw error;
+    return data ? mapLedgerRow(data as Record<string, unknown>) : null;
+  }
+
+  const { data, error } = await supabase
+    .from("media_assets")
+    .select("*")
+    .eq("trip_id", journeyId)
+    .eq("id", itemId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? mapMediaAssetRow(data as Record<string, unknown>) : null;
+}
+
+export async function resolveSingleJourneyLocation(
+  supabase: SupabaseClient,
+  journeyId: string,
+  input: {
+    itemType: LocatableItemType;
+    itemId: string;
+    force?: boolean;
+    ownerUserId?: string | null;
+  },
+) {
+  const trip = await getJourney(supabase, journeyId);
+  const context = contextFromTrip(trip);
+  const item = await fetchLocatableItem(
+    supabase,
+    journeyId,
+    input.itemType,
+    input.itemId,
+  );
+  if (!item) throw new Error("Location item not found.");
+
+  const result = await resolveLocationItem(
+    supabase,
+    { ...item, ownerUserId: item.ownerUserId ?? input.ownerUserId ?? null },
+    context,
+    { force: input.force ?? true },
+  );
+  return {
+    ...result,
+    title: item.title,
+    locationText: item.locationText,
+  };
 }
 
 export async function resolveJourneyLocations(
   supabase: SupabaseClient,
   journeyId: string,
-  options: { force?: boolean; limit?: number } = {},
+  options: { force?: boolean; limit?: number; ownerUserId?: string | null } = {},
 ): Promise<ResolveJourneySummary> {
   const trip = await getJourney(supabase, journeyId);
   const context = contextFromTrip(trip);
-  const items = await fetchLocatableItems(supabase, journeyId);
-  const candidates = items.filter((item) => shouldRetry(item, Boolean(options.force)));
+  const items = (await fetchLocatableItems(supabase, journeyId)).map((item) => ({
+    ...item,
+    ownerUserId: item.ownerUserId ?? options.ownerUserId ?? null,
+  }));
+  const candidates = items.filter(
+    (item) =>
+      shouldRetry(item, Boolean(options.force)) ||
+      Boolean(validCoordinates(item.locationLat, item.locationLng)),
+  );
   const limit = options.limit ?? 20;
   const selected = candidates.slice(0, limit);
   const summary: ResolveJourneySummary = {
@@ -974,7 +1179,11 @@ export async function resolveJourneyLocations(
     if (result.status === "resolved" || result.status === "manual") summary.resolved += 1;
     if (result.status === "failed") summary.failed += 1;
     if (result.status === "ambiguous") summary.ambiguous += 1;
-    summary.results.push(result);
+    summary.results.push({
+      ...result,
+      title: item.title,
+      locationText: item.locationText,
+    });
   }
 
   return summary;
@@ -990,6 +1199,7 @@ export async function applyManualLocation(
     title: string;
     latitude: number;
     longitude: number;
+    ownerUserId?: string | null;
   },
 ) {
   const coordinates = validCoordinates(input.latitude, input.longitude);
@@ -997,6 +1207,7 @@ export async function applyManualLocation(
   const item: LocatableItem = {
     itemType: input.itemType,
     itemId: input.itemId,
+    ownerUserId: input.ownerUserId ?? null,
     journeyId: input.journeyId,
     title: input.title,
     locationText: input.locationText,
@@ -1027,8 +1238,8 @@ export async function applyManualLocation(
     location_lng: coordinates.longitude,
     location_status: "manual",
     place_id: placeId,
-    provider: "manual",
-    provider_place_id: null,
+    location_provider: "manual",
+    location_provider_place_id: null,
     geocoded_at: new Date().toISOString(),
     geocode_error: null,
     manual_location: true,

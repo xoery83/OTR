@@ -325,6 +325,7 @@ export async function createItineraryEvent(input: CreateItineraryEventInput) {
   const now = new Date().toISOString();
   const plannedStart = floatingDateTimeToStorageIso(input.plannedStart);
   const plannedEnd = floatingDateTimeToStorageIso(input.plannedEnd);
+  const locationText = input.locationName?.trim() || null;
   const { error } = await supabase.from("itinerary_events").insert({
     id,
     trip_id: input.tripId,
@@ -333,7 +334,9 @@ export async function createItineraryEvent(input: CreateItineraryEventInput) {
     title: input.title,
     description: input.description || null,
     event_type: input.eventType,
-    location_name: input.locationName || null,
+    location_name: locationText,
+    location_text: locationText,
+    location_status: locationText && input.eventType !== "flight" ? "pending" : "none",
     planned_start: plannedStart,
     planned_end: plannedEnd,
     booking_reference: input.bookingReference || null,
@@ -412,6 +415,7 @@ export async function createItineraryReservation(
   const now = new Date().toISOString();
   const startsAt = floatingDateTimeToStorageIso(input.startsAt);
   const endsAt = floatingDateTimeToStorageIso(input.endsAt);
+  const locationText = input.locationName?.trim() || null;
   const { error } = await supabase.from("itinerary_reservations").insert({
     id,
     trip_id: input.tripId,
@@ -419,7 +423,10 @@ export async function createItineraryReservation(
     reservation_type: input.reservationType,
     title: input.title,
     provider: input.provider || null,
-    location_name: input.locationName || null,
+    location_name: locationText,
+    location_text: locationText,
+    location_status:
+      locationText && input.reservationType !== "flight" ? "pending" : "none",
     starts_at: startsAt,
     ends_at: endsAt,
     confirmation_code: input.confirmationCode || null,
@@ -458,7 +465,7 @@ export async function createItineraryReservation(
     reservation_type: input.reservationType,
     title: input.title,
     provider: input.provider || null,
-    location_name: input.locationName || null,
+    location_name: locationText,
     starts_at: startsAt,
     ends_at: endsAt,
     confirmation_code: input.confirmationCode || null,
@@ -474,11 +481,22 @@ export async function createItineraryReservation(
 }
 
 export async function updateItineraryEvent(input: UpdateItineraryEventInput) {
-  const updatePayload: Record<string, string | null> = {
+  const locationText = input.locationName?.trim() || null;
+  const updatePayload: Record<string, string | number | boolean | null> = {
     title: input.title.trim(),
     description: input.description?.trim() || null,
     event_type: input.eventType,
-    location_name: input.locationName?.trim() || null,
+    location_name: locationText,
+    location_text: locationText,
+    location_status: locationText && input.eventType !== "flight" ? "pending" : "none",
+    location_lat: null,
+    location_lng: null,
+    place_id: null,
+    location_provider: null,
+    location_provider_place_id: null,
+    geocoded_at: null,
+    geocode_error: null,
+    manual_location: false,
     planned_start: floatingDateTimeToStorageIso(input.plannedStart),
     planned_end: floatingDateTimeToStorageIso(input.plannedEnd),
     booking_reference: input.bookingReference?.trim() || null,
@@ -508,11 +526,23 @@ export async function deleteItineraryEvent(id: string) {
 export async function updateItineraryReservation(
   input: UpdateItineraryReservationInput,
 ) {
-  const updatePayload: Record<string, string | null> = {
+  const locationText = input.locationName?.trim() || null;
+  const updatePayload: Record<string, string | number | boolean | null> = {
     reservation_type: input.reservationType,
     title: input.title.trim(),
     provider: input.provider?.trim() || null,
-    location_name: input.locationName?.trim() || null,
+    location_name: locationText,
+    location_text: locationText,
+    location_status:
+      locationText && input.reservationType !== "flight" ? "pending" : "none",
+    location_lat: null,
+    location_lng: null,
+    place_id: null,
+    location_provider: null,
+    location_provider_place_id: null,
+    geocoded_at: null,
+    geocode_error: null,
+    manual_location: false,
     starts_at: floatingDateTimeToStorageIso(input.startsAt),
     ends_at: floatingDateTimeToStorageIso(input.endsAt),
     confirmation_code: input.confirmationCode?.trim() || null,

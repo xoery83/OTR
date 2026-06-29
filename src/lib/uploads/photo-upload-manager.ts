@@ -226,6 +226,36 @@ async function getCurrentUserId() {
   return data.user.id;
 }
 
+async function createBackgroundPhotoMemory(input: {
+  journeyId: string;
+  userId: string;
+  dayId?: string | null;
+  compressedFilePath: string;
+  takenAt?: string | null;
+}) {
+  const memoryId = crypto.randomUUID();
+  const capturedAt = input.takenAt ?? new Date().toISOString();
+  const { error } = await supabase.from("memory_entries").insert({
+    id: memoryId,
+    trip_id: input.journeyId,
+    user_id: input.userId,
+    trip_day_id: input.dayId || null,
+    type: "photo",
+    content: null,
+    media_url: input.compressedFilePath,
+    location_name: null,
+    location_text: null,
+    location_status: "none",
+    captured_at: capturedAt,
+  });
+
+  if (error) {
+    throw new Error(`Memory row failed: ${error.message}`);
+  }
+
+  return { id: memoryId, capturedAt };
+}
+
 async function uploadPhotoFile(input: {
   journeyId: string;
   userId: string;
@@ -254,12 +284,19 @@ async function uploadPhotoFile(input: {
   const takenAt = input.file.lastModified
     ? new Date(input.file.lastModified).toISOString()
     : null;
+  const memory = await createBackgroundPhotoMemory({
+    journeyId: input.journeyId,
+    userId: input.userId,
+    dayId: input.dayId ?? null,
+    compressedFilePath,
+    takenAt,
+  });
 
   const asset = await createImageMediaAsset({
     id: mediaAssetId,
     tripId: input.journeyId,
     userId: input.userId,
-    memoryEntryId: null,
+    memoryEntryId: memory.id,
     compressedFilePath,
     compressedFileSize: compressed.blob.size,
     originalFileSize: input.file.size,
@@ -273,6 +310,7 @@ async function uploadPhotoFile(input: {
       plannerItemId: input.plannerItemId ?? null,
       triggeredBy: input.triggeredBy ?? "capture",
       originalFileName: input.file.name,
+      memoryEntryId: memory.id,
     },
   });
 
@@ -347,6 +385,7 @@ async function processRuntimeBatch(runtime: UploadRuntimeBatch) {
         currentStep: "Photo uploaded",
         result: {
           mediaAssetId: asset.id,
+          memoryEntryId: asset.memoryEntryId,
           compressedFilePath: asset.compressedFilePath,
         },
       });

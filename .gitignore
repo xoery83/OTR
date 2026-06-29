@@ -3,8 +3,13 @@
 # dependencies
 /node_modules
 face-service/.venv/
+face-service/.cache/
 face-service/**/__pycache__/
 face-service/.models/
+image-index-service/**/__pycache__/
+stt-service/**/__pycache__/
+__pycache__/
+*.py[cod]
 /.pnp
 .pnp.*
 .yarn/*
@@ -16,6 +21,8 @@ face-service/.models/
 # testing
 /coverage
 /.capture-test-build
+/.planner-import-test-build
+.pytest_cache/
 
 # next.js
 /.next/
@@ -23,6 +30,7 @@ face-service/.models/
 
 # production
 /build
+/dist
 
 # misc
 .DS_Store
@@ -40,6 +48,7 @@ yarn-error.log*
 
 # vercel
 .vercel
+.turbo
 
 # typescript
 *.tsbuildinfo

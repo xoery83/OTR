@@ -172,6 +172,69 @@ function mapMediaAsset(row: MediaAssetRow): MediaAsset {
   };
 }
 
+export async function repairCurrentUserOrphanPhotoMemories(tripId: string) {
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  const user = userData.user;
+  if (userError || !user) return 0;
+
+  const { data: assetRows, error: assetError } = await supabase
+    .from("media_assets")
+    .select("*")
+    .eq("trip_id", tripId)
+    .eq("user_id", user.id)
+    .eq("asset_type", "image")
+    .is("memory_entry_id", null)
+    .not("compressed_file_path", "is", null)
+    .limit(50);
+
+  if (assetError) return 0;
+
+  let repaired = 0;
+  for (const row of (assetRows ?? []) as MediaAssetRow[]) {
+    if (!row.compressed_file_path) continue;
+
+    const memoryId = crypto.randomUUID();
+    const capturedAt = row.taken_at ?? row.created_at ?? new Date().toISOString();
+    const metadata =
+      row.ai_metadata && typeof row.ai_metadata === "object" ? row.ai_metadata : {};
+    const dayId =
+      typeof metadata.dayId === "string" ? metadata.dayId : null;
+
+    const { error: memoryError } = await supabase.from("memory_entries").insert({
+      id: memoryId,
+      trip_id: tripId,
+      user_id: user.id,
+      trip_day_id: dayId,
+      type: "photo",
+      content: null,
+      media_url: row.compressed_file_path,
+      location_name: null,
+      location_text: null,
+      location_status: "none",
+      captured_at: capturedAt,
+    });
+
+    if (memoryError) continue;
+
+    const { error: updateError } = await supabase
+      .from("media_assets")
+      .update({
+        memory_entry_id: memoryId,
+        ai_metadata: {
+          ...metadata,
+          memoryEntryId: memoryId,
+          repairedMemoryEntry: true,
+        },
+      })
+      .eq("id", row.id)
+      .is("memory_entry_id", null);
+
+    if (!updateError) repaired += 1;
+  }
+
+  return repaired;
+}
+
 export async function getTripPhotoAssets(
   tripId: string,
 ): Promise<PhotoAssetWithMemory[]> {

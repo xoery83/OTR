@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/components/I18nProvider";
 import {
+  dismissBackgroundActivity,
+  listDismissedBackgroundActivity,
   listBackgroundJobBatches,
   listBackgroundJobs,
   updateBackgroundJob,
@@ -22,8 +24,6 @@ import {
   retryFailedPhotoUploadBatch,
 } from "@/lib/uploads/photo-upload-manager";
 
-const DISMISSED_FAILURES_STORAGE_KEY = "otr:activity-center:dismissed-failures";
-const DISMISSED_ACTIVITY_STORAGE_KEY = "otr:activity-center:dismissed-activity";
 const FAILED_WARNING_AUTO_HIDE_MS = 18000;
 
 function payloadString(job: BackgroundJob, key: string) {
@@ -65,6 +65,12 @@ type Translate = (
   values?: Record<string, string | number>,
 ) => string;
 
+type DismissibleActivity = {
+  type: "job" | "batch";
+  id: string;
+  status: BackgroundJobStatus;
+};
+
 function statusLabel(status: BackgroundJobStatus, t: Translate) {
   if (status === "queued") return t("activity.status.queued");
   if (status === "uploading") return t("activity.status.uploading");
@@ -83,14 +89,6 @@ function batchProgress(batch: BackgroundJobBatch) {
   );
 }
 
-function jobFailureKey(job: BackgroundJob) {
-  return `job:${job.id}`;
-}
-
-function batchFailureKey(batch: BackgroundJobBatch) {
-  return `batch:${batch.id}`;
-}
-
 function jobActivityKey(job: BackgroundJob) {
   return `job:${job.id}:${job.status}`;
 }
@@ -99,42 +97,12 @@ function batchActivityKey(batch: BackgroundJobBatch) {
   return `batch:${batch.id}:${batch.status}`;
 }
 
-function loadDismissedFailureKeys() {
-  if (typeof window === "undefined") return new Set<string>();
-
-  try {
-    const raw = window.localStorage.getItem(DISMISSED_FAILURES_STORAGE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    return new Set(Array.isArray(parsed) ? parsed.filter(Boolean).map(String) : []);
-  } catch {
-    return new Set<string>();
-  }
+function activityKey(activity: DismissibleActivity) {
+  return `${activity.type}:${activity.id}:${activity.status}`;
 }
 
-function saveDismissedFailureKeys(keys: Set<string>) {
-  window.localStorage.setItem(
-    DISMISSED_FAILURES_STORAGE_KEY,
-    JSON.stringify([...keys]),
-  );
-}
-
-function loadDismissedActivityKeys() {
-  if (typeof window === "undefined") return new Set<string>();
-
-  try {
-    const raw = window.localStorage.getItem(DISMISSED_ACTIVITY_STORAGE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    return new Set(Array.isArray(parsed) ? parsed.filter(Boolean).map(String) : []);
-  } catch {
-    return new Set<string>();
-  }
-}
-
-function saveDismissedActivityKeys(keys: Set<string>) {
-  window.localStorage.setItem(
-    DISMISSED_ACTIVITY_STORAGE_KEY,
-    JSON.stringify([...keys]),
-  );
+function isRuntimeOnlyActivity(activity: DismissibleActivity) {
+  return activity.id.startsWith("runtime-");
 }
 
 async function runJob(job: BackgroundJob, t: Translate) {
@@ -203,23 +171,41 @@ export function ActivityCenter() {
   const [isLoading, setIsLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
-  const [dismissedFailureKeys, setDismissedFailureKeys] = useState<Set<string>>(
-    loadDismissedFailureKeys,
+  const [locallyDismissedActivityKeys, setLocallyDismissedActivityKeys] = useState<
+    Set<string>
+  >(
+    () => new Set<string>(),
   );
-  const [dismissedActivityKeys, setDismissedActivityKeys] = useState<Set<string>>(
-    loadDismissedActivityKeys,
-  );
+  const [remoteDismissedActivityKeys, setRemoteDismissedActivityKeys] = useState<
+    Set<string>
+  >(() => new Set<string>());
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runningJobIds = useRef(new Set<string>());
-  const currentActivityKeys = useMemo(
+  const dismissedActivityKeys = useMemo(
+    () =>
+      new Set([
+        ...locallyDismissedActivityKeys,
+        ...remoteDismissedActivityKeys,
+      ]),
+    [locallyDismissedActivityKeys, remoteDismissedActivityKeys],
+  );
+  const currentActivities = useMemo<DismissibleActivity[]>(
     () => [
       ...jobs
         .filter((job) => !isPlaceholderProcessingJob(job))
         .filter((job) => activeJob(job) || job.status === "failed")
-        .map((job) => jobActivityKey(job)),
+        .map((job) => ({
+          type: "job" as const,
+          id: job.id,
+          status: job.status,
+        })),
       ...batches
         .filter((batch) => activeBatch(batch) || batch.status === "failed")
-        .map((batch) => batchActivityKey(batch)),
+        .map((batch) => ({
+          type: "batch" as const,
+          id: batch.id,
+          status: batch.status,
+        })),
     ],
     [batches, jobs],
   );
@@ -244,60 +230,34 @@ export function ActivityCenter() {
   );
   const activeCount =
     visibleJobs.filter(activeJob).length + visibleBatches.filter(activeBatch).length;
-  const currentFailureKeys = useMemo(
+  const currentFailureActivities = useMemo<DismissibleActivity[]>(
     () => [
       ...countableJobs
         .filter((job) => job.status === "failed")
-        .map((job) => jobFailureKey(job)),
+        .map((job) => ({
+          type: "job" as const,
+          id: job.id,
+          status: job.status,
+        })),
       ...batches
         .filter((batch) => batch.status === "failed")
-        .map((batch) => batchFailureKey(batch)),
+        .map((batch) => ({
+          type: "batch" as const,
+          id: batch.id,
+          status: batch.status,
+        })),
     ],
     [batches, countableJobs],
   );
-  const visibleFailedCount = currentFailureKeys.filter(
-    (key) => !dismissedFailureKeys.has(key),
+  const visibleFailedCount = currentFailureActivities.filter(
+    (activity) => !dismissedActivityKeys.has(activityKey(activity)),
   ).length;
   const attentionCount =
     visibleJobs.filter((job) => job.status === "waiting_for_user").length +
     visibleBatches.filter((batch) => batch.status === "waiting_for_user").length;
   const visibleActivityCount = visibleJobs.length + visibleBatches.length;
 
-  const acknowledgeCurrentFailures = useCallback(() => {
-    if (currentFailureKeys.length === 0) return;
-
-    setDismissedFailureKeys((current) => {
-      const next = new Set(current);
-      for (const key of currentFailureKeys) {
-        next.add(key);
-      }
-      saveDismissedFailureKeys(next);
-      return next;
-    });
-  }, [currentFailureKeys]);
-
-  const closePanel = useCallback(() => {
-    setIsOpen(false);
-    acknowledgeCurrentFailures();
-  }, [acknowledgeCurrentFailures]);
-
-  const dismissCurrentActivity = useCallback(() => {
-    acknowledgeCurrentFailures();
-    if (currentActivityKeys.length > 0) {
-      setDismissedActivityKeys((current) => {
-        const next = new Set(current);
-        for (const key of currentActivityKeys) {
-          next.add(key);
-        }
-        saveDismissedActivityKeys(next);
-        return next;
-      });
-    }
-    setNotice(null);
-    setIsOpen(false);
-  }, [acknowledgeCurrentFailures, currentActivityKeys]);
-
-  async function refreshJobs() {
+  const refreshJobs = useCallback(async () => {
     setIsLoading(true);
     const runtimeBatches = listRuntimePhotoUploadBatches();
     try {
@@ -305,21 +265,77 @@ export function ActivityCenter() {
         listBackgroundJobs(),
         listBackgroundJobBatches(),
       ]);
-      setJobs(nextJobs);
-      setBatches([
+      const mergedBatches = [
         ...runtimeBatches,
         ...nextBatches.filter(
           (batch) =>
             !runtimeBatches.some((runtimeBatch) => runtimeBatch.id === batch.id),
         ),
-      ]);
+      ];
+      const activityKeys = [
+        ...nextJobs
+          .filter((job) => !isPlaceholderProcessingJob(job))
+          .filter((job) => activeJob(job) || job.status === "failed")
+          .map(jobActivityKey),
+        ...mergedBatches
+          .filter((batch) => activeBatch(batch) || batch.status === "failed")
+          .map(batchActivityKey),
+      ];
+      const dismissedKeys = await listDismissedBackgroundActivity(activityKeys).catch(
+        () => [],
+      );
+      setJobs(nextJobs);
+      setBatches(mergedBatches);
+      setRemoteDismissedActivityKeys(new Set(dismissedKeys));
     } catch {
       setJobs([]);
       setBatches(runtimeBatches);
     } finally {
       setIsLoading(false);
     }
-  }
+  }, []);
+
+  const dismissActivities = useCallback((activities: DismissibleActivity[]) => {
+    if (activities.length === 0) return;
+
+    setLocallyDismissedActivityKeys((current) => {
+      const next = new Set(current);
+      for (const activity of activities) {
+        next.add(activityKey(activity));
+      }
+      return next;
+    });
+
+    const persistedActivities = activities.filter(
+      (activity) => !isRuntimeOnlyActivity(activity),
+    );
+    if (persistedActivities.length === 0) return;
+
+    dismissBackgroundActivity(persistedActivities)
+      .then(() => refreshJobs())
+      .catch((error) => {
+        setNotice(
+          error instanceof Error
+            ? error.message
+            : "Could not dismiss background activity.",
+        );
+      });
+  }, [refreshJobs]);
+
+  const acknowledgeCurrentFailures = useCallback(() => {
+    dismissActivities(currentFailureActivities);
+  }, [currentFailureActivities, dismissActivities]);
+
+  const closePanel = useCallback(() => {
+    setIsOpen(false);
+    acknowledgeCurrentFailures();
+  }, [acknowledgeCurrentFailures]);
+
+  const dismissCurrentActivity = useCallback(() => {
+    dismissActivities(currentActivities);
+    setNotice(null);
+    setIsOpen(false);
+  }, [currentActivities, dismissActivities]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void refreshJobs(), 0);
@@ -359,7 +375,7 @@ export function ActivityCenter() {
         onPhotoUploadCompleted,
       );
     };
-  }, [t]);
+  }, [refreshJobs, t]);
 
   useEffect(() => {
     const next = jobs.find(
@@ -388,7 +404,7 @@ export function ActivityCenter() {
         runningJobIds.current.delete(next.id);
         void refreshJobs();
       });
-  }, [jobs, t]);
+  }, [jobs, refreshJobs, t]);
 
   useEffect(() => {
     if (isOpen || notice || activeCount > 0 || visibleFailedCount === 0) return;

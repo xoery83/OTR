@@ -764,22 +764,25 @@ function StatCard({
   value,
   tone = "emerald",
   compact = false,
+  onClick,
 }: {
   label: string;
   value: string;
   tone?: "emerald" | "amber" | "stone";
   compact?: boolean;
+  onClick?: () => void;
 }) {
   const toneClass = {
     emerald: "bg-emerald-50 text-emerald-900",
     amber: "bg-amber-50 text-amber-900",
     stone: "bg-stone-50 text-stone-900",
   }[tone];
+  const className = `${compact ? "rounded-2xl p-3" : "rounded-3xl p-4"} ${toneClass} ${
+    onClick ? "cursor-pointer text-left transition hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-300" : ""
+  }`;
 
-  return (
-    <div
-      className={`${compact ? "rounded-2xl p-3" : "rounded-3xl p-4"} ${toneClass}`}
-    >
+  const content = (
+    <>
       <p
         className={`font-bold uppercase tracking-[0.12em] opacity-70 ${
           compact ? "text-[11px]" : "text-xs"
@@ -790,7 +793,15 @@ function StatCard({
       <p className={`${compact ? "mt-1 text-lg" : "mt-2 text-2xl"} font-semibold`}>
         {value}
       </p>
-    </div>
+    </>
+  );
+
+  return onClick ? (
+    <button type="button" onClick={onClick} className={className}>
+      {content}
+    </button>
+  ) : (
+    <div className={className}>{content}</div>
   );
 }
 
@@ -1197,6 +1208,7 @@ function LedgerContent() {
   const [expenseSearchQuery, setExpenseSearchQuery] = useState(
     initialExpenseSearchQuery,
   );
+  const [showNeedsReviewOnly, setShowNeedsReviewOnly] = useState(false);
   const [showAuditPanel, setShowAuditPanel] = useState(false);
   const [auditChecks, setAuditChecks] = useState(defaultAuditChecks);
   const [auditWarnings, setAuditWarnings] = useState<LedgerAuditWarning[] | null>(
@@ -1277,15 +1289,23 @@ function LedgerContent() {
         const matchesCategory =
           expenseCategoryFilter === "all" ||
           entry.category === expenseCategoryFilter;
+        const matchesReviewStatus =
+          !showNeedsReviewOnly || entry.status !== "complete";
         const matchesSearch = entryMatchesSearch(
           entry,
           expenseSearchQuery,
           t(categoryLabelKeys[entry.category]),
         );
 
-        return matchesCategory && matchesSearch;
+        return matchesCategory && matchesReviewStatus && matchesSearch;
       }),
-    [expenseCategoryFilter, expenseSearchQuery, ledgerData?.entries, t],
+    [
+      expenseCategoryFilter,
+      expenseSearchQuery,
+      ledgerData?.entries,
+      showNeedsReviewOnly,
+      t,
+    ],
   );
   const expenseSections = useMemo(
     () => buildExpenseSections(filteredExpenseEntries, expenseSortMode),
@@ -1345,6 +1365,16 @@ function LedgerContent() {
     if (value.trim()) {
       setExpenseCategoryFilter("all");
     }
+  }
+
+  function openNeedsReviewEntries() {
+    setActiveView("expenses");
+    setShowNeedsReviewOnly(true);
+    window.setTimeout(() => {
+      document
+        .getElementById("ledger-expenses")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
   }
 
   function toggleAuditCheck(check: LedgerAuditCheckKey) {
@@ -1711,7 +1741,13 @@ function LedgerContent() {
       ) : null}
 
       <section className="-mx-1 overflow-x-auto px-1">
-        <div className="grid min-w-[720px] grid-cols-4 gap-2 sm:min-w-0">
+        <div
+          className={`grid gap-2 sm:min-w-0 ${
+            ledgerData.summary.incompleteCount > 0
+              ? "min-w-[720px] grid-cols-4"
+              : "min-w-[540px] grid-cols-3"
+          }`}
+        >
           <StatCard
             label={t("ledger.totalCost")}
             value={money(ledgerData.summary.totalBase, displayCurrency, locale)}
@@ -1729,12 +1765,15 @@ function LedgerContent() {
             tone="stone"
             compact
           />
-          <StatCard
-            label={t("ledger.needsReview")}
-            value={`${ledgerData.summary.incompleteCount}`}
-            tone="stone"
-            compact
-          />
+          {ledgerData.summary.incompleteCount > 0 ? (
+            <StatCard
+              label={t("ledger.needsReview")}
+              value={`${ledgerData.summary.incompleteCount}`}
+              tone="stone"
+              compact
+              onClick={openNeedsReviewEntries}
+            />
+          ) : null}
         </div>
       </section>
 
@@ -2080,7 +2119,7 @@ function LedgerContent() {
       ) : null}
 
       {activeView === "expenses" ? (
-        <section className="space-y-3">
+        <section id="ledger-expenses" className="space-y-3 scroll-mt-24">
           <div className="overflow-x-auto rounded-3xl bg-white p-2 shadow-sm">
             <div className="flex min-w-max gap-2">
               {(["all", ...categories] as ExpenseCategoryFilter[]).map((category) => {
@@ -2162,6 +2201,25 @@ function LedgerContent() {
               </div>
             ))}
           </div>
+          {showNeedsReviewOnly ? (
+            <div className="flex items-center justify-between gap-3 rounded-3xl border border-amber-100 bg-amber-50 px-4 py-3 text-amber-950">
+              <div>
+                <p className="text-sm font-black">
+                  {t("ledger.needsReviewFilter.title")}
+                </p>
+                <p className="mt-1 text-xs font-semibold text-amber-800">
+                  {t("ledger.needsReviewFilter.description")}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowNeedsReviewOnly(false)}
+                className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-bold text-amber-900 shadow-sm"
+              >
+                {t("ledger.needsReviewFilter.clear")}
+              </button>
+            </div>
+          ) : null}
           {ledgerData.entries.length === 0 ? (
             <div className="rounded-3xl border border-dashed border-stone-200 bg-white p-5 text-stone-500">
               {t("ledger.empty.expenses")}

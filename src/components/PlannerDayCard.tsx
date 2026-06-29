@@ -31,6 +31,7 @@ import {
   toJourneyDateTimeLocalValue,
 } from "@/lib/format";
 import { getErrorMessage } from "@/lib/errors";
+import { resolveLocationItemClient } from "@/lib/place-service/client";
 import { compressImageFile, type CompressedImage } from "@/lib/images";
 import { getCurrentUser } from "@/lib/supabase/auth";
 import {
@@ -129,6 +130,7 @@ type EditingItem = {
   typeValue: string;
   description: string;
   locationName: string;
+  originalLocationName: string;
   startsAt: string;
   endsAt: string;
   secondary: string;
@@ -1851,6 +1853,7 @@ export function PlannerDayCard({
       description:
         item.itemType === "event" ? item.detail ?? item.note ?? "" : item.note ?? "",
       locationName: item.location ?? "",
+      originalLocationName: item.location ?? "",
       startsAt: toLocalInputValue(item.startsAt),
       endsAt: toLocalInputValue(item.endsAt),
       secondary: item.secondary ?? "",
@@ -1894,6 +1897,9 @@ export function PlannerDayCard({
 
     try {
       const nextTripDayId = await tripDayIdForEditedItem();
+      const previousLocationName = editingItem.originalLocationName.trim();
+      const nextLocationName = editingItem.locationName.trim();
+      const locationChanged = previousLocationName !== nextLocationName;
 
       if (editingItem.itemType === "event") {
         await updateItineraryEvent({
@@ -1910,6 +1916,18 @@ export function PlannerDayCard({
           url: editingItem.url,
           status: editingItem.status,
         });
+        if (
+          locationChanged &&
+          nextLocationName &&
+          editingItem.typeValue !== "flight"
+        ) {
+          resolveLocationItemClient({
+            journeyId: tripId,
+            itemType: "itinerary_event",
+            itemId: editingItem.id,
+            force: true,
+          }).catch(() => undefined);
+        }
       } else {
         const participantNameSet = new Set(
           editingItem.participantNames.map((name) => name.trim().toLowerCase()),
@@ -1942,6 +1960,18 @@ export function PlannerDayCard({
             editingItem.participantNames,
           ),
         });
+        if (
+          locationChanged &&
+          nextLocationName &&
+          editingItem.typeValue !== "flight"
+        ) {
+          resolveLocationItemClient({
+            journeyId: tripId,
+            itemType: "itinerary_reservation",
+            itemId: editingItem.id,
+            force: true,
+          }).catch(() => undefined);
+        }
       }
 
       setEditingItem(null);

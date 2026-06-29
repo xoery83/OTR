@@ -19,6 +19,7 @@ import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import {
   getPhotoFacesForAssets,
   getTripPhotoAssets,
+  repairCurrentUserOrphanPhotoMemories,
   requestFaceConfirmation,
   requestVoiceTranscription,
 } from "@/lib/supabase/media-assets";
@@ -512,11 +513,14 @@ function ReplyBubble({
   reply,
   currentUserId,
   onEngagementChange,
+  onOpenPhoto,
 }: {
   reply: TimelineItem;
   currentUserId: string;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
+  onOpenPhoto?: (item: TimelineItem) => void;
 }) {
+  const { t } = useI18n();
   const mine = reply.memory.userId === currentUserId;
   const bubbleTone = mine
     ? "bg-emerald-700 text-white rounded-tr-sm"
@@ -541,12 +545,19 @@ function ReplyBubble({
         </div>
         <div className={`rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${bubbleTone}`}>
           {reply.memory.type === "photo" && reply.photo?.displayUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={reply.photo.displayUrl}
-              alt={reply.memory.content || "Reply photo"}
-              className="mb-2 max-h-56 rounded-xl object-cover"
-            />
+            <button
+              type="button"
+              onClick={() => onOpenPhoto?.(reply)}
+              className="mb-2 block overflow-hidden rounded-xl text-left"
+              aria-label={t("planner.memory.openImage")}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={reply.photo.displayUrl}
+                alt={reply.memory.content || "Reply photo"}
+                className="max-h-56 cursor-zoom-in object-cover"
+              />
+            </button>
           ) : null}
           {reply.memory.content ? (
             <p className="whitespace-pre-wrap">{reply.memory.content}</p>
@@ -566,6 +577,7 @@ function CompactMemoryCard({
   onDelete,
   onReplyCreated,
   onEngagementChange,
+  onOpenPhoto,
 }: {
   item: TimelineItem;
   tripId: string;
@@ -577,6 +589,7 @@ function CompactMemoryCard({
   onDelete: (memoryId: string) => Promise<void>;
   onReplyCreated: () => Promise<void>;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
+  onOpenPhoto?: (item: TimelineItem) => void;
 }) {
   const isPhoto = item.memory.type === "photo" && item.photo?.displayUrl;
   const canManage = item.memory.userId === currentUserId;
@@ -777,12 +790,19 @@ function CompactMemoryCard({
   return (
     <article className="overflow-hidden rounded-2xl bg-white shadow-sm">
       {isPhoto ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={item.photo!.displayUrl}
-          alt={item.memory.content || t("timeline.photo.alt")}
-          className="h-auto w-full object-cover"
-        />
+        <button
+          type="button"
+          onClick={() => onOpenPhoto?.(item)}
+          className="block w-full overflow-hidden text-left"
+          aria-label={t("planner.memory.openImage")}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={item.photo!.displayUrl}
+            alt={item.memory.content || t("timeline.photo.alt")}
+            className="h-auto w-full cursor-zoom-in object-cover transition duration-200 hover:scale-[1.01]"
+          />
+        </button>
       ) : (
         <div className="bg-emerald-50/70 px-4 py-4 sm:px-5">
           <div className="flex items-start gap-3">
@@ -842,7 +862,7 @@ function CompactMemoryCard({
             />
             {item.hasUnassignedFaces ? (
               <span className="rounded-full bg-amber-100 px-2 py-1 text-[11px] font-black text-amber-900">
-                Face check
+                {t("timeline.photo.faceCheck")}
               </span>
             ) : null}
             {canManage ? (
@@ -925,6 +945,7 @@ function CompactMemoryCard({
                 reply={reply}
                 currentUserId={currentUserId}
                 onEngagementChange={onEngagementChange}
+                onOpenPhoto={onOpenPhoto}
               />
             ))}
           </div>
@@ -1026,6 +1047,135 @@ function CompactMemoryCard({
   );
 }
 
+function flattenTimelineItems(items: TimelineItem[]): TimelineItem[] {
+  return items.flatMap((item) => [item, ...flattenTimelineItems(item.replies)]);
+}
+
+function TimelinePhotoLightbox({
+  item,
+  onClose,
+  onEngagementChange,
+}: {
+  item: TimelineItem | null;
+  onClose: () => void;
+  onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
+}) {
+  const { t } = useI18n();
+
+  if (!item?.photo?.displayUrl) return null;
+
+  const summary = getAiSummary(item.photo);
+
+  return (
+    <div
+      className="fixed inset-0 z-[2147482400] bg-stone-950/92 p-3 backdrop-blur-sm sm:p-6"
+      onClick={onClose}
+    >
+      <div
+        className="mx-auto flex h-full max-w-6xl flex-col gap-3"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 text-white">
+            <p className="truncate text-sm font-black">
+              {item.memory.content || item.memory.locationName || t("timeline.photo.fallback")}
+            </p>
+            <p className="mt-0.5 truncate text-xs font-semibold text-white/65">
+              {formatShortDateTime(item.capturedAt)}
+              {item.memory.locationName ? ` · ${item.memory.locationName}` : ""}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <MemoryEngagementActions
+              memory={item.memory}
+              onChange={onEngagementChange}
+              compact
+              className="rounded-full bg-white/10 px-1 py-1 text-white"
+            />
+            {item.photo.providerWebUrl ? (
+              <a
+                href={item.photo.providerWebUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-full bg-white px-3 py-2 text-xs font-black text-stone-950"
+              >
+                {t("timeline.album.openDrive")}
+              </a>
+            ) : null}
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-full bg-white/15 px-3 py-2 text-xs font-black text-white"
+            >
+              {t("common.close")}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={item.photo.displayUrl}
+              alt={item.memory.content || t("timeline.photo.alt")}
+              className="max-h-full max-w-full object-contain"
+            />
+          </div>
+
+          <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-4">
+            <div className="space-y-4">
+              {summary ? (
+                <p className="rounded-2xl bg-emerald-50 p-3 text-sm leading-6 text-emerald-950">
+                  {summary}
+                </p>
+              ) : null}
+
+              {item.peopleNames.length > 0 ? (
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
+                    {t("timeline.album.people")}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {item.peopleNames.map((name) => (
+                      <span
+                        key={name}
+                        className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-900"
+                      >
+                        {name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {item.photo.sceneTags && item.photo.sceneTags.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {item.photo.sceneTags.slice(0, 10).map((tag) => (
+                    <span
+                      key={tag}
+                      className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-700"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
+              {item.photo.ocrText ? (
+                <p className="rounded-2xl bg-stone-50 p-3 text-sm leading-6 text-stone-700">
+                  {t("timeline.debug.ocr")} {item.photo.ocrText}
+                </p>
+              ) : null}
+
+              <ItemMeta item={item} />
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UploadFeedView({
   items,
   tripId,
@@ -1034,6 +1184,7 @@ function UploadFeedView({
   onDeleteMemory,
   onReplyCreated,
   onEngagementChange,
+  onOpenPhoto,
 }: {
   items: TimelineItem[];
   tripId: string;
@@ -1045,6 +1196,7 @@ function UploadFeedView({
   onDeleteMemory: (memoryId: string) => Promise<void>;
   onReplyCreated: () => Promise<void>;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
+  onOpenPhoto?: (item: TimelineItem) => void;
 }) {
   const sorted = [...items].sort(
     (left, right) =>
@@ -1052,9 +1204,9 @@ function UploadFeedView({
   );
 
   return (
-    <section className="columns-1 gap-4 space-y-4 sm:columns-2 xl:columns-3">
+    <section className="-mx-4 columns-2 gap-2 space-y-2 sm:mx-0 sm:columns-2 sm:gap-4 sm:space-y-4 xl:columns-3">
       {sorted.map((item) => (
-        <div key={item.id} className="break-inside-avoid pb-4">
+        <div key={item.id} className="break-inside-avoid pb-2 sm:pb-4">
           <CompactMemoryCard
             item={item}
             tripId={tripId}
@@ -1063,6 +1215,7 @@ function UploadFeedView({
             onDelete={onDeleteMemory}
             onReplyCreated={onReplyCreated}
             onEngagementChange={onEngagementChange}
+            onOpenPhoto={onOpenPhoto}
           />
         </div>
       ))}
@@ -1079,6 +1232,7 @@ function TrueTimelineView({
   onDeleteMemory,
   onReplyCreated,
   onEngagementChange,
+  onOpenPhoto,
 }: {
   items: TimelineItem[];
   tripId: string;
@@ -1091,6 +1245,7 @@ function TrueTimelineView({
   onDeleteMemory: (memoryId: string) => Promise<void>;
   onReplyCreated: () => Promise<void>;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
+  onOpenPhoto?: (item: TimelineItem) => void;
 }) {
   const { t } = useI18n();
   const dates = [
@@ -1154,7 +1309,7 @@ function TrueTimelineView({
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="-mx-4 grid grid-cols-2 gap-2 sm:mx-0 sm:gap-3 lg:grid-cols-4">
         {dayItems.map((item) => (
           <CompactMemoryCard
             key={item.id}
@@ -1165,6 +1320,7 @@ function TrueTimelineView({
             onDelete={onDeleteMemory}
             onReplyCreated={onReplyCreated}
             onEngagementChange={onEngagementChange}
+            onOpenPhoto={onOpenPhoto}
           />
         ))}
       </div>
@@ -1234,7 +1390,7 @@ function AlbumView({
 
   return (
     <>
-      <section className="grid grid-cols-3 gap-1 sm:grid-cols-4 lg:grid-cols-6">
+      <section className="-mx-4 grid grid-cols-3 gap-0.5 sm:mx-0 sm:grid-cols-4 sm:gap-1 lg:grid-cols-6">
         {photoItems.map((item) => (
           <button
             type="button"
@@ -2089,8 +2245,10 @@ function TimelineContent({ user }: { user: User }) {
   );
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activePhotoItemId, setActivePhotoItemId] = useState<string | null>(null);
 
   const refreshMemorySnapshot = useCallback(async () => {
+    await repairCurrentUserOrphanPhotoMemories(tripId).catch(() => 0);
     const [memoryData, assetData] = await Promise.all([
       getTripMemories(tripId),
       getTripPhotoAssets(tripId),
@@ -2110,6 +2268,7 @@ function TimelineContent({ user }: { user: User }) {
 
     async function loadTimeline() {
       try {
+        await repairCurrentUserOrphanPhotoMemories(tripId).catch(() => 0);
         const [tripData, memoryData, assetData, memberData] = await Promise.all([
           getTrip(tripId),
           getTripMemories(tripId),
@@ -2289,6 +2448,12 @@ function TimelineContent({ user }: { user: User }) {
     () => filteredItems.filter((item) => item.memory.isFavorited),
     [filteredItems],
   );
+  const flattenedVisibleItems = useMemo(
+    () => flattenTimelineItems(filteredItems),
+    [filteredItems],
+  );
+  const activePhotoItem =
+    flattenedVisibleItems.find((item) => item.id === activePhotoItemId) ?? null;
 
   function toggleMember(memberId: string) {
     setSelectedMemberIds((current) =>
@@ -2476,6 +2641,7 @@ function TimelineContent({ user }: { user: User }) {
           onDeleteMemory={handleDeleteMemory}
           onReplyCreated={refreshMemorySnapshot}
           onEngagementChange={handleMemoryEngagementChange}
+          onOpenPhoto={(item) => setActivePhotoItemId(item.id)}
         />
       ) : null}
 
@@ -2490,6 +2656,7 @@ function TimelineContent({ user }: { user: User }) {
           onDeleteMemory={handleDeleteMemory}
           onReplyCreated={refreshMemorySnapshot}
           onEngagementChange={handleMemoryEngagementChange}
+          onOpenPhoto={(item) => setActivePhotoItemId(item.id)}
         />
       ) : null}
 
@@ -2502,6 +2669,7 @@ function TimelineContent({ user }: { user: User }) {
           onDeleteMemory={handleDeleteMemory}
           onReplyCreated={refreshMemorySnapshot}
           onEngagementChange={handleMemoryEngagementChange}
+          onOpenPhoto={(item) => setActivePhotoItemId(item.id)}
         />
       ) : null}
 
@@ -2526,6 +2694,12 @@ function TimelineContent({ user }: { user: User }) {
           onFaceConfirmed={handleFaceConfirmed}
         />
       ) : null}
+
+      <TimelinePhotoLightbox
+        item={activePhotoItem}
+        onClose={() => setActivePhotoItemId(null)}
+        onEngagementChange={handleMemoryEngagementChange}
+      />
     </div>
   );
 }
