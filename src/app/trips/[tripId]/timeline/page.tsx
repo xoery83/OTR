@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
-import type { CSSProperties } from "react";
+import type { CSSProperties, PointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
@@ -49,6 +49,7 @@ type TimelineSessionState = {
   query?: string;
   selectedMemberIds?: string[];
   scrollY?: number;
+  scrollByView?: Partial<Record<TimelineView, number>>;
 };
 
 function getTimelineSessionKey(tripId: string) {
@@ -74,7 +75,14 @@ function writeTimelineSession(tripId: string, state: TimelineSessionState) {
   const current = readTimelineSession(tripId) ?? {};
   window.sessionStorage.setItem(
     getTimelineSessionKey(tripId),
-    JSON.stringify({ ...current, ...state }),
+    JSON.stringify({
+      ...current,
+      ...state,
+      scrollByView:
+        current.scrollByView || state.scrollByView
+          ? { ...current.scrollByView, ...state.scrollByView }
+          : undefined,
+    }),
   );
 }
 
@@ -1119,7 +1127,7 @@ function TimelinePhotoLightbox({
       onClick={onClose}
     >
       <div
-        className="mx-auto flex h-full max-w-6xl flex-col gap-3"
+        className="mx-auto flex h-full max-w-6xl flex-col gap-3 overflow-y-auto md:overflow-hidden"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-3">
@@ -1161,19 +1169,14 @@ function TimelinePhotoLightbox({
 
         <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div
-            className="relative grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black"
-            style={{
-              aspectRatio:
-                item.photo.width && item.photo.height
-                  ? `${item.photo.width} / ${item.photo.height}`
-                  : "4 / 3",
-            }}
+            className="otr-photo-viewer-frame relative mx-auto grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black"
+            style={getPhotoViewerFrameStyle(item.photo)}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={item.photo.displayUrl}
               alt={item.memory.content || t("timeline.photo.alt")}
-              className="h-full w-full object-cover"
+              className="h-full w-full object-contain"
             />
             {item.faces.map((face) => {
               const boxStyle = getFaceBoxStyle(face, item.photo!);
@@ -1222,7 +1225,7 @@ function TimelinePhotoLightbox({
             })}
           </div>
 
-          <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-4">
+          <aside className="min-h-0 max-h-[34svh] overflow-y-auto rounded-3xl bg-white p-3 md:max-h-none md:p-4">
             <div className="space-y-4">
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
@@ -1316,7 +1319,7 @@ function TimelinePhotoLightbox({
                 <button
                   type="button"
                   onClick={openFaceAssignment}
-                  className="w-full rounded-full bg-amber-300 px-4 py-3 text-sm font-black text-stone-950"
+                  className="rounded-full bg-amber-300 px-3 py-1.5 text-xs font-black text-stone-950"
                 >
                   {t("timeline.album.assignFaces")}
                 </button>
@@ -1698,7 +1701,7 @@ function AlbumView({
           onClick={closeViewer}
         >
           <div
-            className="mx-auto flex h-full max-w-6xl flex-col gap-3"
+            className="mx-auto flex h-full max-w-6xl flex-col gap-3 overflow-y-auto md:overflow-hidden"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-3">
@@ -1742,19 +1745,14 @@ function AlbumView({
 
             <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
               <div
-                className="relative grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black"
-                style={{
-                  aspectRatio:
-                    activeItem.photo.width && activeItem.photo.height
-                      ? `${activeItem.photo.width} / ${activeItem.photo.height}`
-                      : "4 / 3",
-                }}
+                className="otr-photo-viewer-frame relative mx-auto grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black"
+                style={getPhotoViewerFrameStyle(activeItem.photo)}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={activeItem.photo.displayUrl}
                   alt={activeItem.memory.content || t("timeline.photo.alt")}
-                  className="h-full w-full object-cover"
+                  className="h-full w-full object-contain"
                 />
                 {activeItem.faces.map((face) => {
                       const boxStyle = getFaceBoxStyle(face, activeItem.photo!);
@@ -1807,7 +1805,7 @@ function AlbumView({
                     })}
               </div>
 
-              <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-4">
+              <aside className="min-h-0 max-h-[34svh] overflow-y-auto rounded-3xl bg-white p-3 md:max-h-none md:p-4">
                 <div className="space-y-4">
                   <div>
                     <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
@@ -1897,11 +1895,11 @@ function AlbumView({
                           ))}
                         </div>
                       </div>
-                  ) : activeItem.hasUnassignedFaces ? (
+                    ) : activeItem.hasUnassignedFaces ? (
                       <button
                         type="button"
                         onClick={openFaceAssignment}
-                        className="w-full rounded-full bg-amber-300 px-4 py-3 text-sm font-black text-stone-950"
+                        className="rounded-full bg-amber-300 px-3 py-1.5 text-xs font-black text-stone-950"
                       >
                         {t("timeline.album.assignFaces")}
                       </button>
@@ -1946,6 +1944,16 @@ function getFaceBoxStyle(
     width: `${Math.min(100, (width / imageWidth) * 100)}%`,
     height: `${Math.min(100, (height / imageHeight) * 100)}%`,
   };
+}
+
+function getPhotoViewerFrameStyle(photo: PhotoAssetWithMemory): CSSProperties {
+  const width = photo.width && photo.width > 0 ? photo.width : 4;
+  const height = photo.height && photo.height > 0 ? photo.height : 3;
+
+  return {
+    aspectRatio: `${width} / ${height}`,
+    "--otr-photo-ratio": String(width / height),
+  } as CSSProperties;
 }
 
 function PhotoGalleryView({
@@ -2504,6 +2512,8 @@ function TimelineContent({ user }: { user: User }) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activePhotoItemId, setActivePhotoItemId] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const scrollRestoreTimerRef = useRef<number | null>(null);
 
   const refreshMemorySnapshot = useCallback(async () => {
     await repairCurrentUserOrphanPhotoMemories(tripId).catch(() => 0);
@@ -2627,16 +2637,40 @@ function TimelineContent({ user }: { user: User }) {
     };
   }, [refreshMemorySnapshot, t, tripId]);
 
+  function getSavedScrollY(nextView: TimelineView) {
+    const latestSession = readTimelineSession(tripId) ?? initialSession;
+    const savedForView = latestSession?.scrollByView?.[nextView];
+    if (typeof savedForView === "number") return savedForView;
+    if (latestSession?.view === nextView && typeof latestSession.scrollY === "number") {
+      return latestSession.scrollY;
+    }
+    return 0;
+  }
+
+  function saveCurrentViewScroll(nextView = view) {
+    writeTimelineSession(tripId, {
+      scrollY: window.scrollY,
+      scrollByView: { [nextView]: window.scrollY },
+    });
+  }
+
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      if (targetAssetId) return;
-      const savedScrollY = initialSession?.scrollY;
-      if (typeof savedScrollY !== "number" || savedScrollY <= 0) return;
-      window.scrollTo({ top: savedScrollY, behavior: "instant" });
+    if (targetAssetId) return;
+    if (scrollRestoreTimerRef.current !== null) {
+      window.clearTimeout(scrollRestoreTimerRef.current);
+    }
+
+    scrollRestoreTimerRef.current = window.setTimeout(() => {
+      window.scrollTo({ top: Math.max(0, getSavedScrollY(view)), behavior: "instant" });
     }, 120);
 
-    return () => window.clearTimeout(timer);
-  }, [initialSession?.scrollY, isLoading, targetAssetId]);
+    return () => {
+      if (scrollRestoreTimerRef.current !== null) {
+        window.clearTimeout(scrollRestoreTimerRef.current);
+        scrollRestoreTimerRef.current = null;
+      }
+    };
+  }, [isLoading, targetAssetId, view]);
 
   useEffect(() => {
     writeTimelineSession(tripId, { view, query, selectedMemberIds });
@@ -2651,12 +2685,12 @@ function TimelineContent({ user }: { user: User }) {
       }
 
       saveTimer = window.setTimeout(() => {
-        writeTimelineSession(tripId, { scrollY: window.scrollY });
+        saveCurrentViewScroll();
       }, 180);
     };
 
     const saveImmediately = () => {
-      writeTimelineSession(tripId, { scrollY: window.scrollY });
+      saveCurrentViewScroll();
     };
 
     window.addEventListener("scroll", saveScroll, { passive: true });
@@ -2672,7 +2706,7 @@ function TimelineContent({ user }: { user: User }) {
       window.removeEventListener("pagehide", saveImmediately);
       document.removeEventListener("visibilitychange", saveImmediately);
     };
-  }, [tripId]);
+  }, [tripId, view]);
 
   const timelineItems = useMemo(
     () =>
@@ -2717,11 +2751,31 @@ function TimelineContent({ user }: { user: User }) {
     if (!isMobileSearchActive) return;
 
     document.body.classList.add("otr-mobile-search-active");
+    const focusFrame = window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus({ preventScroll: true });
+    });
 
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       document.body.classList.remove("otr-mobile-search-active");
     };
   }, [isMobileSearchActive]);
+
+  function isMobileViewport() {
+    return window.matchMedia("(max-width: 767px)").matches;
+  }
+
+  function openMobileSearchFromPointer(event: PointerEvent<HTMLInputElement>) {
+    if (!isMobileViewport() || isMobileSearchActive) return;
+    event.preventDefault();
+    setIsMobileSearchActive(true);
+  }
+
+  function openMobileSearchFromFocus() {
+    if (isMobileViewport()) {
+      setIsMobileSearchActive(true);
+    }
+  }
 
   useEffect(() => {
     document.body.classList.remove("otr-album-immersive");
@@ -2784,6 +2838,12 @@ function TimelineContent({ user }: { user: User }) {
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
+  }
+
+  function switchView(nextView: TimelineView) {
+    if (nextView === view) return;
+    saveCurrentViewScroll(view);
+    setView(nextView);
   }
 
   function toggleMember(memberId: string) {
@@ -2883,7 +2943,7 @@ function TimelineContent({ user }: { user: User }) {
             <button
               type="button"
               key={mode}
-              onClick={() => setView(mode as TimelineView)}
+              onClick={() => switchView(mode as TimelineView)}
               className={`rounded-xl px-2 py-2 text-xs font-black sm:text-sm ${
                 view === mode
                   ? "bg-emerald-700 text-white"
@@ -2897,13 +2957,15 @@ function TimelineContent({ user }: { user: User }) {
 
         <div className="flex items-center gap-2">
           <input
+            ref={searchInputRef}
             type="search"
             enterKeyHint="search"
             inputMode="search"
             autoComplete="off"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            onFocus={() => setIsMobileSearchActive(true)}
+            onPointerDown={openMobileSearchFromPointer}
+            onFocus={openMobileSearchFromFocus}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.nativeEvent.isComposing) {
                 event.currentTarget.blur();

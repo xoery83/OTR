@@ -61,6 +61,11 @@ input[type="date"] {
   .otr-journey-map .leaflet-top.leaflet-left {
     top: 190px;
   }
+
+  .otr-photo-viewer-frame {
+    width: 100%;
+    max-height: none;
+  }
 }
 
 .otr-route-pane {
@@ -384,6 +389,11 @@ input[type="date"] {
 
   body.otr-album-immersive .otr-timeline-date-strip {
     top: 9.75rem !important;
+  }
+
+  .otr-photo-viewer-frame {
+    width: min(100%, calc((100svh - 15rem) * var(--otr-photo-ratio, 1)));
+    max-height: calc(100svh - 15rem);
   }
 
   [data-mobile-app-header],

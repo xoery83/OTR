@@ -2,7 +2,13 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import {
+  type PointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { User } from "@supabase/supabase-js";
 import { AuthGate } from "@/components/AuthGate";
 import { CurrencyCombobox } from "@/components/CurrencyCombobox";
@@ -291,6 +297,7 @@ function ProfileContent({ user }: { user: User }) {
   const [ledgerUnlocked, setLedgerUnlocked] = useState(false);
   const [ledgerSearchQuery, setLedgerSearchQuery] = useState("");
   const [isLedgerSearchActive, setIsLedgerSearchActive] = useState(false);
+  const ledgerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [expandedPanels, setExpandedPanels] = useState<Record<ProfilePanel, boolean>>({
     basic: false,
     ledger: false,
@@ -522,8 +529,12 @@ function ProfileContent({ user }: { user: User }) {
     if (!isLedgerSearchActive) return;
 
     document.body.classList.add("otr-mobile-search-active");
+    const focusFrame = window.requestAnimationFrame(() => {
+      ledgerSearchInputRef.current?.focus({ preventScroll: true });
+    });
 
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       document.body.classList.remove("otr-mobile-search-active");
     };
   }, [isLedgerSearchActive]);
@@ -532,6 +543,17 @@ function ProfileContent({ user }: { user: User }) {
     if (window.matchMedia("(max-width: 767px)").matches) {
       setIsLedgerSearchActive(true);
     }
+  }
+
+  function openLedgerSearchFromPointer(event: PointerEvent<HTMLInputElement>) {
+    if (
+      !window.matchMedia("(max-width: 767px)").matches ||
+      isLedgerSearchActive
+    ) {
+      return;
+    }
+    event.preventDefault();
+    setIsLedgerSearchActive(true);
   }
 
   function closeLedgerSearch() {
@@ -772,12 +794,14 @@ function ProfileContent({ user }: { user: User }) {
               }`}
             >
               <input
+                ref={ledgerSearchInputRef}
                 type="search"
                 enterKeyHint="search"
                 inputMode="search"
                 autoComplete="off"
                 value={ledgerSearchQuery}
                 onChange={(event) => setLedgerSearchQuery(event.target.value)}
+                onPointerDown={openLedgerSearchFromPointer}
                 onFocus={openLedgerSearch}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.nativeEvent.isComposing) {

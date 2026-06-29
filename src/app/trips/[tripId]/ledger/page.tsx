@@ -1,6 +1,13 @@
 "use client";
 
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  type FormEvent,
+  type PointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
 import { CurrencyCombobox } from "@/components/CurrencyCombobox";
@@ -1209,6 +1216,7 @@ function LedgerContent() {
     initialExpenseSearchQuery,
   );
   const [isMobileSearchActive, setIsMobileSearchActive] = useState(false);
+  const expenseSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [showNeedsReviewOnly, setShowNeedsReviewOnly] = useState(false);
   const [showAuditPanel, setShowAuditPanel] = useState(false);
   const [auditChecks, setAuditChecks] = useState(defaultAuditChecks);
@@ -1364,8 +1372,12 @@ function LedgerContent() {
     if (!isMobileSearchActive) return;
 
     document.body.classList.add("otr-mobile-search-active");
+    const focusFrame = window.requestAnimationFrame(() => {
+      expenseSearchInputRef.current?.focus({ preventScroll: true });
+    });
 
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       document.body.classList.remove("otr-mobile-search-active");
     };
   }, [isMobileSearchActive]);
@@ -1390,6 +1402,18 @@ function LedgerContent() {
     if (window.matchMedia("(max-width: 767px)").matches) {
       setIsMobileSearchActive(true);
     }
+  }
+
+  function openMobileSearchFromPointer(event: PointerEvent<HTMLInputElement>) {
+    setActiveView("expenses");
+    if (
+      !window.matchMedia("(max-width: 767px)").matches ||
+      isMobileSearchActive
+    ) {
+      return;
+    }
+    event.preventDefault();
+    setIsMobileSearchActive(true);
   }
 
   function openNeedsReviewEntries() {
@@ -1694,12 +1718,14 @@ function LedgerContent() {
           }`}
         >
           <input
+            ref={expenseSearchInputRef}
             type="search"
             enterKeyHint="search"
             inputMode="search"
             autoComplete="off"
             value={expenseSearchQuery}
             onChange={(event) => updateExpenseSearchQuery(event.target.value)}
+            onPointerDown={openMobileSearchFromPointer}
             onFocus={openMobileSearch}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.nativeEvent.isComposing) {
