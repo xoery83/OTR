@@ -306,24 +306,6 @@ export async function executeCaptureAction(input: ExecuteCaptureActionInput) {
     engineOptions: input.engineOptions ?? {},
   };
 
-  if (trimmed) {
-    const memoryContext = lockedMemoryContext(input);
-    await createRawCaptureEvent({
-      tripId: input.tripId,
-      inputType: "text",
-      originalInput: trimmed,
-      capturedAt,
-      metadata,
-    });
-    await createTextMemory(input.tripId, trimmed, {
-      capturedAt,
-      locationName: memoryContext.locationName,
-      tripDayId: memoryContext.tripDayId,
-      itineraryEventId: memoryContext.itineraryEventId,
-      itineraryReservationId: memoryContext.itineraryReservationId,
-    });
-  }
-
   if (input.compressedImage) {
     const memoryContext = lockedMemoryContext(input);
     await createRawCaptureEvent({
@@ -351,6 +333,22 @@ export async function executeCaptureAction(input: ExecuteCaptureActionInput) {
       },
       input.originalPhotoFile ?? null,
     );
+  } else if (trimmed) {
+    const memoryContext = lockedMemoryContext(input);
+    await createRawCaptureEvent({
+      tripId: input.tripId,
+      inputType: "text",
+      originalInput: trimmed,
+      capturedAt,
+      metadata,
+    });
+    await createTextMemory(input.tripId, trimmed, {
+      capturedAt,
+      locationName: memoryContext.locationName,
+      tripDayId: memoryContext.tripDayId,
+      itineraryEventId: memoryContext.itineraryEventId,
+      itineraryReservationId: memoryContext.itineraryReservationId,
+    });
   }
 
   window.dispatchEvent(new CustomEvent("otr:capture-completed"));

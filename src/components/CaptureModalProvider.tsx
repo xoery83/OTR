@@ -747,7 +747,11 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     setMessages((current) =>
       current.map((message) =>
         message.id === messageId && isAssistantWithIntent(message)
-          ? { ...message, intent: nextIntent }
+          ? {
+              ...message,
+              sourceText: sourceTextForIntent(nextIntent),
+              intent: nextIntent,
+            }
           : message,
       ),
     );
@@ -1842,10 +1846,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
 
     try {
       const selectedIntent = resultOverride ?? intentResult;
-      const captureText = messages
-        .filter((message) => message.role === "user")
-        .map((message) => message.text)
-        .join("\n");
+      const captureText = sourceTextForIntent(selectedIntent);
       await executeCaptureAction({
         tripId: selectedTripId,
         text: captureText || text,
@@ -1864,14 +1865,6 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
       if (compressedImage) {
         setSinglePhotoProgress(100);
       }
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          text: t("capture.message.completed"),
-        },
-      ]);
       if (selectedIntent) {
         setSessionState((current) => ({
           ...(current ?? stateFromIntent(selectedIntent, "completed")),
@@ -1886,7 +1879,13 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
           ],
         }));
       }
+      setMessages([]);
+      setSessionState(null);
       setIntentResult(null);
+      setText("");
+      setPhotoFileName("");
+      setOriginalPhotoFile(null);
+      setCompressedImage(null);
       setIsDebugOpen(false);
       closeCapture();
     } catch (submitError) {
