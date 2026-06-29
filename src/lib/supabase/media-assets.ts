@@ -268,6 +268,52 @@ export async function getPhotoFacesForAssets(assetIds: string[]) {
   );
 }
 
+export async function getTripImageUploadCountsByUser(tripId: string) {
+  const { data, error } = await supabase
+    .from("media_assets")
+    .select("user_id")
+    .eq("trip_id", tripId)
+    .eq("asset_type", "image");
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as { user_id: string | null }[]).reduce<Record<string, number>>(
+    (counts, row) => {
+      if (row.user_id) {
+        counts[row.user_id] = (counts[row.user_id] ?? 0) + 1;
+      }
+      return counts;
+    },
+    {},
+  );
+}
+
+export async function getTripFaceTagCountsByMember(tripId: string) {
+  const { data, error } = await supabase
+    .from("photo_faces")
+    .select("journey_member_id")
+    .eq("trip_id", tripId)
+    .in("recognition_status", ["recognized", "confirmed"]);
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as { journey_member_id: string | null }[]).reduce<
+    Record<string, number>
+  >(
+    (counts, row) => {
+      if (row.journey_member_id) {
+        counts[row.journey_member_id] = (counts[row.journey_member_id] ?? 0) + 1;
+      }
+      return counts;
+    },
+    {},
+  );
+}
+
 export async function requestFaceDetection(assetId: string, tripId: string) {
   const { data } = await supabase.auth.getSession();
   const accessToken = data.session?.access_token;

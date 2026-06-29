@@ -2,18 +2,36 @@
 
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { AuthGate } from "@/components/AuthGate";
+import { getErrorMessage } from "@/lib/errors";
 import { logout } from "@/lib/supabase/auth";
-import { getProfile } from "@/lib/supabase/profiles";
-import type { Profile } from "@/types";
+import {
+  accountRoles,
+  getProfile,
+  listAccountRoles,
+  updateAccountRole,
+  type AccountRoleRow,
+} from "@/lib/supabase/profiles";
+import type { AccountRole, Profile } from "@/types";
+
+const roleLabels: Record<AccountRole, string> = {
+  admin: "管理员",
+  free_user: "免费用户",
+  plus: "Plus用户",
+  pro: "Pro用户",
+};
 
 function SettingsContent({ user }: { user: User }) {
   const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [roleRows, setRoleRows] = useState<AccountRoleRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingRoles, setIsLoadingRoles] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [updatingRoleId, setUpdatingRoleId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -25,6 +43,20 @@ function SettingsContent({ user }: { user: User }) {
 
         if (isMounted) {
           setProfile(profileData);
+        }
+
+        if (profileData.accountRole === "admin") {
+          setIsLoadingRoles(true);
+          try {
+            const roles = await listAccountRoles();
+            if (isMounted) setRoleRows(roles);
+          } catch (roleError) {
+            if (isMounted) {
+              setError(getErrorMessage(roleError, "无法读取用户角色。"));
+            }
+          } finally {
+            if (isMounted) setIsLoadingRoles(false);
+          }
         }
       } catch (profileError) {
         if (isMounted) {
@@ -47,6 +79,38 @@ function SettingsContent({ user }: { user: User }) {
       isMounted = false;
     };
   }, [user.id]);
+
+  const loadAccountRoles = useCallback(async () => {
+    setIsLoadingRoles(true);
+    setError(null);
+    try {
+      setRoleRows(await listAccountRoles());
+    } catch (roleError) {
+      setError(getErrorMessage(roleError, "无法读取用户角色。"));
+    } finally {
+      setIsLoadingRoles(false);
+    }
+  }, []);
+
+  async function handleRoleChange(profileId: string, accountRole: AccountRole) {
+    setUpdatingRoleId(profileId);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await updateAccountRole({ profileId, accountRole });
+      setRoleRows((current) =>
+        current.map((row) => (row.id === profileId ? updated : row)),
+      );
+      if (profileId === profile?.id) {
+        setProfile({ ...profile, accountRole: updated.accountRole });
+      }
+      setNotice("角色已更新。");
+    } catch (roleError) {
+      setError(getErrorMessage(roleError, "无法更新用户角色。"));
+    } finally {
+      setUpdatingRoleId(null);
+    }
+  }
 
   async function handleLogout() {
     setIsLoggingOut(true);
@@ -101,8 +165,17 @@ function SettingsContent({ user }: { user: User }) {
                 {profile.displayName}
               </h2>
               <p className="truncate text-sm text-stone-500">{user.email}</p>
+              <p className="mt-1 inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800">
+                {profile ? roleLabels[profile.accountRole] : "免费用户"}
+              </p>
             </div>
           </div>
+        ) : null}
+
+        {notice ? (
+          <p className="mt-4 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
+            {notice}
+          </p>
         ) : null}
 
         {error ? (
@@ -134,6 +207,82 @@ function SettingsContent({ user }: { user: User }) {
           and test detection without writing data.
         </p>
       </Link>
+
+      {profile?.accountRole === "admin" ? (
+        <section className="rounded-2xl border border-emerald-100 bg-white p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-emerald-700">Admin</p>
+              <h2 className="mt-1 text-xl font-semibold text-stone-950">
+                权限管理
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-stone-600">
+                管理用户角色。当前只用于权限可见性，会员功能差异后续再定义。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={loadAccountRoles}
+              disabled={isLoadingRoles}
+              className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-700 disabled:text-stone-400"
+            >
+              刷新
+            </button>
+          </div>
+
+          {isLoadingRoles ? (
+            <p className="mt-4 rounded-2xl bg-stone-50 p-4 text-sm font-semibold text-stone-500">
+              正在读取用户...
+            </p>
+          ) : (
+            <div className="mt-4 space-y-3">
+              {roleRows.map((row) => (
+                <article
+                  key={row.id}
+                  className="flex flex-col gap-3 rounded-2xl border border-stone-200 p-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-emerald-100 text-sm font-black text-emerald-800">
+                      {row.avatarUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={row.avatarUrl}
+                          alt=""
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        row.displayName.slice(0, 1).toUpperCase()
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-black text-stone-950">
+                        {row.displayName}
+                      </p>
+                      <p className="truncate text-xs text-stone-500">
+                        {row.email ?? "未绑定邮箱"}
+                      </p>
+                    </div>
+                  </div>
+                  <select
+                    value={row.accountRole}
+                    onChange={(event) =>
+                      handleRoleChange(row.id, event.target.value as AccountRole)
+                    }
+                    disabled={updatingRoleId === row.id}
+                    className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-sm font-bold text-stone-950 disabled:text-stone-400"
+                  >
+                    {accountRoles.map((role) => (
+                      <option key={role} value={role}>
+                        {roleLabels[role]}
+                      </option>
+                    ))}
+                  </select>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      ) : null}
     </div>
   );
 }

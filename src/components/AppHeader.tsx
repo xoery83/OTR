@@ -138,7 +138,7 @@ export function AppHeader() {
         className={
           isMapPage
             ? "fixed left-3 top-3 z-[650] md:hidden"
-            : "sticky top-0 z-20 border-b border-emerald-100 bg-[#fffdf8]/95 backdrop-blur md:hidden"
+            : "sticky top-0 z-[600] border-b border-emerald-100 bg-[#fffdf8]/95 backdrop-blur md:hidden"
         }
       >
         <div
@@ -193,7 +193,7 @@ export function AppHeader() {
                   </span>
                 </button>
                 {isJourneyMenuOpen ? (
-                  <div className="absolute right-0 top-12 z-50 w-72 max-w-[82vw] overflow-hidden rounded-2xl border border-emerald-100 bg-white shadow-xl">
+                  <div className="absolute right-0 top-12 z-[680] w-72 max-w-[82vw] overflow-hidden rounded-2xl border border-emerald-100 bg-white shadow-xl">
                     <div className="border-b border-stone-100 px-4 py-3">
                       <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">
                         Journeys

@@ -252,8 +252,11 @@ export type Profile = {
   displayName: string;
   globalAka?: string | null;
   avatarUrl: string | null;
+  accountRole: AccountRole;
   createdAt: string;
 };
+
+export type AccountRole = "admin" | "free_user" | "plus" | "pro";
 
 export type CreateTripInput = {
   name: string;

@@ -142,7 +142,7 @@ function Icon({ name }: { name: MobileNavIcon }) {
 }
 
 function navItemClass(active: boolean, compact = false) {
-  return `flex h-14 min-w-[74px] flex-col items-center justify-center gap-1 rounded-2xl px-3 text-[11px] font-black transition ${
+  return `flex h-14 w-full min-w-[74px] flex-col items-center justify-center gap-1 rounded-2xl px-2 text-center text-[11px] font-black transition ${
     compact
       ? active
         ? "bg-white/90 text-emerald-800 shadow-sm backdrop-blur"
@@ -196,6 +196,8 @@ export function BottomNav() {
   }
 
   function renderBottomBar(items: MobileNavItem[]) {
+    const useEqualColumns = items.length <= 4;
+
     return (
       <nav
         className={`fixed inset-x-0 bottom-0 z-30 backdrop-blur md:hidden ${
@@ -211,11 +213,19 @@ export function BottomNav() {
           <span className="text-lg leading-none">›</span>
         </div>
         <div
-          className={`mx-auto max-w-3xl overflow-x-auto pl-5 pr-28 ${
+          className={`mx-auto max-w-3xl ${
+            useEqualColumns ? "overflow-hidden px-8" : "overflow-x-auto pl-5 pr-28"
+          } ${
             isMapPage ? "h-[72px] py-2" : "h-[82px] pb-3 pt-2"
           }`}
         >
-          <div className="flex w-max min-w-full items-center justify-[safe_center] gap-2">
+          <div
+            className={
+              useEqualColumns
+                ? "grid h-full min-w-full grid-cols-4 items-center gap-2"
+                : "flex w-max min-w-full items-center justify-center gap-2"
+            }
+          >
             {items.map((item) => (
               <Link
                 key={item.href}

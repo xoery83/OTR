@@ -22,6 +22,11 @@ async function authHeaders() {
   };
 }
 
+function emitBackgroundJobsChanged() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("otr:background-jobs-changed"));
+}
+
 export async function listBackgroundJobs() {
   const response = await fetch("/api/background-jobs", {
     headers: await authHeaders(),
@@ -71,6 +76,7 @@ export async function createBackgroundJobBatch(
     throw new Error(payload.error || "Could not create background job batch.");
   }
 
+  emitBackgroundJobsChanged();
   return payload.batch;
 }
 
@@ -92,6 +98,7 @@ export async function updateBackgroundJobBatch(
     throw new Error(payload.error || "Could not update background job batch.");
   }
 
+  emitBackgroundJobsChanged();
   return payload.batch;
 }
 
@@ -110,6 +117,7 @@ export async function createBackgroundJob(input: CreateBackgroundJobInput) {
     throw new Error(payload.error || "Could not create background job.");
   }
 
+  emitBackgroundJobsChanged();
   return payload.job;
 }
 
@@ -131,6 +139,7 @@ export async function updateBackgroundJob(
     throw new Error(payload.error || "Could not update background job.");
   }
 
+  emitBackgroundJobsChanged();
   return payload.job;
 }
 

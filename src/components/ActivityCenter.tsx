@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "@/components/I18nProvider";
 import {
   listBackgroundJobBatches,
   listBackgroundJobs,
@@ -11,6 +12,7 @@ import type {
   BackgroundJobBatch,
   BackgroundJobStatus,
 } from "@/lib/background-jobs/types";
+import type { TranslationKey } from "@/lib/i18n/dictionaries";
 import {
   requestFaceDetection,
   requestPhotoIndexing,
@@ -19,6 +21,9 @@ import {
   listRuntimePhotoUploadBatches,
   retryFailedPhotoUploadBatch,
 } from "@/lib/uploads/photo-upload-manager";
+
+const DISMISSED_FAILURES_STORAGE_KEY = "otr:activity-center:dismissed-failures";
+const FAILED_WARNING_AUTO_HIDE_MS = 18000;
 
 function payloadString(job: BackgroundJob, key: string) {
   const value = job.payload[key];
@@ -44,14 +49,29 @@ function isPlaceholderProcessingJob(job: BackgroundJob) {
   );
 }
 
-function statusLabel(status: BackgroundJobStatus) {
-  if (status === "queued") return "Queued";
-  if (status === "uploading") return "Uploading";
-  if (status === "processing") return "Processing";
-  if (status === "waiting_for_user") return "Needs attention";
-  if (status === "completed") return "Completed";
-  if (status === "failed") return "Failed";
-  return "Cancelled";
+function getFaceReviewHref(job: BackgroundJob) {
+  if (!["face_detection", "face_recognition"].includes(job.jobType)) return null;
+
+  const tripId = payloadString(job, "tripId");
+  const mediaAssetId = payloadString(job, "mediaAssetId");
+  if (!tripId || !mediaAssetId) return null;
+
+  return `/trips/${tripId}/timeline?view=debug&asset=${mediaAssetId}`;
+}
+
+type Translate = (
+  key: TranslationKey,
+  values?: Record<string, string | number>,
+) => string;
+
+function statusLabel(status: BackgroundJobStatus, t: Translate) {
+  if (status === "queued") return t("activity.status.queued");
+  if (status === "uploading") return t("activity.status.uploading");
+  if (status === "processing") return t("activity.status.processing");
+  if (status === "waiting_for_user") return t("activity.status.waitingForUser");
+  if (status === "completed") return t("activity.status.completed");
+  if (status === "failed") return t("activity.status.failed");
+  return t("activity.status.cancelled");
 }
 
 function batchProgress(batch: BackgroundJobBatch) {
@@ -62,26 +82,53 @@ function batchProgress(batch: BackgroundJobBatch) {
   );
 }
 
-async function runJob(job: BackgroundJob) {
+function jobFailureKey(job: BackgroundJob) {
+  return `job:${job.id}`;
+}
+
+function batchFailureKey(batch: BackgroundJobBatch) {
+  return `batch:${batch.id}`;
+}
+
+function loadDismissedFailureKeys() {
+  if (typeof window === "undefined") return new Set<string>();
+
+  try {
+    const raw = window.localStorage.getItem(DISMISSED_FAILURES_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter(Boolean).map(String) : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function saveDismissedFailureKeys(keys: Set<string>) {
+  window.localStorage.setItem(
+    DISMISSED_FAILURES_STORAGE_KEY,
+    JSON.stringify([...keys]),
+  );
+}
+
+async function runJob(job: BackgroundJob, t: Translate) {
   if (isPlaceholderProcessingJob(job)) return;
 
   const tripId = payloadString(job, "tripId");
   const mediaAssetId = payloadString(job, "mediaAssetId");
   if (!tripId || !mediaAssetId) {
-    throw new Error("Job is missing tripId or mediaAssetId.");
+    throw new Error(t("activity.job.missingPayload"));
   }
 
   if (job.jobType === "image_indexing") {
     await updateBackgroundJob(job.id, {
       status: "processing",
       progress: 20,
-      currentStep: "Image indexing",
+      currentStep: t("activity.job.imageIndexing"),
     });
     const asset = await requestPhotoIndexing(mediaAssetId, tripId);
     await updateBackgroundJob(job.id, {
       status: "completed",
       progress: 100,
-      currentStep: "Image indexed",
+      currentStep: t("activity.job.imageIndexed"),
       result: { assetId: asset.id },
     });
     return;
@@ -92,7 +139,9 @@ async function runJob(job: BackgroundJob) {
       status: "processing",
       progress: 20,
       currentStep:
-        job.jobType === "face_detection" ? "Face detection" : "Face recognition",
+        job.jobType === "face_detection"
+          ? t("activity.job.faceDetection")
+          : t("activity.job.faceRecognition"),
     });
     const faces = await requestFaceDetection(mediaAssetId, tripId);
     const unknownCount = faces.filter(
@@ -103,8 +152,8 @@ async function runJob(job: BackgroundJob) {
       progress: 100,
       currentStep:
         unknownCount > 0
-          ? `${unknownCount} unknown face${unknownCount === 1 ? "" : "s"}`
-          : "Faces processed",
+          ? t("activity.job.unknownFaces", { count: unknownCount })
+          : t("activity.job.facesProcessed"),
       result: { mediaAssetId, faceCount: faces.length, unknownCount },
     });
     return;
@@ -113,18 +162,23 @@ async function runJob(job: BackgroundJob) {
   await updateBackgroundJob(job.id, {
     status: "completed",
     progress: 100,
-    currentStep: "Completed",
+    currentStep: t("activity.job.completed"),
     result: { skippedByClientWorker: true },
   });
 }
 
 export function ActivityCenter() {
+  const { t } = useI18n();
   const [jobs, setJobs] = useState<BackgroundJob[]>([]);
   const [batches, setBatches] = useState<BackgroundJobBatch[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
+  const [dismissedFailureKeys, setDismissedFailureKeys] = useState<Set<string>>(
+    loadDismissedFailureKeys,
+  );
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const runningJobIds = useRef(new Set<string>());
   const visibleBatches = useMemo(
     () =>
@@ -141,15 +195,47 @@ export function ActivityCenter() {
         .slice(0, 8),
     [jobs],
   );
-  const countableJobs = jobs.filter((job) => !isPlaceholderProcessingJob(job));
+  const countableJobs = useMemo(
+    () => jobs.filter((job) => !isPlaceholderProcessingJob(job)),
+    [jobs],
+  );
   const activeCount =
     countableJobs.filter(activeJob).length + batches.filter(activeBatch).length;
-  const failedCount =
-    countableJobs.filter((job) => job.status === "failed").length +
-    batches.filter((batch) => batch.status === "failed").length;
+  const currentFailureKeys = useMemo(
+    () => [
+      ...countableJobs
+        .filter((job) => job.status === "failed")
+        .map((job) => jobFailureKey(job)),
+      ...batches
+        .filter((batch) => batch.status === "failed")
+        .map((batch) => batchFailureKey(batch)),
+    ],
+    [batches, countableJobs],
+  );
+  const visibleFailedCount = currentFailureKeys.filter(
+    (key) => !dismissedFailureKeys.has(key),
+  ).length;
   const attentionCount =
     countableJobs.filter((job) => job.status === "waiting_for_user").length +
     batches.filter((batch) => batch.status === "waiting_for_user").length;
+
+  const acknowledgeCurrentFailures = useCallback(() => {
+    if (currentFailureKeys.length === 0) return;
+
+    setDismissedFailureKeys((current) => {
+      const next = new Set(current);
+      for (const key of currentFailureKeys) {
+        next.add(key);
+      }
+      saveDismissedFailureKeys(next);
+      return next;
+    });
+  }, [currentFailureKeys]);
+
+  const closePanel = useCallback(() => {
+    setIsOpen(false);
+    acknowledgeCurrentFailures();
+  }, [acknowledgeCurrentFailures]);
 
   async function refreshJobs() {
     setIsLoading(true);
@@ -189,8 +275,13 @@ export function ActivityCenter() {
       if (!detail) return;
       setNotice(
         detail.failedFiles > 0
-          ? `${detail.uploadedFiles} photos uploaded, ${detail.failedFiles} failed`
-          : `${detail.uploadedFiles} photos uploaded. Organizing photos in background...`,
+          ? t("activity.notice.uploadPartial", {
+              uploaded: detail.uploadedFiles,
+              failed: detail.failedFiles,
+            })
+          : t("activity.notice.uploadComplete", {
+              uploaded: detail.uploadedFiles,
+            }),
       );
       window.setTimeout(() => setNotice(null), 8000);
       void refreshJobs();
@@ -208,7 +299,7 @@ export function ActivityCenter() {
         onPhotoUploadCompleted,
       );
     };
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const next = jobs.find(
@@ -223,28 +314,61 @@ export function ActivityCenter() {
     if (!next) return;
 
     runningJobIds.current.add(next.id);
-    runJob(next)
+    runJob(next, t)
       .catch(async (error) => {
         await updateBackgroundJob(next.id, {
           status: "failed",
           progress: next.progress,
-          currentStep: "Failed",
+          currentStep: t("activity.job.failed"),
           errorMessage:
-            error instanceof Error ? error.message : "Background job failed.",
+            error instanceof Error ? error.message : t("activity.error.jobFailed"),
         }).catch(() => null);
       })
       .finally(() => {
         runningJobIds.current.delete(next.id);
         void refreshJobs();
       });
-  }, [jobs]);
+  }, [jobs, t]);
 
-  if (activeCount === 0 && failedCount === 0 && !notice && !isOpen) {
+  useEffect(() => {
+    if (isOpen || notice || activeCount > 0 || visibleFailedCount === 0) return;
+
+    const timer = window.setTimeout(() => {
+      acknowledgeCurrentFailures();
+    }, FAILED_WARNING_AUTO_HIDE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    acknowledgeCurrentFailures,
+    activeCount,
+    isOpen,
+    notice,
+    visibleFailedCount,
+  ]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (containerRef.current?.contains(target)) return;
+      closePanel();
+    };
+
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [closePanel, isOpen]);
+
+  if (activeCount === 0 && visibleFailedCount === 0 && !notice && !isOpen) {
     return null;
   }
 
   return (
-    <div className="fixed bottom-24 right-3 z-[2147482500] md:bottom-5 md:right-5">
+    <div
+      ref={containerRef}
+      className="fixed bottom-24 left-3 z-[2147482500] md:bottom-5 md:left-5"
+    >
       {notice && !isOpen ? (
         <div className="mb-3 w-[min(360px,calc(100vw-24px))] rounded-3xl border border-emerald-100 bg-white p-4 text-sm font-bold text-emerald-900 shadow-2xl">
           {notice}
@@ -256,25 +380,25 @@ export function ActivityCenter() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-800">
-                Activity
+                {t("activity.label")}
               </p>
               <h2 className="mt-1 text-lg font-semibold text-stone-950">
-                Background jobs
+                {t("activity.title")}
               </h2>
             </div>
             <button
               type="button"
-              onClick={() => setIsOpen(false)}
+              onClick={closePanel}
               className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
             >
-              Close
+              {t("common.close")}
             </button>
           </div>
 
           <div className="mt-4 space-y-2">
             {visibleBatches.length === 0 && visibleJobs.length === 0 ? (
               <p className="rounded-2xl bg-stone-50 p-3 text-sm font-medium text-stone-500">
-                {isLoading ? "Loading..." : "No active background work."}
+                {isLoading ? t("activity.loading") : t("activity.empty")}
               </p>
             ) : (
               <>
@@ -291,7 +415,7 @@ export function ActivityCenter() {
                             {batch.title}
                           </p>
                           <p className="mt-0.5 text-xs font-semibold text-stone-600">
-                            {statusLabel(batch.status)}
+                            {statusLabel(batch.status, t)}
                             {batch.currentStep ? ` · ${batch.currentStep}` : ""}
                             {batch.totalItems > 0
                               ? ` · ${batch.completedItems}/${batch.totalItems}`
@@ -326,7 +450,7 @@ export function ActivityCenter() {
                               setNotice(
                                 error instanceof Error
                                   ? error.message
-                                  : "Could not retry failed uploads.",
+                                  : t("activity.error.retryUploads"),
                               );
                             } finally {
                               setRetryingBatchId(null);
@@ -335,50 +459,67 @@ export function ActivityCenter() {
                           className="mt-3 rounded-full bg-white px-3 py-2 text-xs font-black text-emerald-800 shadow-sm disabled:text-stone-400"
                         >
                           {retryingBatchId === batch.id
-                            ? "Retrying..."
-                            : "Retry failed uploads"}
+                            ? t("activity.retrying")
+                            : t("activity.retryFailedUploads")}
                         </button>
                       ) : null}
                     </article>
                   );
                 })}
                 {visibleJobs.map((job) => (
-                <article
-                  key={job.id}
-                  className="rounded-2xl border border-stone-100 bg-[#fffdf8] p-3"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-bold text-stone-950">
-                        {job.title}
-                      </p>
-                      <p className="mt-0.5 text-xs font-semibold text-stone-500">
-                        {statusLabel(job.status)}
-                        {job.currentStep ? ` · ${job.currentStep}` : ""}
-                      </p>
-                    </div>
-                    <span className="text-xs font-black text-emerald-800">
-                      {job.progress}%
-                    </span>
-                  </div>
-                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-stone-100">
-                    <div
-                      className={`h-full rounded-full ${
-                        job.status === "failed"
-                          ? "bg-red-500"
-                          : job.status === "waiting_for_user"
-                            ? "bg-amber-500"
-                            : "bg-emerald-700"
-                      }`}
-                      style={{ width: `${job.progress}%` }}
-                    />
-                  </div>
-                  {job.errorMessage ? (
-                    <p className="mt-2 text-xs font-medium text-red-700">
-                      {job.errorMessage}
-                    </p>
-                  ) : null}
-                </article>
+                  (() => {
+                    const faceReviewHref = getFaceReviewHref(job);
+                    const shouldShowFaceReview =
+                      job.status === "waiting_for_user" && faceReviewHref;
+
+                    return (
+                      <article
+                        key={job.id}
+                        className="rounded-2xl border border-stone-100 bg-[#fffdf8] p-3"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-bold text-stone-950">
+                              {job.title}
+                            </p>
+                            <p className="mt-0.5 text-xs font-semibold text-stone-500">
+                              {statusLabel(job.status, t)}
+                              {job.currentStep ? ` · ${job.currentStep}` : ""}
+                            </p>
+                          </div>
+                          <span className="text-xs font-black text-emerald-800">
+                            {job.progress}%
+                          </span>
+                        </div>
+                        <div className="mt-2 h-2 overflow-hidden rounded-full bg-stone-100">
+                          <div
+                            className={`h-full rounded-full ${
+                              job.status === "failed"
+                                ? "bg-red-500"
+                                : job.status === "waiting_for_user"
+                                  ? "bg-amber-500"
+                                  : "bg-emerald-700"
+                            }`}
+                            style={{ width: `${job.progress}%` }}
+                          />
+                        </div>
+                        {job.errorMessage ? (
+                          <p className="mt-2 text-xs font-medium text-red-700">
+                            {job.errorMessage}
+                          </p>
+                        ) : null}
+                        {shouldShowFaceReview ? (
+                          <a
+                            href={faceReviewHref}
+                            onClick={closePanel}
+                            className="mt-3 inline-flex rounded-full bg-emerald-700 px-3 py-2 text-xs font-black text-white shadow-sm"
+                          >
+                            {t("activity.action.reviewFaces")}
+                          </a>
+                        ) : null}
+                      </article>
+                    );
+                  })()
                 ))}
               </>
             )}
@@ -388,14 +529,20 @@ export function ActivityCenter() {
 
       <button
         type="button"
-        onClick={() => setIsOpen((current) => !current)}
+        onClick={() => {
+          if (isOpen) {
+            closePanel();
+            return;
+          }
+          setIsOpen(true);
+        }}
         className="rounded-full bg-stone-950 px-4 py-3 text-sm font-black text-white shadow-2xl"
       >
         {attentionCount > 0
-          ? `${attentionCount} needs attention`
+          ? t("activity.summary.attention", { count: attentionCount })
           : activeCount > 0
-            ? `${activeCount} running`
-            : `${failedCount} failed`}
+            ? t("activity.summary.running", { count: activeCount })
+            : t("activity.summary.failed", { count: visibleFailedCount })}
       </button>
     </div>
   );

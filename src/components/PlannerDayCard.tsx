@@ -2337,8 +2337,8 @@ export function PlannerDayCard({
   }
 
   return (
-    <article className="overflow-hidden rounded-[28px] border border-stone-200 bg-white shadow-sm">
-      <header className="bg-[#fff8ec] p-4 sm:p-5">
+    <article className="overflow-hidden border-y border-stone-200 bg-white shadow-none md:rounded-[28px] md:border md:shadow-sm">
+      <header className="bg-[#fff8ec] px-3 py-4 sm:p-5">
         <div className="grid grid-cols-[72px_1fr_auto] gap-3">
           <div className="grid h-[88px] place-items-center rounded-2xl bg-emerald-800 text-white shadow-sm">
             <div className="text-center">
@@ -2461,7 +2461,7 @@ export function PlannerDayCard({
 
       </header>
 
-      <div className="space-y-5 p-4 sm:p-5">
+      <div className="space-y-5 px-3 py-4 sm:p-5">
         {stayItems.length > 0 ? (
           <section className="space-y-2">
             {stayItems.map(({ stay, stayItem }) => {
@@ -2976,7 +2976,7 @@ export function PlannerDayCard({
               {t("planner.empty.mine")}
             </p>
           ) : (
-            <div className="relative space-y-2 pl-5 before:absolute before:bottom-4 before:left-2 before:top-4 before:w-px before:bg-emerald-100">
+            <div className="relative space-y-2 pl-3 before:absolute before:bottom-4 before:left-[5px] before:top-4 before:w-px before:bg-emerald-100 sm:pl-5 sm:before:left-2">
               {visibleStory.map((item) => {
                 const navHref = mapsHref(item.location);
                 const itemTotal = ledgerTotalForItem(item);
@@ -2991,7 +2991,7 @@ export function PlannerDayCard({
                       storyItemRefs.current[item.id] = node;
                     }}
                     open={focusedItemId === item.id ? true : undefined}
-                    className={`group relative rounded-2xl p-3 open:bg-[#fffaf1] ${
+                    className={`group relative rounded-2xl p-2.5 open:bg-[#fffaf1] sm:p-3 ${
                       focusedItemId === item.id
                         ? "ring-2 ring-emerald-300 ring-offset-2 ring-offset-white"
                         : ""
@@ -3005,9 +3005,9 @@ export function PlannerDayCard({
                           : "bg-stone-50"
                     }`}
                   >
-                    <summary className="grid cursor-pointer list-none grid-cols-[48px_1fr] gap-3">
+                    <summary className="grid cursor-pointer list-none grid-cols-[42px_1fr] gap-2 sm:grid-cols-[48px_1fr] sm:gap-3">
                       <span
-                        className={`absolute -left-[18px] top-5 rounded-full border-2 border-white shadow-sm ${
+                        className={`absolute -left-[13px] top-5 rounded-full border-2 border-white shadow-sm sm:-left-[18px] ${
                           isFlightItem
                             ? "size-4 bg-sky-600 ring-4 ring-sky-100"
                             : "size-3 bg-emerald-700"
@@ -3954,6 +3954,8 @@ export function PlannerDayCard({
             tripId={tripId}
             date={day.dayDate}
             memories={memories}
+            imageUrls={imageUrlByMemoryPath}
+            onOpenImage={setImagePreview}
           />
         </section>
 

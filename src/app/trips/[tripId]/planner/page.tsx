@@ -524,6 +524,7 @@ function PlannerContent() {
           <div ref={dateStripRef} className="flex gap-2 overflow-x-auto">
             {planner.days.map((plannerDay) => {
               const selected = plannerDay.day.id === selectedDay?.day.id;
+              const isToday = plannerDay.day.dayDate === todayKey();
               const official = isOfficialTripDay(
                 plannerDay.day.dayDate,
                 trip,
@@ -539,10 +540,12 @@ function PlannerContent() {
                       ? official
                         ? "border-emerald-700 bg-emerald-700 text-white shadow-sm"
                         : "border-stone-500 bg-stone-700 text-white shadow-sm"
+                      : isToday
+                        ? "border-amber-300 bg-amber-50 text-amber-900 ring-2 ring-amber-200"
                       : official
                         ? "border-emerald-200 bg-emerald-50 text-emerald-900"
                         : "border-dashed border-stone-200 bg-white/70 text-stone-400"
-                  }`}
+                  } ${selected && isToday ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-[#f7f3ea]" : ""}`}
                   title={
                     official
                       ? t("planner.day.official")
@@ -570,7 +573,7 @@ function PlannerContent() {
       ) : null}
 
       {selectedDay ? (
-        <section ref={selectedDayCardRef}>
+        <section ref={selectedDayCardRef} className="-mx-5 md:mx-0">
           <PlannerDayCard
             tripId={tripId}
             plannerDay={selectedDay}

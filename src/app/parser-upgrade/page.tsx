@@ -1,10 +1,12 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { getErrorMessage } from "@/lib/errors";
 import { supabase } from "@/lib/supabase/client";
+import { getProfile } from "@/lib/supabase/profiles";
+import type { Profile } from "@/types";
 
 type UpgradePayload = {
   source: "capture" | "planner_import" | "ledger_import" | "memory_import";
@@ -14,6 +16,7 @@ type UpgradePayload = {
   currentParseResult?: unknown;
   language?: string | null;
   contextSnapshot?: unknown;
+  returnTo?: string | null;
 };
 
 const errorTypeOptions = [
@@ -36,6 +39,40 @@ function safeJson(value: unknown) {
 function parseJsonInput(value: string) {
   if (!value.trim()) return {};
   return JSON.parse(value);
+}
+
+function readUpgradeDraft() {
+  if (typeof window === "undefined") {
+    return {
+      payload: null as UpgradePayload | null,
+      correctedJson: "{}",
+      error: null as string | null,
+    };
+  }
+
+  const stored = window.sessionStorage.getItem("otr:parser-upgrade:draft");
+  if (!stored) {
+    return {
+      payload: null as UpgradePayload | null,
+      correctedJson: "{}",
+      error: null as string | null,
+    };
+  }
+
+  try {
+    const payload = JSON.parse(stored) as UpgradePayload;
+    return {
+      payload,
+      correctedJson: safeJson(payload.currentParseResult ?? {}),
+      error: null as string | null,
+    };
+  } catch {
+    return {
+      payload: null as UpgradePayload | null,
+      correctedJson: "{}",
+      error: "无法读取 Parser Upgrade 草稿。",
+    };
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -185,22 +222,52 @@ function ParseSummary({ value, title }: { value: unknown; title: string }) {
   );
 }
 
+function JsonDisclosure({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="group rounded-3xl border border-stone-200 bg-white p-5 shadow-sm">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-lg font-semibold text-stone-950">
+        <span>{title}</span>
+        <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-600 group-open:hidden">
+          展开
+        </span>
+        <span className="hidden rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-600 group-open:inline-flex">
+          收起
+        </span>
+      </summary>
+      <div className="mt-3">{children}</div>
+    </details>
+  );
+}
+
 function ParserUpgradeContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const sourceParam = searchParams.get("source");
-  const [payload, setPayload] = useState<UpgradePayload | null>(null);
+  const [initialDraft] = useState(readUpgradeDraft);
+  const [payload] = useState<UpgradePayload | null>(initialDraft.payload);
+  const [profile, setProfile] = useState<Profile | null>(null);
   const [errorTypes, setErrorTypes] = useState<string[]>([]);
-  const [correctedJson, setCorrectedJson] = useState("{}");
+  const [correctedJson, setCorrectedJson] = useState(initialDraft.correctedJson);
   const [aliasesJson, setAliasesJson] = useState("[]");
   const [rulesJson, setRulesJson] = useState("[]");
   const [guidance, setGuidance] = useState("");
-  const [scope, setScope] = useState<"journey" | "global">("journey");
+  const [scopeOverride, setScopeOverride] = useState<"journey" | "global" | null>(
+    null,
+  );
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialDraft.error);
   const [afterJson, setAfterJson] = useState<string | null>(null);
   const [afterResult, setAfterResult] = useState<unknown>(null);
+  const scope =
+    scopeOverride ?? (profile?.accountRole === "admin" ? "global" : "journey");
 
   const correctedPreview = useMemo(() => {
     try {
@@ -211,17 +278,31 @@ function ParserUpgradeContent() {
   }, [correctedJson]);
 
   useEffect(() => {
-    const stored = window.sessionStorage.getItem("otr:parser-upgrade:draft");
-    if (!stored) return;
-
-    try {
-      const parsed = JSON.parse(stored) as UpgradePayload;
-      setPayload(parsed);
-      setCorrectedJson(safeJson(parsed.currentParseResult ?? {}));
-    } catch {
-      setError("无法读取 Parser Upgrade 草稿。");
+    let isMounted = true;
+    async function loadProfile() {
+      const { data } = await supabase.auth.getUser();
+      if (!data.user) return;
+      const currentProfile = await getProfile(data.user.id);
+      if (isMounted) setProfile(currentProfile);
     }
+    loadProfile().catch(() => null);
+    return () => {
+      isMounted = false;
+    };
   }, []);
+
+  function returnToSource() {
+    const returnTo = payload?.returnTo;
+    if (returnTo && returnTo.startsWith("/")) {
+      router.push(returnTo);
+      return;
+    }
+    if (window.history.length > 1) {
+      router.back();
+      return;
+    }
+    router.push(payload?.journeyId ? `/trips/${payload.journeyId}/planner` : "/trips");
+  }
 
   const sourceLabel = useMemo(() => {
     const source = payload?.source ?? sourceParam;
@@ -367,6 +448,13 @@ function ParserUpgradeContent() {
   return (
     <main className="mx-auto max-w-5xl space-y-6 px-4 py-8">
       <section>
+        <button
+          type="button"
+          onClick={returnToSource}
+          className="mb-5 rounded-full bg-white px-4 py-2 text-sm font-bold text-emerald-800 shadow-sm"
+        >
+          返回上一页
+        </button>
         <p className="text-sm font-black uppercase tracking-[0.14em] text-emerald-700">
           Upgrade Parser
         </p>
@@ -385,12 +473,11 @@ function ParserUpgradeContent() {
             {payload.originalText}
           </pre>
         </div>
-        <div className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-semibold text-stone-950">当前错误解析</h2>
+        <JsonDisclosure title="当前错误解析 JSON">
           <pre className="mt-3 max-h-80 overflow-auto rounded-2xl bg-stone-950 p-4 text-xs leading-5 text-stone-50">
             {safeJson(payload.currentParseResult)}
           </pre>
-        </div>
+        </JsonDisclosure>
       </section>
 
       <section className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm">
@@ -448,51 +535,53 @@ function ParserUpgradeContent() {
       />
 
       <section className="grid gap-4 lg:grid-cols-2">
-        <label className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm">
-          <span className="text-lg font-semibold text-stone-950">高级编辑：JSON</span>
+        <JsonDisclosure title="高级编辑：JSON">
           <textarea
             value={correctedJson}
             onChange={(event) => setCorrectedJson(event.target.value)}
             rows={18}
             className="mt-3 w-full resize-y rounded-2xl border border-stone-200 bg-[#fffdf8] p-4 font-mono text-xs leading-5 text-stone-950 outline-none focus:border-emerald-600"
           />
-        </label>
+        </JsonDisclosure>
         <div className="space-y-4">
-          <label className="block rounded-3xl border border-stone-200 bg-white p-5 shadow-sm">
-            <span className="text-lg font-semibold text-stone-950">
-              proposed_aliases
-            </span>
+          <JsonDisclosure title="proposed_aliases JSON">
             <textarea
               value={aliasesJson}
               onChange={(event) => setAliasesJson(event.target.value)}
               rows={8}
               className="mt-3 w-full resize-y rounded-2xl border border-stone-200 bg-[#fffdf8] p-4 font-mono text-xs leading-5 text-stone-950 outline-none focus:border-emerald-600"
             />
-          </label>
-          <label className="block rounded-3xl border border-stone-200 bg-white p-5 shadow-sm">
-            <span className="text-lg font-semibold text-stone-950">
-              proposed_rules
-            </span>
+          </JsonDisclosure>
+          <JsonDisclosure title="proposed_rules JSON">
             <textarea
               value={rulesJson}
               onChange={(event) => setRulesJson(event.target.value)}
               rows={8}
               className="mt-3 w-full resize-y rounded-2xl border border-stone-200 bg-[#fffdf8] p-4 font-mono text-xs leading-5 text-stone-950 outline-none focus:border-emerald-600"
             />
-          </label>
+          </JsonDisclosure>
         </div>
       </section>
 
       <section className="flex flex-col gap-3 rounded-3xl border border-emerald-100 bg-emerald-50 p-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-sm font-bold text-emerald-900">启用范围</p>
+          <p className="mt-1 text-xs font-semibold text-emerald-800">
+            {profile?.accountRole === "admin"
+              ? "当前账号是管理员，默认全局应用。"
+              : "当前账号不是管理员，默认只在当前 Journey 应用。"}
+          </p>
           <select
             value={scope}
-            onChange={(event) => setScope(event.target.value as "journey" | "global")}
+            onChange={(event) =>
+              setScopeOverride(event.target.value as "journey" | "global")
+            }
             className="mt-2 rounded-2xl border border-emerald-100 bg-white px-4 py-3 text-sm font-bold text-stone-950"
           >
             <option value="journey">当前 Journey，立即启用</option>
-            <option value="global">全局规则，默认 pending</option>
+            <option value="global" disabled={profile?.accountRole !== "admin"}>
+              全局规则，管理员可用
+            </option>
           </select>
         </div>
         <button
@@ -508,12 +597,11 @@ function ParserUpgradeContent() {
       {afterJson ? (
         <>
           <ParseSummary title="重新测试后实际命中的结果" value={afterResult} />
-          <section className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm">
-            <h2 className="text-lg font-semibold text-stone-950">重新测试 JSON</h2>
+          <JsonDisclosure title="重新测试 JSON">
             <pre className="mt-3 max-h-96 overflow-auto rounded-2xl bg-stone-950 p-4 text-xs leading-5 text-stone-50">
               {afterJson}
             </pre>
-          </section>
+          </JsonDisclosure>
         </>
       ) : null}
 
@@ -527,6 +615,13 @@ function ParserUpgradeContent() {
           {error}
         </p>
       ) : null}
+      <button
+        type="button"
+        onClick={returnToSource}
+        className="rounded-full bg-white px-4 py-2 text-sm font-bold text-emerald-800 shadow-sm"
+      >
+        返回上一页
+      </button>
     </main>
   );
 }

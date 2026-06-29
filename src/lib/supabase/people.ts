@@ -68,6 +68,7 @@ export async function getPeopleOverview() {
         id: member.userId ?? key,
         displayName: member.displayName || "Traveler",
         avatarUrl: member.avatarUrl,
+        accountRole: "free_user" as const,
         createdAt: "",
       };
       if (existing) {

@@ -199,14 +199,14 @@ async function executeActionGraph(input: ExecuteCaptureActionInput, capturedAt: 
           description: node.summary || input.text,
           eventType: "other",
           locationName: location,
-          plannedStart: isoAt(date, "18:00"),
+          plannedStart: isoAt(date, startTime),
           plannedEnd: "",
           bookingReference: "",
           url: "",
           sourceText: input.text,
           confidence: intent.confidence,
           needsReview: false,
-          isEstimatedTime: true,
+          isEstimatedTime: !stringValue(payload.time),
         });
         createdByNode.set(node.id, { itineraryEventId: event.id });
         results.push("planner_event");

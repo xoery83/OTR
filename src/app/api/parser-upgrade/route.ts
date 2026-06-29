@@ -193,7 +193,11 @@ async function suggestWithModel(input: SuggestRequest) {
   }
 }
 
-function cleanAliases(aliases: ParserAliasDraft[] | undefined, journeyId: string | null) {
+function cleanAliases(
+  aliases: ParserAliasDraft[] | undefined,
+  journeyId: string | null,
+  defaultScope: "journey" | "global",
+) {
   return (aliases ?? [])
     .filter(
       (alias) =>
@@ -203,12 +207,12 @@ function cleanAliases(aliases: ParserAliasDraft[] | undefined, journeyId: string
         allowedCanonicalTypes.has(alias.canonical_type),
     )
     .map((alias) => ({
-      journey_id: alias.scope === "global" ? null : journeyId,
+      journey_id: (alias.scope ?? defaultScope) === "global" ? null : journeyId,
       alias_text: alias.alias_text!.trim(),
       canonical_type: alias.canonical_type!,
       canonical_id: alias.canonical_id ?? null,
       canonical_value: alias.canonical_value!.trim(),
-      scope: alias.scope ?? "journey",
+      scope: alias.scope ?? defaultScope,
       status: alias.status ?? "enabled",
     }));
 }
@@ -261,6 +265,19 @@ export async function POST(request: Request) {
 
     const journeyId = body.journeyId ?? null;
     const scope = body.scope ?? "journey";
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("account_role")
+      .eq("id", userData.user.id)
+      .single();
+
+    if (profileError) throw profileError;
+    const isAdmin =
+      (profile as { account_role?: string } | null)?.account_role === "admin";
+    if (scope === "global" && !isAdmin) {
+      return jsonError("Only system admins can save global parser upgrades.", 403);
+    }
+
     const [exampleResult, correctionResult] = await Promise.all([
       supabase
         .from("parser_examples")
@@ -293,7 +310,7 @@ export async function POST(request: Request) {
     if (exampleResult.error) throw exampleResult.error;
     if (correctionResult.error) throw correctionResult.error;
 
-    const aliases = cleanAliases(body.aliases, journeyId).map((alias) => ({
+    const aliases = cleanAliases(body.aliases, journeyId, scope).map((alias) => ({
       ...alias,
       created_by: userData.user.id,
     }));

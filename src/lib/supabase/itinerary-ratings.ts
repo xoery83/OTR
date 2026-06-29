@@ -112,6 +112,28 @@ export async function getMyItineraryRatingCount() {
   return count ?? 0;
 }
 
+export async function getItineraryRatingCountsByUser(tripId: string) {
+  const { data, error } = await supabase
+    .from("itinerary_item_ratings")
+    .select("user_id")
+    .eq("trip_id", tripId);
+
+  if (error) {
+    if (isMissingRatingsTableError(error)) return {};
+    throw error;
+  }
+
+  return ((data ?? []) as { user_id: string | null }[]).reduce<Record<string, number>>(
+    (counts, row) => {
+      if (row.user_id) {
+        counts[row.user_id] = (counts[row.user_id] ?? 0) + 1;
+      }
+      return counts;
+    },
+    {},
+  );
+}
+
 export async function upsertItineraryItemRating({
   tripId,
   itemType,

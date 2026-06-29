@@ -83,6 +83,27 @@ type LedgerFormState = {
 type LedgerView = "days" | "expenses" | "people" | "settlement";
 type ExpenseCategoryFilter = LedgerCategory | "all";
 type ExpenseSortMode = "latest" | "date" | "amount";
+type LedgerAuditCheckKey =
+  | "lodgingCoverage"
+  | "roundTripFlights"
+  | "amountOutliers"
+  | "memberCategoryVariance";
+
+type LedgerAuditWarning = {
+  id: string;
+  title: string;
+  description: string;
+  details: string[];
+};
+
+type NormalizedAuditAmount = {
+  entry: LedgerEntry;
+  category: LedgerCategory;
+  unitAmount: number;
+  unitLabel: string;
+  divisor: number;
+  basis: string;
+};
 
 type MemberLedgerReport = {
   member: JourneyMember;
@@ -108,6 +129,33 @@ type DailyLedgerReport = {
   statsOnly: number;
   categories: Record<LedgerCategory, number>;
   entries: DailyLedgerEntry[];
+};
+
+const defaultAuditChecks: Record<LedgerAuditCheckKey, boolean> = {
+  lodgingCoverage: true,
+  roundTripFlights: true,
+  amountOutliers: true,
+  memberCategoryVariance: true,
+};
+
+const auditCheckLabels: Record<LedgerAuditCheckKey, TranslationKey> = {
+  lodgingCoverage: "ledger.audit.check.lodgingCoverage",
+  roundTripFlights: "ledger.audit.check.roundTripFlights",
+  amountOutliers: "ledger.audit.check.amountOutliers",
+  memberCategoryVariance: "ledger.audit.check.memberCategoryVariance",
+};
+
+const categoryOutlierLimits: Record<LedgerCategory, number> = {
+  flight: 5000,
+  hotel: 600,
+  car: 300,
+  fuel: 250,
+  food: 350,
+  ticket: 800,
+  shopping: 3000,
+  transport: 1200,
+  insurance: 1500,
+  other: 4000,
 };
 
 function todayKey() {
@@ -351,6 +399,352 @@ function buildMemberReports(
   );
 }
 
+function addDaysToDateKey(date: string, days: number) {
+  const next = new Date(`${date}T00:00:00`);
+  next.setDate(next.getDate() + days);
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(
+    2,
+    "0",
+  )}-${String(next.getDate()).padStart(2, "0")}`;
+}
+
+function dateRangeKeys(startDate: string | null, endDate: string | null) {
+  if (!startDate || !endDate || endDate < startDate) return [];
+
+  const dates: string[] = [];
+  let cursor = startDate;
+
+  while (cursor <= endDate && dates.length < 120) {
+    dates.push(cursor);
+    cursor = addDaysToDateKey(cursor, 1);
+  }
+
+  return dates;
+}
+
+function entryMemberIds(entry: LedgerEntry) {
+  if (entry.participants.length > 0) {
+    return entry.participants.map((participant) => participant.memberId);
+  }
+  return entry.payerMemberId ? [entry.payerMemberId] : [];
+}
+
+function median(values: number[]) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+}
+
+function unitLabel(category: LedgerCategory, locale: Locale) {
+  const zh = locale === "zh-CN";
+  if (category === "hotel") return zh ? "每人每晚" : "per person per night";
+  if (category === "car") return zh ? "每人每天" : "per person per day";
+  if (category === "fuel") return zh ? "按天/成员折算" : "per day/member";
+  if (
+    category === "flight" ||
+    category === "food" ||
+    category === "ticket" ||
+    category === "transport" ||
+    category === "insurance"
+  ) {
+    return zh ? "人均" : "per person";
+  }
+  return zh ? "单位金额" : "unit amount";
+}
+
+function normalizeAuditAmount(entry: LedgerEntry, locale: Locale): NormalizedAuditAmount {
+  const memberCount = Math.max(entryMemberIds(entry).length, 1);
+  const allocationDays = Math.max(getLedgerAllocationDates(entry).length, 1);
+  let divisor = 1;
+  let basis = "";
+
+  if (entry.category === "hotel") {
+    divisor = memberCount * allocationDays;
+    basis =
+      locale === "zh-CN"
+        ? `${memberCount}人 x ${allocationDays}晚`
+        : `${memberCount} people x ${allocationDays} nights`;
+  } else if (entry.category === "car" || entry.category === "fuel") {
+    divisor = memberCount * allocationDays;
+    basis =
+      locale === "zh-CN"
+        ? `${memberCount}人 x ${allocationDays}天`
+        : `${memberCount} people x ${allocationDays} days`;
+  } else if (
+    entry.category === "flight" ||
+    entry.category === "food" ||
+    entry.category === "ticket" ||
+    entry.category === "transport" ||
+    entry.category === "insurance"
+  ) {
+    divisor = memberCount;
+    basis =
+      locale === "zh-CN" ? `${memberCount}人` : `${memberCount} people`;
+  } else if (entry.accountingMode === "shared" || entry.participants.length > 0) {
+    divisor = memberCount;
+    basis =
+      locale === "zh-CN" ? `${memberCount}人` : `${memberCount} people`;
+  } else {
+    basis = locale === "zh-CN" ? "单笔" : "single entry";
+  }
+
+  return {
+    entry,
+    category: entry.category,
+    unitAmount: entry.baseAmount / Math.max(divisor, 1),
+    unitLabel: unitLabel(entry.category, locale),
+    divisor: Math.max(divisor, 1),
+    basis,
+  };
+}
+
+function buildLedgerAuditWarnings({
+  checks,
+  entries,
+  members,
+  trip,
+  currency,
+  locale,
+  t,
+}: {
+  checks: Record<LedgerAuditCheckKey, boolean>;
+  entries: LedgerEntry[];
+  members: JourneyMember[];
+  trip: Trip | null;
+  currency: string;
+  locale: Locale;
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string;
+}) {
+  const warnings: LedgerAuditWarning[] = [];
+  const tripDates = dateRangeKeys(trip?.startDate ?? null, trip?.endDate ?? null);
+  const fallbackDates = [...new Set(entries.flatMap((entry) => getLedgerAllocationDates(entry)))].sort();
+  const auditDates = tripDates.length > 0 ? tripDates : fallbackDates;
+
+  if (checks.lodgingCoverage && auditDates.length > 0 && members.length > 0) {
+    const lodgingByMember = new Map<string, Map<string, LedgerEntry[]>>();
+    members.forEach((member) => lodgingByMember.set(member.id, new Map()));
+
+    entries
+      .filter((entry) => entry.category === "hotel")
+      .forEach((entry) => {
+        const dates = getLedgerAllocationDates(entry);
+        entryMemberIds(entry).forEach((memberId) => {
+          const memberDates = lodgingByMember.get(memberId);
+          dates.forEach((date) => {
+            const existing = memberDates?.get(date) ?? [];
+            memberDates?.set(date, [...existing, entry]);
+          });
+        });
+      });
+
+    const missingDetails = members
+      .map((member) => {
+        const coveredDates = lodgingByMember.get(member.id) ?? new Map<string, LedgerEntry[]>();
+        const missingDates = auditDates.filter(
+          (date) => (coveredDates.get(date)?.length ?? 0) === 0,
+        );
+        if (missingDates.length === 0) return null;
+        const sample = missingDates.slice(0, 4).join(", ");
+        return `${member.displayName}: ${sample}${
+          missingDates.length > 4 ? ` +${missingDates.length - 4}` : ""
+        }`;
+      })
+      .filter(Boolean) as string[];
+
+    if (missingDetails.length > 0) {
+      warnings.push({
+        id: "lodging-coverage",
+        title: t("ledger.audit.warning.lodgingCoverage.title"),
+        description: t("ledger.audit.warning.lodgingCoverage.description"),
+        details: missingDetails,
+      });
+    }
+
+    const duplicateDetails = members
+      .flatMap((member) => {
+        const memberDates = lodgingByMember.get(member.id) ?? new Map<string, LedgerEntry[]>();
+        return auditDates
+          .map((date) => {
+            const lodgingEntries = memberDates.get(date) ?? [];
+            if (lodgingEntries.length <= 1) return null;
+            const titles = lodgingEntries
+              .map((entry) => entry.title)
+              .filter(Boolean)
+              .slice(0, 3)
+              .join(" / ");
+            return `${member.displayName} ${date}: ${lodgingEntries.length} entries${
+              titles ? ` (${titles})` : ""
+            }`;
+          })
+          .filter(Boolean);
+      })
+      .filter(Boolean) as string[];
+
+    if (duplicateDetails.length > 0) {
+      warnings.push({
+        id: "lodging-duplicates",
+        title: t("ledger.audit.warning.lodgingDuplicates.title"),
+        description: t("ledger.audit.warning.lodgingDuplicates.description"),
+        details: duplicateDetails.slice(0, 12),
+      });
+    }
+  }
+
+  if (checks.roundTripFlights && members.length > 0) {
+    const flightCounts = new Map(members.map((member) => [member.id, 0]));
+    entries
+      .filter((entry) => entry.category === "flight")
+      .forEach((entry) => {
+        entryMemberIds(entry).forEach((memberId) => {
+          flightCounts.set(memberId, (flightCounts.get(memberId) ?? 0) + 1);
+        });
+      });
+
+    const missingFlights = members
+      .filter((member) => (flightCounts.get(member.id) ?? 0) < 2)
+      .map((member) =>
+        t("ledger.audit.warning.roundTripFlights.detail", {
+          name: member.displayName,
+          count: flightCounts.get(member.id) ?? 0,
+        }),
+      );
+
+    if (missingFlights.length > 0) {
+      warnings.push({
+        id: "round-trip-flights",
+        title: t("ledger.audit.warning.roundTripFlights.title"),
+        description: t("ledger.audit.warning.roundTripFlights.description"),
+        details: missingFlights,
+      });
+    }
+  }
+
+  if (checks.amountOutliers) {
+    const byCategory = new Map<LedgerCategory, NormalizedAuditAmount[]>();
+    entries.forEach((entry) => {
+      const normalized = normalizeAuditAmount(entry, locale);
+      byCategory.set(entry.category, [
+        ...(byCategory.get(entry.category) ?? []),
+        normalized,
+      ]);
+    });
+
+    const outlierDetails: string[] = [];
+    byCategory.forEach((categoryEntries, category) => {
+      const categoryMedian = median(
+        categoryEntries.map((item) => item.unitAmount).filter((amount) => amount > 0),
+      );
+      categoryEntries.forEach((item) => {
+        const { entry } = item;
+        const hardLimit = categoryOutlierLimits[category];
+        const highRelative =
+          categoryEntries.length >= 4 &&
+          categoryMedian > 0 &&
+          item.unitAmount > categoryMedian * 4;
+        const lowRelative =
+          categoryEntries.length >= 4 &&
+          categoryMedian > 100 &&
+          item.unitAmount < categoryMedian * 0.15;
+        const highUnitAmount = item.unitAmount > hardLimit;
+        if (highUnitAmount || highRelative || lowRelative) {
+          outlierDetails.push(
+            `${entry.title}: ${money(item.unitAmount, currency, locale)} ${
+              item.unitLabel
+            } (${item.basis}; ${money(entry.baseAmount, currency, locale)} ${t(
+              categoryLabelKeys[entry.category],
+            )})`,
+          );
+        }
+      });
+    });
+
+    if (outlierDetails.length > 0) {
+      warnings.push({
+        id: "amount-outliers",
+        title: t("ledger.audit.warning.amountOutliers.title"),
+        description: t("ledger.audit.warning.amountOutliers.description"),
+        details: outlierDetails.slice(0, 12),
+      });
+    }
+  }
+
+  if (checks.memberCategoryVariance && members.length >= 2) {
+    const totals = new Map<string, Record<LedgerCategory, number>>();
+    members.forEach((member) => {
+      totals.set(
+        member.id,
+        categories.reduce(
+          (current, category) => ({ ...current, [category]: 0 }),
+          {} as Record<LedgerCategory, number>,
+        ),
+      );
+    });
+
+    entries.forEach((entry) => {
+      const participants = entry.participants.length > 0 ? entry.participants : [];
+      if (participants.length === 0 && entry.payerMemberId) {
+        const memberTotals = totals.get(entry.payerMemberId);
+        if (memberTotals) memberTotals[entry.category] += entry.baseAmount;
+        return;
+      }
+
+      participants.forEach((participant) => {
+        const memberTotals = totals.get(participant.memberId);
+        if (!memberTotals) return;
+        memberTotals[entry.category] += participant.computedShareBaseAmount ?? 0;
+      });
+    });
+
+    const varianceDetails = categories
+      .map((category) => {
+        const values = members
+          .map((member) => ({
+            member,
+            amount: totals.get(member.id)?.[category] ?? 0,
+          }))
+          .filter((item) => item.amount > 0)
+          .sort((left, right) => right.amount - left.amount);
+
+        if (values.length < 2) return null;
+        const highest = values[0];
+        const lowest = values[values.length - 1];
+        if (highest.amount < 300 || highest.amount < Math.max(lowest.amount * 2.5, lowest.amount + 300)) {
+          return null;
+        }
+
+        return `${t(categoryLabelKeys[category])}: ${highest.member.displayName} ${money(
+          highest.amount,
+          currency,
+          locale,
+        )} / ${lowest.member.displayName} ${money(lowest.amount, currency, locale)}`;
+      })
+      .filter(Boolean) as string[];
+
+    if (varianceDetails.length > 0) {
+      warnings.push({
+        id: "member-category-variance",
+        title: t("ledger.audit.warning.memberCategoryVariance.title"),
+        description: t("ledger.audit.warning.memberCategoryVariance.description"),
+        details: varianceDetails,
+      });
+    }
+  }
+
+  if (warnings.length === 0) {
+    warnings.push({
+      id: "no-warning",
+      title: t("ledger.audit.noWarnings.title"),
+      description: t("ledger.audit.noWarnings.description"),
+      details: [],
+    });
+  }
+
+  return warnings;
+}
+
 function initialForm(
   baseCurrency: string,
   members: JourneyMember[],
@@ -555,30 +949,24 @@ function DailyLedgerAnalysis({
 
   return (
     <section id="daily-ledger" className="space-y-4 scroll-mt-24">
-      <div>
-        <h2 className="text-lg font-semibold text-stone-950">
-          {t("ledger.dailyAnalysis.title")}
-        </h2>
-        <p className="mt-1 text-sm text-stone-500">
-          {t("ledger.dailyAnalysis.description")}
-        </p>
-      </div>
-
       <div className="sticky top-0 z-20 -mx-4 overflow-x-auto border-y border-emerald-100 bg-stone-50/95 px-4 py-3 backdrop-blur">
         <div className="flex gap-2">
           {reports.map((report) => {
             const active = report.date === activeReport.date;
+            const isToday = report.date === todayKey();
 
             return (
               <button
                 type="button"
                 key={report.date}
                 onClick={() => setSelectedDate(report.date)}
-                className={`shrink-0 rounded-2xl px-4 py-2 text-left shadow-sm ${
+                className={`shrink-0 rounded-2xl border px-4 py-2 text-left shadow-sm ${
                   active
-                    ? "bg-emerald-700 text-white"
+                    ? "border-emerald-700 bg-emerald-700 text-white"
+                    : isToday
+                      ? "border-amber-300 bg-amber-50 text-amber-900 ring-2 ring-amber-200"
                     : "bg-white text-stone-700"
-                }`}
+                } ${active && isToday ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-stone-50" : ""}`}
               >
                 <p className="text-xs font-black uppercase tracking-wide">
                   {new Date(`${report.date}T00:00:00`).toLocaleDateString(
@@ -817,6 +1205,11 @@ function LedgerContent() {
   const [expenseSearchQuery, setExpenseSearchQuery] = useState(
     initialExpenseSearchQuery,
   );
+  const [showAuditPanel, setShowAuditPanel] = useState(false);
+  const [auditChecks, setAuditChecks] = useState(defaultAuditChecks);
+  const [auditWarnings, setAuditWarnings] = useState<LedgerAuditWarning[] | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [currencyError, setCurrencyError] = useState<string | null>(null);
@@ -954,6 +1347,26 @@ function LedgerContent() {
     if (value.trim()) {
       setExpenseCategoryFilter("all");
     }
+  }
+
+  function toggleAuditCheck(check: LedgerAuditCheckKey) {
+    setAuditChecks((current) => ({ ...current, [check]: !current[check] }));
+    setAuditWarnings(null);
+  }
+
+  function runLedgerAudit() {
+    if (!ledgerData) return;
+    setAuditWarnings(
+      buildLedgerAuditWarnings({
+        checks: auditChecks,
+        entries: ledgerData.entries,
+        members,
+        trip,
+        currency: displayCurrency,
+        locale,
+        t,
+      }),
+    );
   }
 
   function updateForm(patch: Partial<LedgerFormState>) {
@@ -1169,15 +1582,9 @@ function LedgerContent() {
       <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <p className="text-sm font-bold text-emerald-800">
+            <h1 className="text-4xl font-black tracking-normal text-stone-950">
               {t("ledger.title")}
-            </p>
-            <h1 className="mt-1 text-2xl font-semibold text-stone-950">
-              {trip?.name || t("ledger.tripAccounting")}
             </h1>
-            <p className="mt-2 text-sm text-stone-600">
-              {t("ledger.description")}
-            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <label className="flex items-center gap-2 rounded-full bg-stone-50 px-3 py-2 text-xs font-bold text-stone-700">
@@ -1202,6 +1609,13 @@ function LedgerContent() {
               className="shrink-0 rounded-full bg-emerald-700 px-4 py-2 text-sm font-bold text-white shadow-sm"
             >
               {t("ledger.addExpense")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAuditPanel((current) => !current)}
+              className="shrink-0 rounded-full border border-emerald-100 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-800 shadow-sm"
+            >
+              {t("ledger.audit.button")}
             </button>
           </div>
         </div>
@@ -1228,6 +1642,72 @@ function LedgerContent() {
           ) : null}
         </div>
       </section>
+
+      {showAuditPanel ? (
+        <section className="space-y-3 rounded-3xl border border-amber-100 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-lg font-black text-stone-950">
+                {t("ledger.audit.title")}
+              </h2>
+              <p className="mt-1 text-sm leading-6 text-stone-500">
+                {t("ledger.audit.description")}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={runLedgerAudit}
+              disabled={!Object.values(auditChecks).some(Boolean)}
+              className="rounded-full bg-emerald-700 px-5 py-3 text-sm font-bold text-white shadow-sm disabled:bg-stone-300"
+            >
+              {t("ledger.audit.run")}
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {(Object.keys(auditCheckLabels) as LedgerAuditCheckKey[]).map((check) => {
+              const selected = auditChecks[check];
+              return (
+                <button
+                  key={check}
+                  type="button"
+                  onClick={() => toggleAuditCheck(check)}
+                  className={`rounded-full px-3 py-2 text-xs font-bold transition ${
+                    selected
+                      ? "bg-emerald-700 text-white"
+                      : "bg-stone-100 text-stone-600"
+                  }`}
+                >
+                  {t(auditCheckLabels[check])}
+                </button>
+              );
+            })}
+          </div>
+          {auditWarnings ? (
+            <div className="space-y-2">
+              {auditWarnings.map((warning) => (
+                <article
+                  key={warning.id}
+                  className={`rounded-2xl p-3 ${
+                    warning.id === "no-warning"
+                      ? "bg-emerald-50 text-emerald-900"
+                      : "bg-amber-50 text-amber-950"
+                  }`}
+                >
+                  <h3 className="text-sm font-black">{warning.title}</h3>
+                  <p className="mt-1 text-sm leading-6">{warning.description}</p>
+                  {warning.details.length > 0 ? (
+                    <ul className="mt-2 space-y-1 text-sm leading-6">
+                      {warning.details.map((detail) => (
+                        <li key={detail}>- {detail}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="-mx-1 overflow-x-auto px-1">
         <div className="grid min-w-[720px] grid-cols-4 gap-2 sm:min-w-0">
@@ -1614,20 +2094,6 @@ function LedgerContent() {
 
       {activeView === "expenses" ? (
         <section className="space-y-3">
-          <div>
-            <h2 className="text-lg font-semibold text-stone-950">
-              {trimmedExpenseSearchQuery
-                ? t("ledger.search.resultsTitle")
-                : t("ledger.expensesByDate")}
-            </h2>
-            <p className="mt-1 text-sm text-stone-500">
-              {trimmedExpenseSearchQuery
-                ? t("ledger.search.resultsDescription", {
-                    keyword: trimmedExpenseSearchQuery,
-                  })
-                : t("ledger.expensesByDateDescription")}
-            </p>
-          </div>
           <div className="overflow-x-auto rounded-3xl bg-white p-2 shadow-sm">
             <div className="flex min-w-max gap-2">
               {(["all", ...categories] as ExpenseCategoryFilter[]).map((category) => {
@@ -1823,14 +2289,6 @@ function LedgerContent() {
 
       {activeView === "people" ? (
         <section className="space-y-3">
-          <div>
-            <h2 className="text-lg font-semibold text-stone-950">
-              {t("ledger.personalReports")}
-            </h2>
-            <p className="mt-1 text-sm text-stone-500">
-              {t("ledger.personalReportsDescription")}
-            </p>
-          </div>
           {memberReports.length === 0 ? (
             <div className="rounded-3xl border border-dashed border-stone-200 bg-white p-5 text-stone-500">
               {t("ledger.empty.people")}
@@ -1855,9 +2313,6 @@ function LedgerContent() {
             <h2 className="text-lg font-semibold text-stone-950">
               {t("ledger.sharedBalance")}
             </h2>
-            <p className="mt-1 text-sm text-stone-500">
-              {t("ledger.sharedBalanceDescription")}
-            </p>
             <div className="mt-3 space-y-3">
               {ledgerData.summary.balances.map((balance) => (
                 <div

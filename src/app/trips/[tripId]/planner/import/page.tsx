@@ -534,19 +534,17 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
   const [isParsing, setIsParsing] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [savingDraftId, setSavingDraftId] = useState<string | null>(null);
-  const [defaultImportDate, setDefaultImportDate] = useState<string | null>(null);
+  const [defaultImportDate] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    return normalizeDateParam(params.get("date"));
+  });
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isReadingImage, setIsReadingImage] = useState(false);
   const [isRecommendationOpen, setIsRecommendationOpen] = useState(false);
   const [inputStatus, setInputStatus] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    setDefaultImportDate(normalizeDateParam(params.get("date")));
-  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -1179,6 +1177,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
             expenses: expenseDrafts,
             warnings: aiWarnings,
           },
+        returnTo: `/trips/${tripId}/planner/import`,
         language: /[\u4e00-\u9fff]/.test(rawText) ? "zh" : "en",
         contextSnapshot: {
           trip,

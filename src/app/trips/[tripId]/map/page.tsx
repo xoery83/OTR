@@ -1760,6 +1760,7 @@ function JourneyMapContent() {
             {days.map((day) => (
               (() => {
                 const selected = selectedDayId === day.day.id;
+                const isToday = day.day.dayDate === todayKey();
                 const official = isOfficialTripDay(day.day.dayDate, trip);
                 return (
                   <button
@@ -1772,10 +1773,12 @@ function JourneyMapContent() {
                         ? official
                           ? "border-emerald-700 bg-emerald-700 text-white shadow-sm"
                           : "border-stone-500 bg-stone-700 text-white shadow-sm"
+                        : isToday
+                          ? "border-amber-300 bg-amber-50 text-amber-900 ring-2 ring-amber-200"
                         : official
                           ? "border-emerald-200 bg-emerald-50 text-emerald-900"
                           : "border-dashed border-stone-200 bg-white/70 text-stone-400"
-                    }`}
+                    } ${selected && isToday ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-stone-50" : ""}`}
                     title={
                       official
                         ? t("planner.day.official")

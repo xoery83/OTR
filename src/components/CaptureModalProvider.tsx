@@ -18,6 +18,7 @@ import {
   type CaptureChatMessage,
   type CaptureQuickAction,
 } from "@/components/capture/CaptureChatWindow";
+import { useI18n } from "@/components/I18nProvider";
 import { resolveCaptureInput } from "@/capture/stateMachine";
 import type {
   CaptureResolution,
@@ -70,6 +71,10 @@ function getActiveTripId(pathname: string) {
   return match?.[1] ?? null;
 }
 
+function stringPayload(value: unknown) {
+  return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+}
+
 function MicrophoneIcon({ className = "size-4" }: { className?: string }) {
   return (
     <svg
@@ -101,6 +106,7 @@ export function useCaptureModal() {
 export function CaptureModalProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { t } = useI18n();
   const activeTripId = getActiveTripId(pathname);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const messageScrollerRef = useRef<HTMLDivElement | null>(null);
@@ -138,14 +144,14 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
 
   const selectedTrip = trips.find((trip) => trip.id === selectedTripId) ?? null;
   const confirmLabel = intentResult?.intent === "planner_update"
-    ? "添加行程"
+    ? t("capture.action.addItinerary")
     : intentResult?.intent === "expense"
-      ? "记录消费"
+      ? t("capture.action.recordExpense")
       : intentResult?.intent === "navigation"
-        ? "开始导航"
+        ? t("capture.action.startNavigation")
         : intentResult?.intent === "assistant"
-          ? "继续"
-          : "保存回忆";
+          ? t("capture.action.continue")
+          : t("capture.action.saveMemory");
 
   const groupedTrips = useMemo(
     () => ({
@@ -167,22 +173,21 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
       ? engineOptions.lockedContext.dayDate
       : "";
   const captureTitle = isDayPlannerAdd
-    ? "希望在当天的行程中增加什么？"
-    : "What happened?";
+    ? t("capture.title.dayPlannerAdd")
+    : t("capture.title.default");
   const captureIntro = isDayPlannerAdd
-    ? "告诉我时间、地点和要做的事，我会先整理成当天行程，确认后再添加。"
-    : "直接告诉我发生了什么。我会一步步补齐信息，确认后再写入 Journey。";
+    ? t("capture.intro.dayPlannerAdd")
+    : t("capture.intro.default");
   const capturePlaceholder = isDayPlannerAdd
-    ? "例如：18:00 从酒店出发去第一个景点"
-    : "继续告诉我更多细节...";
+    ? t("capture.placeholder.dayPlannerAdd")
+    : t("capture.placeholder.default");
+  const captureJourneyName = selectedTrip?.name || t("capture.context.chooseJourney");
   const captureContextLine = isDayPlannerAdd
-    ? `${selectedTrip?.name || "Choose a journey"} · 当天行程${
+    ? `${captureJourneyName} · ${t("capture.context.dayPlanner")}${
         lockedDayDate ? ` · ${lockedDayDate}` : ""
       }`
-    : `${selectedTrip?.name || "Choose a journey"}${
-        lockedDayDate ? ` · 记录到 ${lockedDayDate}` : ""
-      }${
-        sessionId ? ` · session ${sessionId.slice(0, 8)}` : ""
+    : `${captureJourneyName}${
+        lockedDayDate ? ` · ${t("capture.context.recordTo", { date: lockedDayDate })}` : ""
       }`;
 
   useEffect(() => {
@@ -285,7 +290,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         setMembers(nextMembers);
       }
     } catch (loadError) {
-      setError(getErrorMessage(loadError, "Could not load journeys."));
+      setError(getErrorMessage(loadError, t("capture.error.loadJourneys")));
     } finally {
       setIsLoadingTrips(false);
     }
@@ -294,7 +299,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
   const recorder = useVoiceRecorder({
     onRecordingComplete: async (file) => {
       if (!selectedTripId) {
-        setError("Choose a journey before recording.");
+        setError(t("capture.error.chooseJourneyBeforeRecording"));
         return;
       }
 
@@ -309,13 +314,13 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
           [current.trim(), result.transcript].filter(Boolean).join("\n"),
         );
       } catch (voiceError) {
-        setError(getErrorMessage(voiceError, "Could not transcribe voice."));
+        setError(getErrorMessage(voiceError, t("capture.error.transcribeVoice")));
       } finally {
         setIsTranscribing(false);
       }
     },
     onError: (recordError) => {
-      setError(getErrorMessage(recordError, "Could not start recording."));
+      setError(getErrorMessage(recordError, t("capture.error.startRecording")));
     },
   });
 
@@ -426,7 +431,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     event.target.value = "";
     if (files.length === 0) return;
     if (!selectedTripId) {
-      setError("Choose a journey first.");
+      setError(t("capture.error.chooseJourney"));
       return;
     }
 
@@ -469,12 +474,12 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
           {
             id: crypto.randomUUID(),
             role: "user",
-            text: `Uploaded ${files.length} photos`,
+            text: t("capture.photo.uploaded", { count: files.length }),
           },
           {
             id: crypto.randomUUID(),
             role: "assistant",
-            text: `已开始后台上传 ${files.length} 张照片。你可以关闭 Capture 或切换页面，上传会继续进行。`,
+            text: t("capture.photo.batchStarted", { count: files.length }),
           },
         ]);
         return;
@@ -489,7 +494,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
       setOriginalPhotoFile(file);
       setCompressedImage(compressed);
     } catch (photoError) {
-      setError(getErrorMessage(photoError, "Could not prepare this photo."));
+      setError(getErrorMessage(photoError, t("capture.error.preparePhoto")));
     } finally {
       setIsPhotoPreparing(false);
     }
@@ -501,6 +506,53 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     intent: CaptureIntentDetection;
   } {
     return message.role === "assistant" && Boolean(message.intent);
+  }
+
+  function withSourceTextOnMemoryIntent(
+    intent: CaptureIntentDetection,
+    sourceText: string,
+  ): CaptureIntentDetection {
+    if (!sourceText.trim()) return intent;
+    return {
+      ...intent,
+      actionGraph: {
+        ...intent.actionGraph,
+        nodes: intent.actionGraph.nodes.map((node) => {
+          if (node.intent !== "memory") return node;
+          const content = stringPayload(node.payload.content) || sourceText.trim();
+          return {
+            ...node,
+            summary: content,
+            payload: {
+              ...node.payload,
+              content,
+            },
+          };
+        }),
+      },
+    };
+  }
+
+  function sourceTextForIntent(intent: CaptureIntentDetection | null) {
+    const memoryContent = intent?.actionGraph.nodes
+      .filter((node) => node.intent === "memory")
+      .map((node) => stringPayload(node.payload.content))
+      .find(Boolean);
+    if (memoryContent) return memoryContent;
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (isAssistantWithIntent(message) && message.intent === intent) {
+        return message.sourceText?.trim() || "";
+      }
+    }
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role === "user") return message.text.trim();
+    }
+
+    return text.trim();
   }
 
   function stateFromIntent(
@@ -626,6 +678,85 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  function updateActionFieldDisplay(
+    node: CaptureActionGraphNode,
+    payloadPatch: Record<string, string>,
+  ) {
+    const labelByKey: Record<string, string> = {
+      title: "标题",
+      date: "日期",
+      time: node.type === "hotel_stay" ? "入住时间" : "时间",
+      locationName: "地点",
+      location: "地点",
+      content: "内容",
+    };
+    const patchedKeys = new Set(Object.keys(payloadPatch));
+    const patchFacts = Object.entries(payloadPatch)
+      .filter(([, value]) => value.trim())
+      .map(([key, value]) => ({
+        key,
+        label: labelByKey[key] ?? key,
+        value: value.trim(),
+        source: "explicit" as const,
+      }));
+    const detailLabelSet = new Set(patchFacts.map((fact) => fact.label));
+
+    return {
+      ...node,
+      title: payloadPatch.title?.trim() || node.title,
+      details: [
+        ...node.details.filter((detail) => !detailLabelSet.has(detail.label)),
+        ...patchFacts.map((fact) => ({
+          label: fact.label,
+          value: fact.value,
+          source: fact.source,
+        })),
+      ],
+      facts: [
+        ...(node.facts ?? []).filter((fact) => !patchedKeys.has(fact.key)),
+        ...patchFacts,
+      ],
+      payload: {
+        ...node.payload,
+        ...Object.fromEntries(
+          Object.entries(payloadPatch).map(([key, value]) => [key, value.trim()]),
+        ),
+      },
+    };
+  }
+
+  function handleActionUpdate(
+    messageId: string,
+    nodeId: string,
+    payloadPatch: Record<string, string>,
+  ) {
+    const targetMessage = messages.find(
+      (message) => message.id === messageId && isAssistantWithIntent(message),
+    );
+    if (!targetMessage || !isAssistantWithIntent(targetMessage)) return;
+    const nextIntent: CaptureIntentDetection = {
+      ...targetMessage.intent,
+      actionGraph: {
+        ...targetMessage.intent.actionGraph,
+        nodes: targetMessage.intent.actionGraph.nodes.map((node) =>
+          node.id === nodeId ? updateActionFieldDisplay(node, payloadPatch) : node,
+        ),
+      },
+      shouldAutoExecute: false,
+    };
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === messageId && isAssistantWithIntent(message)
+          ? { ...message, intent: nextIntent }
+          : message,
+      ),
+    );
+    if (nextIntent) {
+      setIntentResult(nextIntent);
+      setSessionState(stateFromIntent(nextIntent));
+    }
+  }
+
   function applyQuickActionToIntent(
     intent: CaptureIntentDetection,
     action: CaptureQuickAction,
@@ -649,7 +780,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
               ? [
                   {
                     key: "payer",
-                    label: "付款人",
+                    label: t("capture.fact.payer"),
                     value: member.displayName,
                     source: "explicit" as const,
                   },
@@ -675,8 +806,8 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
             ...(node.facts ?? []),
             {
               key: "splitMembers",
-              label: "分摊",
-              value: "全员人均摊",
+              label: t("capture.fact.split"),
+              value: t("capture.question.splitAll"),
               source: "explicit" as const,
             },
           ],
@@ -710,8 +841,8 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
             ...(node.facts ?? []),
             {
               key: "accountingMode",
-              label: "记账模式",
-              value: "只统计不分摊",
+              label: t("capture.fact.accountingMode"),
+              value: t("capture.question.statsOnly"),
               source: "explicit" as const,
             },
           ],
@@ -869,6 +1000,90 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     };
   }
 
+  function parseLocalPlannerFieldUpdate(nextText: string) {
+    const trimmed = nextText.trim();
+    const fieldPatterns: {
+      key: "title" | "date" | "time" | "locationName";
+      pattern: RegExp;
+    }[] = [
+      {
+        key: "locationName",
+        pattern:
+          /(?:吃饭地点|吃饭的地方|地点|位置|餐厅|地方)\s*(?:是|在|为|:|：)\s*(.+)$/i,
+      },
+      {
+        key: "title",
+        pattern: /(?:标题|主题|名字|名称)\s*(?:是|为|叫|:|：)\s*(.+)$/i,
+      },
+      {
+        key: "date",
+        pattern: /(?:日期|哪天|时间日期)\s*(?:是|为|:|：)\s*(.+)$/i,
+      },
+      {
+        key: "time",
+        pattern: /(?:具体时间|开始时间|时间)\s*(?:是|为|在|:|：)\s*(.+)$/i,
+      },
+    ];
+
+    for (const item of fieldPatterns) {
+      const match = trimmed.match(item.pattern);
+      const value = match?.[1]?.trim().replace(/[。.!！]$/g, "");
+      if (value) return { key: item.key, value };
+    }
+
+    return null;
+  }
+
+  function applyPlannerFieldUpdate(
+    intent: CaptureIntentDetection,
+    update: { key: "title" | "date" | "time" | "locationName"; value: string },
+  ): CaptureIntentDetection | null {
+    let didUpdate = false;
+    const payloadPatch =
+      update.key === "time"
+        ? { time: update.value, checkInTime: update.value }
+        : { [update.key]: update.value };
+    const nextNodes = intent.actionGraph.nodes.map((node) => {
+      if (node.intent !== "planner_update" || didUpdate) return node;
+      didUpdate = true;
+      return updateActionFieldDisplay(node, payloadPatch);
+    });
+
+    if (!didUpdate) return null;
+    return {
+      ...intent,
+      actionGraph: {
+        ...intent.actionGraph,
+        nodes: nextNodes,
+      },
+      reason: `${intent.reason} Updated planner ${update.key} from session context.`,
+      shouldAutoExecute: false,
+    };
+  }
+
+  function appendContextUpdateMessage(
+    nextText: string,
+    nextIntent: CaptureIntentDetection,
+    message: string,
+  ) {
+    const userMessage: CaptureChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      text: nextText,
+    };
+    const assistantMessage: CaptureChatMessage = {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      text: message,
+      sourceText: nextText,
+      intent: nextIntent,
+    };
+    setMessages((current) => [...current, userMessage, assistantMessage]);
+    setIntentResult(nextIntent);
+    setSessionState(stateFromIntent(nextIntent));
+    setText("");
+  }
+
   function resolveSessionInputLocally(nextText: string) {
     const currentIntent = latestIntent();
     if (!currentIntent) return false;
@@ -880,21 +1095,27 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     if (timeUpdate && currentIntent.actionGraph.nodes.some((node) => node.intent === "planner_update")) {
       const nextIntent = applyPlannerTimeUpdate(currentIntent, timeUpdate);
       if (nextIntent) {
-        const userMessage: CaptureChatMessage = {
-          id: crypto.randomUUID(),
-          role: "user",
-          text: nextText,
-        };
-        const assistantMessage: CaptureChatMessage = {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          text: "收到，我已经把时间补到上一项安排里。",
-          intent: nextIntent,
-        };
-        setMessages((current) => [...current, userMessage, assistantMessage]);
-        setIntentResult(nextIntent);
-        setSessionState(stateFromIntent(nextIntent));
-        setText("");
+        appendContextUpdateMessage(
+          nextText,
+          nextIntent,
+          t("capture.message.contextTimeUpdated"),
+        );
+        return true;
+      }
+    }
+
+    const fieldUpdate = parseLocalPlannerFieldUpdate(nextText);
+    if (
+      fieldUpdate &&
+      currentIntent.actionGraph.nodes.some((node) => node.intent === "planner_update")
+    ) {
+      const nextIntent = applyPlannerFieldUpdate(currentIntent, fieldUpdate);
+      if (nextIntent) {
+        appendContextUpdateMessage(
+          nextText,
+          nextIntent,
+          t("capture.message.contextUpdated"),
+        );
         return true;
       }
     }
@@ -937,8 +1158,9 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
       id: crypto.randomUUID(),
       role: "assistant",
       text: nextIntent.needsClarification
-        ? "收到，我已经更新了这项信息，还差下面这些。"
-        : "收到，信息已经补齐，可以确认执行。",
+        ? t("capture.message.contextNeedInfo")
+        : t("capture.message.contextReady"),
+      sourceText: nextText,
       intent: nextIntent,
     };
     setMessages((current) => [...current, userMessage, assistantMessage]);
@@ -1372,12 +1594,12 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         id: field,
         question:
           field === "payer"
-            ? "谁支付的？"
+            ? t("capture.question.payer")
             : field === "splitMembers"
-              ? "这笔费用怎么分摊？"
+              ? t("capture.question.split")
               : field === "targetPlannerItem"
-                ? "要修改哪一个行程？"
-              : `还需要补充 ${field}`,
+                ? t("capture.question.targetPlannerItem")
+                : t("capture.question.missingField", { field }),
       })),
       reason: `Matched locally by Capture State Machine (${resolution.source}).`,
       proposedAction: {
@@ -1433,7 +1655,10 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
           getErrorMessage(queryError, "我理解了这个查询，但暂时读取不到 Journey 数据。"),
         )
       : undefined;
-    const result = detectionFromLocalResolution(resolution, answerText);
+    const result = withSourceTextOnMemoryIntent(
+      detectionFromLocalResolution(resolution, answerText),
+      nextText,
+    );
     const userMessage: CaptureChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -1444,10 +1669,11 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
       role: "assistant",
       text:
         resolution.action === "answer"
-          ? answerText || "我先用本地 Capture State Machine 理解了这个查询。"
+          ? answerText || t("capture.message.localAnswer")
           : result.needsClarification
-            ? "我理解了，还差一点必要信息。"
-            : "我准备帮你完成下面的操作。",
+            ? t("capture.message.needInfo")
+            : t("capture.message.ready"),
+      sourceText: nextText,
       intent: result,
     };
     setMessages((current) => [...current, userMessage, assistantMessage]);
@@ -1459,11 +1685,11 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
   async function reviewCapture(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedTripId) {
-      setError("Choose a journey first.");
+      setError(t("capture.error.chooseJourney"));
       return;
     }
     if (!text.trim() && !compressedImage) {
-      setError("Capture needs text, voice, or an attachment.");
+      setError(t("capture.error.empty"));
       return;
     }
     setError(null);
@@ -1476,6 +1702,10 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         (engineOptions.entryPoint === "planner_import" || looksLikePlannerImportText(trimmedText))
       ) {
         routeToPlannerImport(trimmedText);
+        return;
+      }
+
+      if (!compressedImage && resolveSessionInputLocally(trimmedText)) {
         return;
       }
 
@@ -1493,7 +1723,10 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
           sessionContext: captureSessionContext(),
           inputTypes: ["text"],
         });
-        if (exactExampleResult) {
+        const exactExampleIntent = exactExampleResult
+          ? withSourceTextOnMemoryIntent(exactExampleResult, trimmedText)
+          : null;
+        if (exactExampleIntent) {
           const userMessage: CaptureChatMessage = {
             id: crypto.randomUUID(),
             role: "user",
@@ -1502,31 +1735,28 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
           const assistantMessage: CaptureChatMessage = {
             id: crypto.randomUUID(),
             role: "assistant",
-            text: exactExampleResult.needsClarification
-              ? "我按你教过的解析方式理解了，还差一点必要信息。"
-              : "我按你教过的解析方式准备好了下面的操作。",
-            intent: exactExampleResult,
+            text: exactExampleIntent.needsClarification
+              ? t("capture.message.exampleNeedInfo")
+              : t("capture.message.exampleReady"),
+            sourceText: trimmedText,
+            intent: exactExampleIntent,
           };
           setMessages((current) => [...current, userMessage, assistantMessage]);
-          setIntentResult(exactExampleResult);
-          setSessionState(stateFromIntent(exactExampleResult));
+          setIntentResult(exactExampleIntent);
+          setSessionState(stateFromIntent(exactExampleIntent));
           setText("");
           setPhotoFileName("");
           setOriginalPhotoFile(null);
           setCompressedImage(null);
           if (
-            exactExampleResult.intent === "memory" &&
-            exactExampleResult.shouldAutoExecute &&
+            exactExampleIntent.intent === "memory" &&
+            exactExampleIntent.shouldAutoExecute &&
             messages.length === 0
           ) {
-            await confirmCapture(exactExampleResult);
+            await confirmCapture(exactExampleIntent);
           }
           return;
         }
-      }
-
-      if (!compressedImage && resolveSessionInputLocally(trimmedText)) {
-        return;
       }
 
       if (!compressedImage) {
@@ -1544,10 +1774,10 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      const result = await detectCaptureIntent({
+      const detectedResult = await detectCaptureIntent({
         tripId: selectedTripId,
         text:
-          trimmedText || (compressedImage ? "Uploaded image attachment" : ""),
+          trimmedText || (compressedImage ? t("capture.photo.imageAttachment") : ""),
         engineOptions: {
           ...engineOptions,
           lockedContext: {
@@ -1561,18 +1791,20 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
           ...(compressedImage ? (["image"] as const) : []),
         ],
       });
+      const result = withSourceTextOnMemoryIntent(detectedResult, trimmedText);
       const userMessage: CaptureChatMessage = {
         id: crypto.randomUUID(),
         role: "user",
-        text: trimmedText || "Uploaded image attachment",
+        text: trimmedText || t("capture.photo.imageAttachment"),
         attachmentName: photoFileName || undefined,
       };
       const assistantMessage: CaptureChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
         text: result.needsClarification
-          ? "我理解了大方向，还差一点必要信息。"
-          : "我准备帮你完成下面的操作。",
+          ? t("capture.message.broadNeedInfo")
+          : t("capture.message.ready"),
+        sourceText: trimmedText || t("capture.photo.imageAttachment"),
         intent: result,
       };
       setMessages((current) => [...current, userMessage, assistantMessage]);
@@ -1587,7 +1819,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
       setOriginalPhotoFile(null);
       setCompressedImage(null);
     } catch (detectError) {
-      setError(getErrorMessage(detectError, "Could not detect capture intent."));
+      setError(getErrorMessage(detectError, t("capture.error.detectIntent")));
     } finally {
       setIsDetectingIntent(false);
     }
@@ -1637,7 +1869,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          text: "已完成。我保留了这段对话，后面可以直接继续补充。",
+          text: t("capture.message.completed"),
         },
       ]);
       if (selectedIntent) {
@@ -1658,7 +1890,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
       setIsDebugOpen(false);
       closeCapture();
     } catch (submitError) {
-      setError(getErrorMessage(submitError, "Could not complete capture."));
+      setError(getErrorMessage(submitError, t("capture.error.complete")));
     } finally {
       if (progressTimer !== null) window.clearInterval(progressTimer);
       window.setTimeout(() => setSinglePhotoProgress(null), 600);
@@ -1705,6 +1937,8 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         journeyId: selectedTripId || null,
         originalText,
         currentParseResult: targetIntent,
+        returnTo:
+          pathname || (selectedTripId ? `/trips/${selectedTripId}/planner` : "/trips"),
         language: /[\u4e00-\u9fff]/.test(languageText) ? "zh" : "en",
         contextSnapshot: {
           selectedTrip,
@@ -1726,7 +1960,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         <div className="fixed inset-0 z-[2147483000]">
           <button
             type="button"
-            aria-label="Close Capture"
+            aria-label={t("capture.action.close")}
             className="absolute inset-0 bg-stone-950/35 backdrop-blur-sm"
             onClick={closeCapture}
           />
@@ -1735,7 +1969,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
             <div className="mt-4 flex items-start justify-between gap-4 md:mt-0">
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-800">
-                  Capture
+                  {t("capture.eyebrow")}
                 </p>
                 <h2 className="mt-1 text-2xl font-semibold text-stone-950">
                   {captureTitle}
@@ -1750,21 +1984,21 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
                   onClick={clearCaptureSession}
                   className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
                 >
-                  Clear
+                  {t("capture.action.clear")}
                 </button>
                 <button
                   type="button"
                   onClick={closeCapture}
                   className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
                 >
-                  Close
+                  {t("capture.action.close")}
                 </button>
               </div>
             </div>
 
             {isLoadingTrips ? (
               <div className="mt-5 rounded-2xl bg-white p-4 text-sm font-semibold text-stone-600">
-                Loading journeys...
+                {t("capture.status.loadingJourneys")}
               </div>
             ) : null}
 
@@ -1777,7 +2011,16 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
               >
                 {Object.entries(groupedTrips).map(([status, group]) =>
                   group.length > 0 ? (
-                    <optgroup key={status} label={status}>
+                    <optgroup
+                      key={status}
+                      label={
+                        status === "active"
+                          ? t("trips.group.active")
+                          : status === "upcoming"
+                            ? t("trips.group.upcoming")
+                            : t("trips.group.completed")
+                      }
+                    >
                       {group.map((trip) => (
                         <option key={trip.id} value={trip.id}>
                           {trip.name}
@@ -1794,17 +2037,20 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
               className="mt-4 min-h-0 flex-1 overflow-y-auto rounded-3xl bg-[#faf7ef] p-3"
             >
               {messages.length === 0 ? (
-                <div className="rounded-3xl bg-white p-4 text-sm leading-6 text-stone-600 shadow-sm">
-                  {captureIntro}
+                <div className="flex items-start gap-3">
+                  <div className="mt-1 grid size-8 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-black text-white">
+                    O
+                  </div>
+                  <div className="max-w-[92%] rounded-3xl bg-emerald-50 px-4 py-3 text-sm leading-6 text-emerald-950">
+                    {captureIntro}
+                  </div>
                 </div>
               ) : (
                 <CaptureMessageList
                   messages={messages}
                   members={members}
                   onQuickAction={handleQuickAction}
-                  onUpgradeParser={(messageId, intent) =>
-                    openCaptureParserUpgrade(intent, messageId)
-                  }
+                  onActionUpdate={handleActionUpdate}
                 />
               )}
             </div>
@@ -1825,21 +2071,20 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
                       onClick={() => setIsDebugOpen((current) => !current)}
                       className="text-xs font-black uppercase tracking-[0.14em] text-stone-500"
                     >
-                      {isDebugOpen ? "Hide Debug" : "Capture AI Debug"}
+                      {isDebugOpen ? t("capture.debug.hide") : t("capture.debug.show")}
                     </button>
                     <button
                       type="button"
                       onClick={() => openCaptureParserUpgrade()}
                       className="rounded-full bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800"
                     >
-                      解析不对？教它一次
+                      {t("capture.debug.train")}
                     </button>
                   </div>
                   {isDebugOpen ? (
                     <pre className="mt-3 max-h-64 overflow-auto rounded-2xl bg-stone-950 p-4 text-xs leading-5 text-stone-50">
                       {JSON.stringify(
                         {
-                          sessionId,
                           status: intentResult.needsClarification
                             ? "need_more_info"
                             : "ready_to_confirm",
@@ -1866,7 +2111,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={compressedImage.previewUrl}
-                      alt="Attachment preview"
+                      alt={t("capture.photo.previewAlt")}
                       className="max-h-40 w-full object-cover"
                     />
                     <div className="flex flex-wrap gap-3 border-t border-stone-200 bg-white p-2 text-xs font-semibold text-stone-600">
@@ -1877,7 +2122,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
                     {singlePhotoProgress !== null ? (
                       <div className="border-t border-stone-200 bg-white px-2 py-2">
                         <div className="flex items-center justify-between text-xs font-bold text-emerald-800">
-                          <span>Uploading photo</span>
+                          <span>{t("capture.status.uploadingPhoto")}</span>
                           <span>{singlePhotoProgress}%</span>
                         </div>
                         <div className="mt-2 h-2 overflow-hidden rounded-full bg-stone-100">
@@ -1904,7 +2149,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
                     onClick={() => photoInputRef.current?.click()}
                     disabled={isPhotoPreparing || isSubmitting}
                     className="grid size-11 shrink-0 place-items-center rounded-full bg-stone-100 text-xl font-bold text-stone-600 disabled:text-stone-300"
-                    title="Attach"
+                    title={t("capture.action.attach")}
                   >
                     {isPhotoPreparing ? "..." : "+"}
                   </button>
@@ -1928,8 +2173,8 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
                           ? "bg-emerald-50 text-emerald-800"
                           : "bg-stone-100 text-stone-600"
                     }`}
-                    title="Voice"
-                    aria-label="Voice"
+                    title={t("capture.action.voice")}
+                    aria-label={t("capture.action.voice")}
                   >
                     {isTranscribing ? (
                       <span className="text-xs font-bold">...</span>
@@ -1948,7 +2193,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
                     }
                     className="rounded-full bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:bg-stone-300"
                   >
-                    {isDetectingIntent ? "..." : "Send"}
+                    {isDetectingIntent ? "..." : t("capture.action.send")}
                   </button>
                 </div>
               </form>

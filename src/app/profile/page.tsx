@@ -22,7 +22,15 @@ import type {
   LedgerEntry,
   Profile,
   Trip,
+  AccountRole,
 } from "@/types";
+
+const accountRoleLabels: Record<AccountRole, string> = {
+  admin: "管理员",
+  free_user: "免费用户",
+  plus: "Plus用户",
+  pro: "Pro用户",
+};
 
 const ledgerCategories: LedgerCategory[] = [
   "flight",
@@ -468,7 +476,7 @@ function ProfileContent({ user }: { user: User }) {
               {profile ? new Date(profile.createdAt).toLocaleDateString() : "..."}
             </p>
             <p className="mt-1 inline-flex rounded-full bg-stone-100 px-2.5 py-1 text-xs font-bold text-stone-600">
-              免费用户
+              {accountRoleLabels[profile?.accountRole ?? "free_user"]}
             </p>
           </div>
         </div>
@@ -517,7 +525,7 @@ function ProfileContent({ user }: { user: User }) {
           className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
         />
         <div className="rounded-2xl bg-stone-50 px-4 py-3 text-sm font-bold text-stone-600">
-          当前级别：免费用户
+          当前级别：{accountRoleLabels[profile?.accountRole ?? "free_user"]}
         </div>
         <button
           type="button"

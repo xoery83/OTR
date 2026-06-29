@@ -280,8 +280,7 @@ async function uploadPhotoFile(input: {
     tripId: input.journeyId,
     mediaAssetId: asset.id,
     title: input.file.name || "Photo processing",
-    placeholder: true,
-    currentStep: "Pending implementation",
+    currentStep: "Queued after upload",
   }).catch(() => null);
 
   return asset;

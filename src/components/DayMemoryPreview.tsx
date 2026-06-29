@@ -10,10 +10,14 @@ export function DayMemoryPreview({
   tripId,
   date,
   memories,
+  imageUrls = {},
+  onOpenImage,
 }: {
   tripId: string;
   date: string;
   memories: MemoryEntry[];
+  imageUrls?: Record<string, string>;
+  onOpenImage?: (image: { src: string; alt: string }) => void;
 }) {
   const { t } = useI18n();
   const latestMemories = useMemo(
@@ -24,7 +28,7 @@ export function DayMemoryPreview({
             new Date(second.createdAt || second.capturedAt).getTime() -
             new Date(first.createdAt || first.capturedAt).getTime(),
         )
-        .slice(0, 3),
+        .slice(0, 5),
     [memories],
   );
 
@@ -36,25 +40,48 @@ export function DayMemoryPreview({
         </p>
       ) : (
         <div className="grid gap-2">
-          {latestMemories.map((memory) => (
-            <article
-              key={memory.id}
-              className="rounded-2xl bg-white/80 p-3 text-sm shadow-sm"
-            >
-              <p className="font-bold text-stone-800">
-                {memory.type === "photo"
-                  ? t("memoryPreview.photo")
-                  : t("memoryPreview.note")}{" "}
-                ·{" "}
-                {formatTime(memory.capturedAt)}
-              </p>
-              {memory.content ? (
-                <p className="mt-2 line-clamp-2 text-stone-600">
-                  {memory.content}
+          {latestMemories.map((memory) => {
+            const imageUrl = memory.mediaUrl ? imageUrls[memory.mediaUrl] : null;
+
+            return (
+              <article
+                key={memory.id}
+                className="rounded-2xl bg-white/80 p-3 text-sm shadow-sm"
+              >
+                <p className="font-bold text-stone-800">
+                  {memory.contributorName || t("planner.traveler")} ·{" "}
+                  {formatTime(memory.capturedAt)}
                 </p>
-              ) : null}
-            </article>
-          ))}
+                <div className="mt-2 flex items-start gap-3">
+                  {imageUrl ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenImage?.({
+                          src: imageUrl,
+                          alt: memory.content || t("planner.memory.imagePreview"),
+                        })
+                      }
+                      className="size-16 shrink-0 overflow-hidden rounded-xl bg-stone-100 shadow-sm ring-1 ring-stone-100 transition hover:opacity-90"
+                      title={t("planner.memory.openImage")}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={imageUrl}
+                        alt=""
+                        className="size-full object-cover"
+                      />
+                    </button>
+                  ) : null}
+                  {memory.content ? (
+                    <p className="line-clamp-3 min-w-0 flex-1 whitespace-pre-wrap text-stone-600">
+                      {memory.content}
+                    </p>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
       {date !== "unscheduled" ? (

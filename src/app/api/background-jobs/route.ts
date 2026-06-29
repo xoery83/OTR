@@ -97,7 +97,7 @@ export async function GET(request: Request) {
     const { data, error } = await supabase
       .from("background_jobs")
       .select("*")
-      .order("created_at", { ascending: false })
+      .order("updated_at", { ascending: false })
       .limit(30);
 
     if (error) throw error;
@@ -138,6 +138,34 @@ export async function POST(request: Request) {
 
       if (existingError) throw existingError;
       if (existing) {
+        const existingRow = existing as JobRow;
+        const existingPayload = existingRow.payload ?? {};
+        if (existingPayload.placeholder || existingPayload.pendingImplementation) {
+          const { data: repaired, error: repairError } = await supabase
+            .from("background_jobs")
+            .update({
+              status: "queued",
+              progress: 0,
+              current_step: body.currentStep || "Queued",
+              payload: body.payload ?? {},
+              result: {},
+              error_message: null,
+              attempts: 0,
+              available_at: new Date().toISOString(),
+              started_at: null,
+              completed_at: null,
+            })
+            .eq("id", existingRow.id)
+            .select("*")
+            .single();
+
+          if (repairError || !repaired) {
+            throw repairError || new Error("Could not repair background job.");
+          }
+
+          return NextResponse.json({ job: mapJob(repaired as JobRow) });
+        }
+
         return NextResponse.json({ job: mapJob(existing as JobRow) });
       }
     }

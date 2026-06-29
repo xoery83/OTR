@@ -4,8 +4,9 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import type { CSSProperties } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
+import { useI18n } from "@/components/I18nProvider";
 import { createBackgroundJob } from "@/lib/background-jobs/client";
 import { executeCaptureAction } from "@/lib/capture-ai/actions";
 import { detectCaptureIntent } from "@/lib/capture-ai/client";
@@ -39,6 +40,48 @@ import type {
 } from "@/types";
 
 type TimelineView = "feed" | "timeline" | "album" | "debug";
+
+type TimelineSessionState = {
+  view?: TimelineView;
+  query?: string;
+  selectedMemberIds?: string[];
+  scrollY?: number;
+};
+
+function getTimelineSessionKey(tripId: string) {
+  return `otr:timeline:${tripId}`;
+}
+
+function readTimelineSession(tripId: string): TimelineSessionState | null {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const raw = window.sessionStorage.getItem(getTimelineSessionKey(tripId));
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as TimelineSessionState;
+  } catch {
+    return null;
+  }
+}
+
+function writeTimelineSession(tripId: string, state: TimelineSessionState) {
+  if (typeof window === "undefined") return;
+
+  const current = readTimelineSession(tripId) ?? {};
+  window.sessionStorage.setItem(
+    getTimelineSessionKey(tripId),
+    JSON.stringify({ ...current, ...state }),
+  );
+}
+
+function parseTimelineView(value: string | null): TimelineView {
+  if (value === "timeline" || value === "album" || value === "debug") {
+    return value;
+  }
+
+  return "feed";
+}
 
 type TimelineItem = {
   id: string;
@@ -372,33 +415,46 @@ function getFilteredItems(input: {
   });
 }
 
-function ItemMeta({ item }: { item: TimelineItem }) {
+function ItemMeta({
+  item,
+  hidePlannerLink = false,
+}: {
+  item: TimelineItem;
+  hidePlannerLink?: boolean;
+}) {
   const timeLabel =
     item.memory.type === "text" || item.memory.type === "voice"
       ? "说话时间"
       : "拍摄时间";
+  const plannerLabel = item.linkedPlannerItem
+    ? [
+        item.linkedPlannerItem.dayLabel,
+        item.linkedPlannerItem.timeLabel,
+        item.linkedPlannerItem.title,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
 
   return (
-    <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold text-stone-600">
-      <span className="rounded-full bg-stone-100 px-2 py-1">
+    <div className="mt-3 flex min-w-0 flex-wrap gap-2 text-[11px] font-bold text-stone-600">
+      <span className="max-w-full truncate rounded-full bg-stone-100 px-2 py-1">
         {timeLabel} {formatShortDateTime(item.capturedAt)}
       </span>
-      {item.linkedPlannerItem ? (
+      {item.linkedPlannerItem && !hidePlannerLink ? (
         <Link
           href={item.linkedPlannerItem.href}
-          className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-900 underline decoration-emerald-200 underline-offset-2"
+          title={plannerLabel}
+          className="max-w-full truncate rounded-full bg-emerald-50 px-2 py-1 text-emerald-900 underline decoration-emerald-200 underline-offset-2 sm:max-w-[32rem]"
         >
-          {[
-            item.linkedPlannerItem.dayLabel,
-            item.linkedPlannerItem.timeLabel,
-            item.linkedPlannerItem.title,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
+          {plannerLabel}
         </Link>
       ) : null}
       {item.memory.locationName ? (
-        <span className="rounded-full bg-stone-100 px-2 py-1">
+        <span
+          title={item.memory.locationName}
+          className="max-w-full truncate rounded-full bg-stone-100 px-2 py-1 sm:max-w-[28rem]"
+        >
           {item.memory.locationName}
         </span>
       ) : null}
@@ -516,6 +572,7 @@ function CompactMemoryCard({
     previewUrl: string;
   } | null>(null);
   const [isPreparingImage, setIsPreparingImage] = useState(false);
+  const { t } = useI18n();
   const [isSavingReply, setIsSavingReply] = useState(false);
   const [isTranscribingReply, setIsTranscribingReply] = useState(false);
   const [isWorking, setIsWorking] = useState(false);
@@ -532,7 +589,9 @@ function CompactMemoryCard({
         );
       } catch (voiceError) {
         setCardError(
-          voiceError instanceof Error ? voiceError.message : "Could not transcribe voice.",
+          voiceError instanceof Error
+            ? voiceError.message
+            : t("timeline.error.transcribeVoice"),
         );
       } finally {
         setIsTranscribingReply(false);
@@ -556,7 +615,9 @@ function CompactMemoryCard({
       });
     } catch (imageError) {
       setCardError(
-        imageError instanceof Error ? imageError.message : "Could not prepare image.",
+        imageError instanceof Error
+          ? imageError.message
+          : t("timeline.error.prepareImage"),
       );
     } finally {
       setIsPreparingImage(false);
@@ -648,7 +709,7 @@ function CompactMemoryCard({
       setIsReplying(false);
       await onReplyCreated();
     } catch (replyError) {
-      setCardError(getErrorMessage(replyError, "Could not save reply."));
+      setCardError(getErrorMessage(replyError, t("timeline.error.saveReply")));
     } finally {
       setIsSavingReply(false);
     }
@@ -666,7 +727,7 @@ function CompactMemoryCard({
       setIsEditing(false);
     } catch (saveError) {
       setCardError(
-        saveError instanceof Error ? saveError.message : "Could not save memory.",
+        saveError instanceof Error ? saveError.message : t("timeline.error.saveMemory"),
       );
     } finally {
       setIsWorking(false);
@@ -674,7 +735,7 @@ function CompactMemoryCard({
   }
 
   async function deleteItem() {
-    const confirmed = window.confirm("Delete this memory?");
+    const confirmed = window.confirm(t("timeline.confirm.deleteMemory"));
     if (!confirmed) return;
 
     setIsWorking(true);
@@ -683,7 +744,9 @@ function CompactMemoryCard({
       await onDelete(item.memory.id);
     } catch (deleteError) {
       setCardError(
-        deleteError instanceof Error ? deleteError.message : "Could not delete memory.",
+        deleteError instanceof Error
+          ? deleteError.message
+          : t("timeline.error.deleteMemory"),
       );
       setIsWorking(false);
     }
@@ -695,21 +758,46 @@ function CompactMemoryCard({
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={item.photo!.displayUrl}
-          alt={item.memory.content || "Travel photo"}
+          alt={item.memory.content || t("timeline.photo.alt")}
           className="h-auto w-full object-cover"
         />
       ) : (
-        <div className="bg-emerald-50/70 p-4">
+        <div className="bg-emerald-50/70 px-4 py-4 sm:px-5">
           <div className="flex items-start gap-3">
-            <div className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-sm font-black text-white">
+            <div className="grid size-12 shrink-0 place-items-center rounded-full bg-emerald-700 text-lg font-black text-white shadow-sm">
               {(item.memory.contributorName || "OTR").slice(0, 1).toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-bold text-emerald-900">
-                {item.memory.contributorName || "旅伴"} 说
-              </p>
-              <div className="mt-1 rounded-2xl rounded-tl-sm bg-white px-4 py-3 text-base font-medium leading-7 text-stone-950 shadow-sm">
-                {item.memory.content || "Text memory"}
+              <div className="flex min-w-0 items-center gap-2">
+                <p className="shrink-0 text-sm font-black text-emerald-900">
+                  {t("timeline.memory.said", {
+                    name: item.memory.contributorName || t("timeline.traveler"),
+                  })}
+                </p>
+                {item.linkedPlannerItem ? (
+                  <Link
+                    href={item.linkedPlannerItem.href}
+                    title={[
+                      item.linkedPlannerItem.dayLabel,
+                      item.linkedPlannerItem.timeLabel,
+                      item.linkedPlannerItem.title,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                    className="min-w-0 truncate rounded-full bg-emerald-100/70 px-2 py-0.5 text-xs font-black text-emerald-900 underline decoration-emerald-300 underline-offset-2"
+                  >
+                    {[
+                      item.linkedPlannerItem.dayLabel,
+                      item.linkedPlannerItem.timeLabel,
+                      item.linkedPlannerItem.title,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </Link>
+                ) : null}
+              </div>
+              <div className="mt-2 rounded-2xl rounded-tl-sm bg-white px-4 py-3 text-xl font-medium leading-8 text-stone-950 shadow-sm">
+                {item.memory.content || t("timeline.memory.textFallback")}
               </div>
             </div>
           </div>
@@ -764,7 +852,7 @@ function CompactMemoryCard({
               <input
                 value={locationDraft}
                 onChange={(event) => setLocationDraft(event.target.value)}
-                placeholder="Location"
+                placeholder={t("planner.field.location")}
                 className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-900 outline-none focus:border-emerald-500"
               />
               <input
@@ -801,7 +889,7 @@ function CompactMemoryCard({
         {cardError ? (
           <p className="mt-2 text-xs font-semibold text-red-600">{cardError}</p>
         ) : null}
-        <ItemMeta item={item} />
+        <ItemMeta item={item} hidePlannerLink={!isPhoto} />
         {item.replies.length > 0 ? (
           <div className="mt-4 space-y-3 rounded-3xl bg-emerald-50/50 p-3">
             {item.replies.map((reply) => (
@@ -971,6 +1059,7 @@ function TrueTimelineView({
   onDeleteMemory: (memoryId: string) => Promise<void>;
   onReplyCreated: () => Promise<void>;
 }) {
+  const { t } = useI18n();
   const dates = [
     ...new Set([initialDate, ...items.map((item) => item.dateKey)].filter(Boolean)),
   ].sort() as string[];
@@ -996,23 +1085,30 @@ function TrueTimelineView({
     <section className="space-y-4">
       <div className="sticky top-0 z-20 -mx-4 overflow-x-auto border-y border-emerald-100 bg-stone-50/95 px-4 py-3 backdrop-blur">
         <div className="flex gap-2">
-          {dates.map((date) => (
-            <button
-              type="button"
-              key={date}
-              onClick={() => setSelectedDate(date)}
-              className={`shrink-0 rounded-2xl px-4 py-2 text-sm font-black ${
-                activeDate === date
-                  ? "bg-emerald-700 text-white"
-                  : "bg-white text-stone-600 shadow-sm"
-              }`}
-            >
-              {new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
-                month: "short",
-                day: "numeric",
-              })}
-            </button>
-          ))}
+          {dates.map((date) => {
+            const active = activeDate === date;
+            const isToday = date === getLocalDateKey(new Date().toISOString());
+
+            return (
+              <button
+                type="button"
+                key={date}
+                onClick={() => setSelectedDate(date)}
+                className={`shrink-0 rounded-2xl border px-4 py-2 text-sm font-black ${
+                  active
+                    ? "border-emerald-700 bg-emerald-700 text-white"
+                    : isToday
+                      ? "border-amber-300 bg-amber-50 text-amber-900 shadow-sm ring-2 ring-amber-200"
+                    : "border-white bg-white text-stone-600 shadow-sm"
+                } ${active && isToday ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-stone-50" : ""}`}
+              >
+                {new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                })}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -1021,7 +1117,7 @@ function TrueTimelineView({
           {formatDayLabel(activeDate)}
         </h2>
         <p className="mt-1 text-sm text-stone-500">
-          {dayItems.length} memories in captured-time order
+          {t("timeline.true.count", { count: dayItems.length })}
         </p>
       </div>
 
@@ -1045,64 +1141,324 @@ function TrueTimelineView({
 function AlbumView({
   items,
   onOpenDebug,
+  members,
+  tripId,
+  onFaceConfirmed,
 }: {
   items: TimelineItem[];
+  members: JourneyMember[];
+  tripId: string;
   onOpenDebug: () => void;
+  onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
 }) {
+  const { t } = useI18n();
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
+  const [showInfo, setShowInfo] = useState(true);
+  const [selectedFace, setSelectedFace] = useState<{
+    assetId: string;
+    face: PhotoFace;
+  } | null>(null);
+  const [confirmingFaceId, setConfirmingFaceId] = useState<string | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const photoItems = items.filter(
     (item) => item.memory.type === "photo" && item.photo?.displayUrl,
   );
+  const activeItem = photoItems.find((item) => item.id === activeItemId) ?? null;
+
+  function closeViewer() {
+    setActiveItemId(null);
+    setSelectedFace(null);
+    setConfirmError(null);
+  }
+
+  async function confirmFace(member: JourneyMember) {
+    if (!selectedFace) return;
+
+    setConfirmingFaceId(selectedFace.face.id);
+    setConfirmError(null);
+
+    try {
+      const updated = await requestFaceConfirmation({
+        faceId: selectedFace.face.id,
+        tripId,
+        journeyMemberId: member.id,
+      });
+      onFaceConfirmed(selectedFace.assetId, updated);
+      setSelectedFace(null);
+    } catch (error) {
+      setConfirmError(
+        error instanceof Error
+          ? error.message
+          : t("timeline.debug.error.confirmFace"),
+      );
+    } finally {
+      setConfirmingFaceId(null);
+    }
+  }
 
   return (
-    <section className="grid grid-cols-3 gap-1 sm:grid-cols-4 lg:grid-cols-6">
-      {photoItems.map((item) => {
-        const isActive = activeItemId === item.id;
-
-        return (
+    <>
+      <section className="grid grid-cols-3 gap-1 sm:grid-cols-4 lg:grid-cols-6">
+        {photoItems.map((item) => (
           <button
             type="button"
             key={item.id}
-            onClick={() =>
-              isActive && item.photo?.providerWebUrl
-                ? window.open(item.photo.providerWebUrl, "_blank", "noreferrer")
-                : setActiveItemId(item.id)
-            }
+            onClick={() => {
+              setActiveItemId(item.id);
+              setShowInfo(true);
+              setSelectedFace(null);
+              setConfirmError(null);
+            }}
             className="group relative aspect-square overflow-hidden bg-stone-100 text-left"
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={item.photo!.displayUrl}
-              alt={item.memory.content || "Travel photo"}
+              alt={item.memory.content || t("timeline.photo.alt")}
               className="h-full w-full object-cover"
             />
-            <div
-              className={`absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-stone-950/80 via-stone-950/20 to-transparent p-2 text-white transition ${
-                isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-              }`}
-            >
+            <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-stone-950/80 via-stone-950/20 to-transparent p-2 text-white opacity-0 transition group-hover:opacity-100">
               <p className="line-clamp-2 text-xs font-bold">
-                {item.memory.content || item.memory.locationName || "Photo"}
+                {item.memory.content ||
+                  item.memory.locationName ||
+                  t("timeline.photo.fallback")}
               </p>
               <p className="mt-1 text-[10px] font-semibold opacity-80">
                 {formatShortDateTime(item.capturedAt)}
               </p>
               {item.hasUnassignedFaces ? (
-                <span
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onOpenDebug();
-                  }}
-                  className="mt-2 w-fit rounded-full bg-amber-300 px-2 py-1 text-[10px] font-black text-stone-950"
-                >
-                  Assign faces
+                <span className="mt-2 w-fit rounded-full bg-amber-300 px-2 py-1 text-[10px] font-black text-stone-950">
+                  {t("timeline.album.assignFaces")}
                 </span>
               ) : null}
             </div>
           </button>
-        );
-      })}
-    </section>
+        ))}
+      </section>
+
+      {activeItem?.photo?.displayUrl ? (
+        <div
+          className="fixed inset-0 z-[2147482400] bg-stone-950/92 p-3 backdrop-blur-sm sm:p-6"
+          onClick={closeViewer}
+        >
+          <div
+            className="mx-auto flex h-full max-w-6xl flex-col gap-3"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0 text-white">
+                <p className="truncate text-sm font-black">
+                  {activeItem.memory.content || t("timeline.photo.fallback")}
+                </p>
+                <p className="mt-0.5 text-xs font-semibold text-white/65">
+                  {formatShortDateTime(activeItem.capturedAt)}
+                  {activeItem.memory.locationName
+                    ? ` · ${activeItem.memory.locationName}`
+                    : ""}
+                </p>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowInfo((current) => !current)}
+                  className="rounded-full bg-white/15 px-3 py-2 text-xs font-black text-white"
+                >
+                  {showInfo
+                    ? t("timeline.album.hideInfo")
+                    : t("timeline.album.showInfo")}
+                </button>
+                {activeItem.photo.providerWebUrl ? (
+                  <a
+                    href={activeItem.photo.providerWebUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full bg-white px-3 py-2 text-xs font-black text-stone-950"
+                  >
+                    {t("timeline.album.openDrive")}
+                  </a>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={closeViewer}
+                  className="rounded-full bg-white/15 px-3 py-2 text-xs font-black text-white"
+                >
+                  {t("common.close")}
+                </button>
+              </div>
+            </div>
+
+            <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <div
+                className="relative grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black"
+                style={{
+                  aspectRatio:
+                    activeItem.photo.width && activeItem.photo.height
+                      ? `${activeItem.photo.width} / ${activeItem.photo.height}`
+                      : "4 / 3",
+                }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={activeItem.photo.displayUrl}
+                  alt={activeItem.memory.content || t("timeline.photo.alt")}
+                  className="h-full w-full object-cover"
+                />
+                {showInfo
+                  ? activeItem.faces.map((face, index) => {
+                      const boxStyle = getFaceBoxStyle(face, activeItem.photo!);
+                      if (!boxStyle) return null;
+
+                      const faceName =
+                        face.recognizedName ||
+                        t("timeline.debug.face", { number: index + 1 });
+                      const isSelected =
+                        selectedFace?.assetId === activeItem.photo!.id &&
+                        selectedFace.face.id === face.id;
+
+                      return (
+                        <button
+                          type="button"
+                          key={face.id}
+                          onClick={() =>
+                            setSelectedFace({
+                              assetId: activeItem.photo!.id,
+                              face,
+                            })
+                          }
+                          aria-label={t("timeline.debug.selectFace", {
+                            name: faceName,
+                          })}
+                          className={`absolute rounded-xl border-2 transition ${
+                            isSelected
+                              ? "border-amber-300 bg-amber-300/20"
+                              : face.recognitionStatus === "confirmed"
+                                ? "border-emerald-300 bg-emerald-300/15"
+                                : "border-white bg-white/10"
+                          }`}
+                          style={boxStyle}
+                        >
+                          <span
+                            className={`absolute left-1 top-1 max-w-28 truncate rounded-full px-2 py-1 text-[11px] font-black shadow-sm ${
+                              face.recognitionStatus === "confirmed"
+                                ? "bg-emerald-600 text-white"
+                                : "bg-white text-stone-950"
+                            }`}
+                          >
+                            {faceName}
+                          </span>
+                        </button>
+                      );
+                    })
+                  : null}
+              </div>
+
+              {showInfo ? (
+                <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-4">
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
+                        {t("timeline.album.people")}
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {activeItem.peopleNames.length > 0 ? (
+                          activeItem.peopleNames.map((name) => (
+                            <span
+                              key={name}
+                              className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-900"
+                            >
+                              {name}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-sm font-semibold text-stone-500">
+                            {t("timeline.album.noPeople")}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {getAiSummary(activeItem.photo) ? (
+                      <p className="rounded-2xl bg-emerald-50 p-3 text-sm leading-6 text-emerald-950">
+                        {getAiSummary(activeItem.photo)}
+                      </p>
+                    ) : null}
+
+                    {activeItem.photo.sceneTags &&
+                    activeItem.photo.sceneTags.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {activeItem.photo.sceneTags.slice(0, 8).map((tag) => (
+                          <span
+                            key={tag}
+                            className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-700"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {activeItem.photo.ocrText ? (
+                      <p className="line-clamp-4 rounded-2xl bg-stone-50 p-3 text-sm leading-6 text-stone-700">
+                        {t("timeline.debug.ocr")} {activeItem.photo.ocrText}
+                      </p>
+                    ) : null}
+
+                    {selectedFace?.assetId === activeItem.photo.id ? (
+                      <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-4">
+                        <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-800">
+                          {t("timeline.debug.confirmFace")}
+                        </p>
+                        <h4 className="mt-1 text-lg font-semibold text-stone-950">
+                          {t("timeline.debug.whoIsThis")}
+                        </h4>
+                        {confirmError ? (
+                          <p className="mt-2 text-xs font-semibold text-red-700">
+                            {confirmError}
+                          </p>
+                        ) : null}
+                        <div className="mt-4 grid grid-cols-1 gap-2">
+                          {members.map((member) => (
+                            <button
+                              type="button"
+                              key={member.id}
+                              onClick={() => confirmFace(member)}
+                              disabled={confirmingFaceId === selectedFace.face.id}
+                              className="flex items-center gap-2 rounded-2xl bg-white p-3 text-left text-sm font-bold text-stone-900 shadow-sm disabled:opacity-60"
+                            >
+                              {member.avatarUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={member.avatarUrl}
+                                  alt=""
+                                  className="size-8 rounded-full object-cover"
+                                />
+                              ) : (
+                                <span className="grid size-8 place-items-center rounded-full bg-emerald-100 text-xs text-emerald-900">
+                                  {member.displayName.slice(0, 1).toUpperCase()}
+                                </span>
+                              )}
+                              <span className="truncate">{member.displayName}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : activeItem.hasUnassignedFaces ? (
+                      <button
+                        type="button"
+                        onClick={onOpenDebug}
+                        className="w-full rounded-full bg-amber-300 px-4 py-3 text-sm font-black text-stone-950"
+                      >
+                        {t("timeline.album.assignFaces")}
+                      </button>
+                    ) : null}
+                  </div>
+                </aside>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -1143,14 +1499,18 @@ function PhotoGalleryView({
   facesByAssetId,
   members,
   tripId,
+  targetAssetId,
   onFaceConfirmed,
 }: {
   photos: PhotoAssetWithMemory[];
   facesByAssetId: Record<string, PhotoFace[]>;
   members: JourneyMember[];
   tripId: string;
+  targetAssetId?: string | null;
   onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
 }) {
+  const { t } = useI18n();
+  const targetPhotoRef = useRef<HTMLElement | null>(null);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [activeFacePhotoId, setActiveFacePhotoId] = useState<string | null>(null);
   const [selectedFace, setSelectedFace] = useState<{
@@ -1176,7 +1536,7 @@ function PhotoGalleryView({
       setError(
         indexError instanceof Error
           ? indexError.message
-          : "Could not queue this photo.",
+          : t("timeline.debug.error.queuePhoto"),
       );
     } finally {
       setActivePhotoId(null);
@@ -1209,7 +1569,7 @@ function PhotoGalleryView({
       setError(
         faceError instanceof Error
           ? faceError.message
-          : "Could not queue face detection.",
+          : t("timeline.debug.error.queueFace"),
       );
     } finally {
       setActiveFacePhotoId(null);
@@ -1234,7 +1594,7 @@ function PhotoGalleryView({
       setError(
         confirmError instanceof Error
           ? confirmError.message
-          : "Could not confirm this face.",
+          : t("timeline.debug.error.confirmFace"),
       );
     } finally {
       setConfirmingFaceId(null);
@@ -1244,20 +1604,32 @@ function PhotoGalleryView({
   const indexedCount = photos.filter((photo) => photo.aiStatus === "indexed").length;
   const driveCount = photos.filter((photo) => photo.isOriginalPreserved).length;
 
+  useEffect(() => {
+    if (!targetAssetId) return;
+
+    const timer = window.setTimeout(() => {
+      targetPhotoRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 150);
+
+    return () => window.clearTimeout(timer);
+  }, [photos, targetAssetId]);
+
   return (
     <section className="space-y-5">
       <div className="rounded-3xl bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-sm font-bold uppercase tracking-[0.18em] text-emerald-700">
-              Photo album
+              {t("timeline.debug.photoAlbum")}
             </p>
             <h2 className="mt-2 text-2xl font-semibold text-stone-950">
-              {photos.length} uploaded photos
+              {t("timeline.debug.uploadedPhotos", { count: photos.length })}
             </h2>
             <p className="mt-2 text-sm leading-6 text-stone-600">
-              {driveCount} originals in Google Drive · {indexedCount} indexed for
-              search
+              {t("timeline.debug.driveIndexed", { driveCount, indexedCount })}
             </p>
           </div>
           <button
@@ -1266,7 +1638,9 @@ function PhotoGalleryView({
             disabled={activePhotoId !== null || photos.length === indexedCount}
             className="rounded-full bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
           >
-            {activePhotoId ? "Indexing..." : "Index pending"}
+            {activePhotoId
+              ? t("timeline.debug.indexing")
+              : t("timeline.debug.indexPending")}
           </button>
         </div>
         {error ? (
@@ -1278,7 +1652,7 @@ function PhotoGalleryView({
 
       {photos.length === 0 ? (
         <div className="rounded-3xl border border-dashed border-stone-300 bg-white p-6 text-sm leading-6 text-stone-600">
-          No uploaded photos yet. Add a photo memory and it will appear here.
+          {t("timeline.debug.noUploaded")}
         </div>
       ) : null}
 
@@ -1296,7 +1670,13 @@ function PhotoGalleryView({
           return (
             <article
               key={photo.id}
-              className="overflow-hidden rounded-3xl bg-white shadow-sm"
+              id={`photo-${photo.id}`}
+              ref={photo.id === targetAssetId ? targetPhotoRef : null}
+              className={`overflow-hidden rounded-3xl bg-white shadow-sm ${
+                photo.id === targetAssetId
+                  ? "ring-4 ring-amber-300 ring-offset-4 ring-offset-stone-50"
+                  : ""
+              }`}
             >
               <div
                 className="relative bg-stone-100"
@@ -1311,19 +1691,21 @@ function PhotoGalleryView({
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={photo.displayUrl}
-                    alt={photo.memory?.content || "Travel photo"}
+                    alt={photo.memory?.content || t("timeline.photo.alt")}
                     className="h-full w-full object-cover"
                   />
                 ) : (
                   <div className="grid h-full place-items-center text-sm font-semibold text-stone-400">
-                    No preview
+                    {t("timeline.debug.noPreview")}
                   </div>
                 )}
                 {faces.map((face, index) => {
                   const boxStyle = getFaceBoxStyle(face, photo);
                   if (!boxStyle) return null;
 
-                  const faceName = face.recognizedName || `Face ${index + 1}`;
+                  const faceName =
+                    face.recognizedName ||
+                    t("timeline.debug.face", { number: index + 1 });
                   const isSelected =
                     selectedFace?.assetId === photo.id &&
                     selectedFace.face.id === face.id;
@@ -1335,7 +1717,9 @@ function PhotoGalleryView({
                       type="button"
                       key={face.id}
                       onClick={() => setSelectedFace({ assetId: photo.id, face })}
-                      aria-label={`Select ${faceName}`}
+                      aria-label={t("timeline.debug.selectFace", {
+                        name: faceName,
+                      })}
                       className={`absolute rounded-xl border-2 transition ${
                         isSelected
                           ? "border-amber-400 bg-amber-300/20 shadow-[0_0_0_4px_rgba(251,191,36,0.28)]"
@@ -1358,7 +1742,9 @@ function PhotoGalleryView({
                                 : "bg-white text-stone-900"
                         }`}
                       >
-                        {isRecognized ? `Maybe ${faceName}` : faceName}
+                        {isRecognized
+                          ? t("timeline.debug.maybeFace", { name: faceName })
+                          : faceName}
                       </span>
                     </button>
                   );
@@ -1398,23 +1784,29 @@ function PhotoGalleryView({
                     {photo.width ?? "?"} x {photo.height ?? "?"}
                   </span>
                   <span className="rounded-2xl bg-stone-50 p-3">
-                    Compressed {formatBytes(photo.compressedFileSize)}
+                    {t("timeline.debug.compressed", {
+                      size: formatBytes(photo.compressedFileSize),
+                    })}
                   </span>
                   <span className="rounded-2xl bg-stone-50 p-3">
-                    Original {formatBytes(photo.originalFileSize)}
+                    {t("timeline.debug.original", {
+                      size: formatBytes(photo.originalFileSize),
+                    })}
                   </span>
                   <span className="rounded-2xl bg-stone-50 p-3">
-                    {photo.isOriginalPreserved ? "Drive preserved" : "No original"}
+                    {photo.isOriginalPreserved
+                      ? t("timeline.debug.drivePreserved")
+                      : t("timeline.debug.noOriginal")}
                   </span>
                   <span className="rounded-2xl bg-stone-50 p-3">
-                    {faces.length} faces detected
+                    {t("timeline.debug.facesDetected", { count: faces.length })}
                   </span>
                 </div>
 
                 {faces.length > 0 ? (
                   <div className="rounded-2xl bg-stone-50 p-3">
                     <p className="text-xs font-bold uppercase tracking-[0.16em] text-stone-500">
-                      Faces
+                      {t("timeline.debug.faces")}
                     </p>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {faces.map((face, index) => (
@@ -1441,8 +1833,13 @@ function PhotoGalleryView({
                               }`}
                             >
                               {face.recognitionStatus === "recognized"
-                                ? `Maybe ${face.recognizedName}`
-                                : face.recognizedName || `Face ${index + 1}`}{" "}
+                                ? t("timeline.debug.maybeFace", {
+                                    name: face.recognizedName ?? "",
+                                  })
+                                : face.recognizedName ||
+                                  t("timeline.debug.face", {
+                                    number: index + 1,
+                                  })}{" "}
                               ·{" "}
                               {Math.round((face.confidence ?? 0) * 100)}%
                             </button>
@@ -1458,14 +1855,13 @@ function PhotoGalleryView({
                     <div className="flex items-start justify-between gap-4">
                       <div>
                         <p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-800">
-                          Confirm face
+                          {t("timeline.debug.confirmFace")}
                         </p>
                         <h4 className="mt-1 text-lg font-semibold text-stone-950">
-                          Who is this?
+                          {t("timeline.debug.whoIsThis")}
                         </h4>
                         <p className="mt-1 text-sm text-stone-600">
-                          Confirm or correct the suggested person. This keeps
-                          future matching inside this Journey.
+                          {t("timeline.debug.confirmFaceHelp")}
                         </p>
                       </div>
                       <button
@@ -1473,7 +1869,7 @@ function PhotoGalleryView({
                         onClick={() => setSelectedFace(null)}
                         className="rounded-full bg-white px-3 py-2 text-xs font-bold text-stone-600"
                       >
-                        Close
+                        {t("common.close")}
                       </button>
                     </div>
 
@@ -1526,7 +1922,7 @@ function PhotoGalleryView({
 
                 {locationHints.length > 0 ? (
                   <p className="text-sm text-stone-600">
-                    Location hints: {locationHints.join(", ")}
+                    {t("timeline.debug.locationHints")} {locationHints.join(", ")}
                   </p>
                 ) : null}
 
@@ -1534,25 +1930,33 @@ function PhotoGalleryView({
                   <div className="grid gap-2 rounded-2xl bg-stone-50 p-3 text-xs font-semibold text-stone-700 sm:grid-cols-2">
                     {modelInfo.provider ? (
                       <p>
-                        <span className="text-stone-500">Provider:</span>{" "}
+                        <span className="text-stone-500">
+                          {t("timeline.debug.provider")}
+                        </span>{" "}
                         {modelInfo.provider}
                       </p>
                     ) : null}
                     {modelInfo.modelUsed ? (
                       <p>
-                        <span className="text-stone-500">Model used:</span>{" "}
+                        <span className="text-stone-500">
+                          {t("timeline.debug.modelUsed")}
+                        </span>{" "}
                         {modelInfo.modelUsed}
                       </p>
                     ) : null}
                     {modelInfo.model ? (
                       <p className="sm:col-span-2">
-                        <span className="text-stone-500">Model:</span>{" "}
+                        <span className="text-stone-500">
+                          {t("timeline.debug.model")}
+                        </span>{" "}
                         {modelInfo.model}
                       </p>
                     ) : null}
                     {modelInfo.confidence !== null ? (
                       <p>
-                        <span className="text-stone-500">Confidence:</span>{" "}
+                        <span className="text-stone-500">
+                          {t("timeline.debug.confidence")}
+                        </span>{" "}
                         {Math.round(modelInfo.confidence * 100)}%
                       </p>
                     ) : null}
@@ -1561,7 +1965,7 @@ function PhotoGalleryView({
 
                 {photo.ocrText ? (
                   <p className="rounded-2xl bg-stone-50 p-3 text-sm leading-6 text-stone-700">
-                    OCR: {photo.ocrText}
+                    {t("timeline.debug.ocr")} {photo.ocrText}
                   </p>
                 ) : null}
 
@@ -1579,10 +1983,10 @@ function PhotoGalleryView({
                     className="rounded-full bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-stone-300"
                   >
                     {activePhotoId === photo.id
-                      ? "Queued"
+                      ? t("timeline.debug.queued")
                       : photo.aiStatus === "indexed"
-                        ? "Re-index"
-                        : "Index photo"}
+                        ? t("timeline.debug.reindex")
+                        : t("timeline.debug.indexPhoto")}
                   </button>
                   <button
                     type="button"
@@ -1591,10 +1995,10 @@ function PhotoGalleryView({
                     className="rounded-full bg-stone-950 px-4 py-2 text-sm font-bold text-white disabled:bg-stone-300"
                   >
                     {activeFacePhotoId === photo.id
-                      ? "Queued"
+                      ? t("timeline.debug.queued")
                       : faces.length > 0
-                        ? "Refresh faces"
-                        : "Detect faces"}
+                        ? t("timeline.debug.refreshFaces")
+                        : t("timeline.debug.detectFaces")}
                   </button>
                   {photo.providerWebUrl ? (
                     <a
@@ -1603,7 +2007,7 @@ function PhotoGalleryView({
                       rel="noreferrer"
                       className="rounded-full bg-stone-100 px-4 py-2 text-sm font-bold text-stone-800"
                     >
-                      Open original
+                      {t("timeline.debug.openOriginal")}
                     </a>
                   ) : null}
                 </div>
@@ -1619,9 +2023,12 @@ function PhotoGalleryView({
 function TimelineContent({ user }: { user: User }) {
   const params = useParams<{ tripId: string }>();
   const searchParams = useSearchParams();
+  const { t } = useI18n();
   const tripId = params.tripId;
   const initialTimelineDate = searchParams.get("date");
-  const initialView = searchParams.get("view") === "timeline" ? "timeline" : "feed";
+  const initialView = parseTimelineView(searchParams.get("view"));
+  const targetAssetId = searchParams.get("asset");
+  const initialSession = readTimelineSession(tripId);
   const [trip, setTrip] = useState<Trip | null>(null);
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [photoAssets, setPhotoAssets] = useState<PhotoAssetWithMemory[]>([]);
@@ -1631,10 +2038,14 @@ function TimelineContent({ user }: { user: User }) {
   );
   const [members, setMembers] = useState<JourneyMember[]>([]);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
-  const [view, setView] = useState<TimelineView>(initialView);
-  const [query, setQuery] = useState("");
-  const [mineOnly, setMineOnly] = useState(false);
-  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
+  const [view, setView] = useState<TimelineView>(
+    targetAssetId ? "debug" : (initialSession?.view ?? initialView),
+  );
+  const [query, setQuery] = useState(initialSession?.query ?? "");
+  const mineOnly = false;
+  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>(
+    initialSession?.selectedMemberIds ?? [],
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1643,8 +2054,7 @@ function TimelineContent({ user }: { user: User }) {
 
     async function loadTimeline() {
       try {
-        const [tripData, memoryData, assetData, memberData] =
-          await Promise.all([
+        const [tripData, memoryData, assetData, memberData] = await Promise.all([
           getTrip(tripId),
           getTripMemories(tripId),
           getTripPhotoAssets(tripId),
@@ -1670,7 +2080,7 @@ function TimelineContent({ user }: { user: User }) {
           setError(
             timelineError instanceof Error
               ? timelineError.message
-              : "Could not load timeline.",
+              : t("timeline.error.load"),
           );
         }
       } finally {
@@ -1684,6 +2094,53 @@ function TimelineContent({ user }: { user: User }) {
 
     return () => {
       isMounted = false;
+    };
+  }, [tripId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (targetAssetId) return;
+      const savedScrollY = initialSession?.scrollY;
+      if (typeof savedScrollY !== "number" || savedScrollY <= 0) return;
+      window.scrollTo({ top: savedScrollY, behavior: "instant" });
+    }, 120);
+
+    return () => window.clearTimeout(timer);
+  }, [initialSession?.scrollY, isLoading, targetAssetId]);
+
+  useEffect(() => {
+    writeTimelineSession(tripId, { view, query, selectedMemberIds });
+  }, [query, selectedMemberIds, tripId, view]);
+
+  useEffect(() => {
+    let saveTimer: number | null = null;
+
+    const saveScroll = () => {
+      if (saveTimer !== null) {
+        window.clearTimeout(saveTimer);
+      }
+
+      saveTimer = window.setTimeout(() => {
+        writeTimelineSession(tripId, { scrollY: window.scrollY });
+      }, 180);
+    };
+
+    const saveImmediately = () => {
+      writeTimelineSession(tripId, { scrollY: window.scrollY });
+    };
+
+    window.addEventListener("scroll", saveScroll, { passive: true });
+    window.addEventListener("pagehide", saveImmediately);
+    document.addEventListener("visibilitychange", saveImmediately);
+
+    return () => {
+      if (saveTimer !== null) {
+        window.clearTimeout(saveTimer);
+      }
+      saveImmediately();
+      window.removeEventListener("scroll", saveScroll);
+      window.removeEventListener("pagehide", saveImmediately);
+      document.removeEventListener("visibilitychange", saveImmediately);
     };
   }, [tripId]);
 
@@ -1784,33 +2241,26 @@ function TimelineContent({ user }: { user: User }) {
   if (isLoading) {
     return (
       <div className="rounded-2xl border border-stone-200 bg-white p-5 text-sm font-medium text-stone-600 shadow-sm">
-        Loading timeline...
+        {t("timeline.loading")}
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <section>
-        <p className="text-sm font-semibold text-emerald-700">
-          {trip?.name || "Trip"}
-        </p>
-        <h1 className="mt-1 text-3xl font-semibold text-stone-950">
-          Timeline
+        <h1 className="text-3xl font-semibold text-stone-950">
+          {t("timeline.title")}
         </h1>
-        <p className="mt-3 text-base leading-7 text-stone-600">
-          Uploaded memories, photo index data, faces, places, and captured-time
-          story views.
-        </p>
       </section>
 
-      <div className="sticky top-0 z-30 space-y-3 rounded-3xl bg-stone-50/95 p-3 shadow-sm backdrop-blur">
+      <div className="sticky top-0 z-30 space-y-2 rounded-3xl bg-stone-50/95 p-3 shadow-sm backdrop-blur">
         <div className="grid grid-cols-4 gap-1 rounded-2xl border border-stone-200 bg-white p-1">
           {[
-            ["feed", "Feed"],
-            ["timeline", "Timeline"],
-            ["album", "Album"],
-            ["debug", "Debug"],
+            ["feed", t("timeline.tab.feed")],
+            ["timeline", t("timeline.tab.timeline")],
+            ["album", t("timeline.tab.album")],
+            ["debug", t("timeline.tab.debug")],
           ].map(([mode, label]) => (
             <button
               type="button"
@@ -1827,24 +2277,13 @@ function TimelineContent({ user }: { user: User }) {
           ))}
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+        <div className="grid gap-2">
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search notes, OCR, tags, people, places..."
+            placeholder={t("timeline.search.placeholder")}
             className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-sm font-semibold text-stone-900 outline-none focus:border-emerald-500"
           />
-          <button
-            type="button"
-            onClick={() => setMineOnly((current) => !current)}
-            className={`rounded-2xl px-4 py-3 text-sm font-black ${
-              mineOnly
-                ? "bg-emerald-700 text-white"
-                : "bg-white text-stone-700 shadow-sm"
-            }`}
-          >
-            Mine
-          </button>
         </div>
 
         <div className="flex gap-2 overflow-x-auto pb-1">
@@ -1885,10 +2324,6 @@ function TimelineContent({ user }: { user: User }) {
             );
           })}
         </div>
-
-        <p className="px-1 text-xs font-semibold text-stone-500">
-          Showing {filteredItems.length} of {timelineItems.length} memories
-        </p>
       </div>
 
       {error ? (
@@ -1899,13 +2334,13 @@ function TimelineContent({ user }: { user: User }) {
 
       {!error && timelineItems.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-5 text-sm leading-6 text-stone-600">
-          No memories yet. Capture a text note or photo and it will appear here.
+          {t("timeline.empty")}
         </div>
       ) : null}
 
       {!error && timelineItems.length > 0 && filteredItems.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-5 text-sm leading-6 text-stone-600">
-          No memories match these filters.
+          {t("timeline.empty.filtered")}
         </div>
       ) : null}
 
@@ -1934,7 +2369,13 @@ function TimelineContent({ user }: { user: User }) {
       ) : null}
 
       {view === "album" ? (
-        <AlbumView items={filteredItems} onOpenDebug={() => setView("debug")} />
+        <AlbumView
+          items={filteredItems}
+          members={members}
+          tripId={tripId}
+          onFaceConfirmed={handleFaceConfirmed}
+          onOpenDebug={() => setView("debug")}
+        />
       ) : null}
 
       {view === "debug" ? (
@@ -1943,6 +2384,7 @@ function TimelineContent({ user }: { user: User }) {
           facesByAssetId={facesByAssetId}
           members={members}
           tripId={tripId}
+          targetAssetId={targetAssetId}
           onFaceConfirmed={handleFaceConfirmed}
         />
       ) : null}
