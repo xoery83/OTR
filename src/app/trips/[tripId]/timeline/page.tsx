@@ -2243,6 +2243,7 @@ function TimelineContent({ user }: { user: User }) {
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>(
     initialSession?.selectedMemberIds ?? [],
   );
+  const [isMobileSearchActive, setIsMobileSearchActive] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activePhotoItemId, setActivePhotoItemId] = useState<string | null>(null);
@@ -2455,6 +2456,23 @@ function TimelineContent({ user }: { user: User }) {
   const activePhotoItem =
     flattenedVisibleItems.find((item) => item.id === activePhotoItemId) ?? null;
 
+  useEffect(() => {
+    if (!isMobileSearchActive) return;
+
+    document.body.classList.add("otr-mobile-search-active");
+
+    return () => {
+      document.body.classList.remove("otr-mobile-search-active");
+    };
+  }, [isMobileSearchActive]);
+
+  function closeMobileSearch() {
+    setIsMobileSearchActive(false);
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+
   function toggleMember(memberId: string) {
     setSelectedMemberIds((current) =>
       current.includes(memberId)
@@ -2532,8 +2550,18 @@ function TimelineContent({ user }: { user: User }) {
         </h1>
       </section>
 
-      <div className="sticky top-0 z-30 space-y-2 rounded-3xl bg-stone-50/95 p-3 shadow-sm backdrop-blur">
-        <div className="grid grid-cols-5 gap-1 rounded-2xl border border-stone-200 bg-white p-1">
+      <div
+        className={`space-y-2 p-3 backdrop-blur md:sticky md:top-0 md:z-30 md:rounded-3xl md:bg-stone-50/95 md:shadow-sm ${
+          isMobileSearchActive
+            ? "fixed inset-x-0 top-0 z-[2147482600] rounded-none border-b border-stone-200 bg-white shadow-lg"
+            : "sticky top-0 z-30 rounded-3xl bg-stone-50/95 shadow-sm"
+        }`}
+      >
+        <div
+          className={`grid-cols-5 gap-1 rounded-2xl border border-stone-200 bg-white p-1 md:grid ${
+            isMobileSearchActive ? "hidden" : "grid"
+          }`}
+        >
           {[
             ["feed", t("timeline.tab.feed")],
             ["timeline", t("timeline.tab.timeline")],
@@ -2556,13 +2584,32 @@ function TimelineContent({ user }: { user: User }) {
           ))}
         </div>
 
-        <div className="grid gap-2">
+        <div className="flex items-center gap-2">
           <input
+            type="search"
+            enterKeyHint="search"
+            inputMode="search"
+            autoComplete="off"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            onFocus={() => setIsMobileSearchActive(true)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
+              }
+            }}
             placeholder={t("timeline.search.placeholder")}
-            className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-sm font-semibold text-stone-900 outline-none focus:border-emerald-500"
+            className="min-w-0 flex-1 rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base font-semibold text-stone-900 outline-none focus:border-emerald-500 md:text-sm"
           />
+          <button
+            type="button"
+            onClick={closeMobileSearch}
+            className={`shrink-0 rounded-full px-3 py-2 text-sm font-black text-emerald-800 md:hidden ${
+              isMobileSearchActive ? "inline-flex" : "hidden"
+            }`}
+          >
+            {t("timeline.search.cancel")}
+          </button>
         </div>
 
         <div className="flex gap-2 overflow-x-auto pb-1">
@@ -2604,6 +2651,7 @@ function TimelineContent({ user }: { user: User }) {
           })}
         </div>
       </div>
+      {isMobileSearchActive ? <div className="h-32 md:hidden" /> : null}
 
       {error ? (
         <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-sm font-medium text-red-700">

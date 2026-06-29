@@ -446,6 +446,7 @@ export function ActivityCenter() {
   return (
     <div
       ref={containerRef}
+      data-mobile-activity-center
       className="fixed bottom-24 left-3 z-[2147482500] md:bottom-5 md:left-5"
     >
       {notice && !isOpen ? (

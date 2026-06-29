@@ -200,6 +200,7 @@ export function BottomNav() {
 
     return (
       <nav
+        data-mobile-bottom-nav
         className={`fixed inset-x-0 bottom-0 z-30 backdrop-blur md:hidden ${
           isMapPage
             ? "border-t border-transparent bg-transparent shadow-none"
@@ -246,6 +247,7 @@ export function BottomNav() {
   const captureButton = (
     <button
       type="button"
+      data-mobile-capture-button
       onClick={() => openCapture(captureOptions())}
       className={`fixed right-4 z-40 flex h-16 min-w-20 flex-col items-center justify-center gap-0.5 rounded-[22px] bg-emerald-700 px-4 text-white shadow-2xl shadow-emerald-950/25 transition active:scale-95 md:hidden ${
         isMapPage ? "bottom-20" : "bottom-24"

@@ -357,4 +357,10 @@ input[type="date"] {
   main.otr-page-shell {
     padding-bottom: calc(14rem + env(safe-area-inset-bottom, 0px)) !important;
   }
+
+  body.otr-mobile-search-active [data-mobile-bottom-nav],
+  body.otr-mobile-search-active [data-mobile-capture-button],
+  body.otr-mobile-search-active [data-mobile-activity-center] {
+    display: none !important;
+  }
 }
