@@ -1,5 +1,6 @@
 import type {
   CreateLedgerEntryInput,
+  JourneyExchangeRate,
   JourneyLedger,
   JourneyMember,
   LedgerCategory,
@@ -9,6 +10,7 @@ import type {
   LedgerSettlementSuggestion,
   UpdateLedgerEntryInput,
 } from "@/types";
+import { normalizeCurrencyCode } from "@/lib/currencies";
 import { getApproxExchangeRate } from "@/lib/exchange-rates";
 import { getCurrentUser } from "./auth";
 import { getJourneyMembers } from "./journey-members";
@@ -19,6 +21,23 @@ type JourneyLedgerRow = {
   journey_id: string;
   base_currency: string;
   display_currency: string;
+  exchange_rates_snapshot_date?: string;
+  exchange_rates_snapshot_source?: string;
+  exchange_rates_refreshed_at?: string | null;
+  exchange_rates_refreshed_by?: string | null;
+  exchange_rates_refresh_count?: number | string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type JourneyExchangeRateRow = {
+  id: string;
+  journey_id: string;
+  base_currency: string;
+  quote_currency: string;
+  rate_to_base: number | string;
+  rate_date: string;
+  source: string;
   created_at: string;
   updated_at: string;
 };
@@ -119,8 +138,29 @@ function mapLedger(row: JourneyLedgerRow): JourneyLedger {
   return {
     id: row.id,
     journeyId: row.journey_id,
-    baseCurrency: row.base_currency,
-    displayCurrency: row.display_currency,
+    baseCurrency: normalizeCurrencyCode(row.base_currency || "NZD"),
+    displayCurrency: normalizeCurrencyCode(row.display_currency || row.base_currency || "NZD"),
+    exchangeRatesSnapshotDate:
+      row.exchange_rates_snapshot_date ?? row.created_at.slice(0, 10),
+    exchangeRatesSnapshotSource:
+      row.exchange_rates_snapshot_source ?? "default_at_creation",
+    exchangeRatesRefreshedAt: row.exchange_rates_refreshed_at ?? null,
+    exchangeRatesRefreshedBy: row.exchange_rates_refreshed_by ?? null,
+    exchangeRatesRefreshCount: Number(row.exchange_rates_refresh_count ?? 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapExchangeRate(row: JourneyExchangeRateRow): JourneyExchangeRate {
+  return {
+    id: row.id,
+    journeyId: row.journey_id,
+    baseCurrency: normalizeCurrencyCode(row.base_currency),
+    quoteCurrency: normalizeCurrencyCode(row.quote_currency),
+    rateToBase: Number(row.rate_to_base),
+    rateDate: row.rate_date,
+    source: row.source,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -163,9 +203,9 @@ function mapEntry(
     startDate: row.start_date,
     endDate: row.end_date,
     originalAmount: Number(row.original_amount),
-    originalCurrency: row.original_currency,
+    originalCurrency: normalizeCurrencyCode(row.original_currency),
     baseAmount: Number(row.base_amount),
-    baseCurrency: row.base_currency,
+    baseCurrency: normalizeCurrencyCode(row.base_currency),
     exchangeRate: Number(row.exchange_rate),
     exchangeRateDate: row.exchange_rate_date,
     exchangeRateSource: row.exchange_rate_source,
@@ -297,12 +337,202 @@ async function ensureJourneyLedger(journeyId: string) {
       journey_id: journeyId,
       base_currency: "NZD",
       display_currency: "NZD",
+      exchange_rates_snapshot_date: new Date().toISOString().slice(0, 10),
+      exchange_rates_snapshot_source: "default_at_creation",
     })
     .select("*")
     .single();
 
   if (error) throw error;
   return mapLedger(data as JourneyLedgerRow);
+}
+
+export async function getJourneyExchangeRates(journeyId: string) {
+  const { data, error } = await supabase
+    .from("journey_exchange_rates")
+    .select("*")
+    .eq("journey_id", journeyId)
+    .order("quote_currency", { ascending: true });
+
+  if (error) throw error;
+  return ((data ?? []) as JourneyExchangeRateRow[]).map(mapExchangeRate);
+}
+
+async function upsertJourneyExchangeRate(input: {
+  journeyId: string;
+  baseCurrency: string;
+  quoteCurrency: string;
+  rate: number;
+  rateDate: string;
+  source: string;
+}) {
+  const baseCurrency = normalizeCurrencyCode(input.baseCurrency);
+  const quoteCurrency = normalizeCurrencyCode(input.quoteCurrency);
+
+  const { data, error } = await supabase
+    .from("journey_exchange_rates")
+    .upsert(
+      {
+        journey_id: input.journeyId,
+        base_currency: baseCurrency,
+        quote_currency: quoteCurrency,
+        rate_to_base: input.rate,
+        rate_date: input.rateDate,
+        source: input.source,
+      },
+      { onConflict: "journey_id,base_currency,quote_currency" },
+    )
+    .select("*")
+    .single();
+
+  if (error) throw error;
+  return mapExchangeRate(data as JourneyExchangeRateRow);
+}
+
+export async function ensureJourneyExchangeRate(
+  journeyId: string,
+  quoteCurrencyInput: string,
+  baseCurrencyInput?: string,
+) {
+  const ledger = await ensureJourneyLedger(journeyId);
+  const baseCurrency = normalizeCurrencyCode(baseCurrencyInput || ledger.baseCurrency);
+  const quoteCurrency = normalizeCurrencyCode(quoteCurrencyInput || baseCurrency);
+
+  if (!quoteCurrency || quoteCurrency === baseCurrency) {
+    const { data: existing, error: selectError } = await supabase
+      .from("journey_exchange_rates")
+      .select("*")
+      .eq("journey_id", journeyId)
+      .eq("base_currency", baseCurrency)
+      .eq("quote_currency", baseCurrency)
+      .maybeSingle();
+
+    if (selectError) throw selectError;
+    if (existing) return mapExchangeRate(existing as JourneyExchangeRateRow);
+
+    return upsertJourneyExchangeRate({
+      journeyId,
+      baseCurrency,
+      quoteCurrency: baseCurrency,
+      rate: 1,
+      rateDate: ledger.exchangeRatesSnapshotDate,
+      source: "same_currency",
+    });
+  }
+
+  const { data: existing, error: selectError } = await supabase
+    .from("journey_exchange_rates")
+    .select("*")
+    .eq("journey_id", journeyId)
+    .eq("base_currency", baseCurrency)
+    .eq("quote_currency", quoteCurrency)
+    .maybeSingle();
+
+  if (selectError) throw selectError;
+  if (existing) return mapExchangeRate(existing as JourneyExchangeRateRow);
+
+  const result = await getApproxExchangeRate(quoteCurrency, baseCurrency);
+  return upsertJourneyExchangeRate({
+    journeyId,
+    baseCurrency,
+    quoteCurrency,
+    rate: result.rate,
+    rateDate: result.date,
+    source: result.source,
+  });
+}
+
+async function rateForLedgerEntry(input: {
+  journeyId: string;
+  originalCurrency: string;
+}) {
+  const ledger = await ensureJourneyLedger(input.journeyId);
+  const rate = await ensureJourneyExchangeRate(
+    input.journeyId,
+    input.originalCurrency,
+    ledger.baseCurrency,
+  );
+  return { ledger, rate };
+}
+
+export async function refreshJourneyExchangeRatesOnce(journeyId: string) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error("You must be logged in to refresh exchange rates.");
+
+  const ledger = await ensureJourneyLedger(journeyId);
+  if (ledger.exchangeRatesRefreshCount > 0) {
+    throw new Error("Exchange rates for this Journey have already been refreshed.");
+  }
+
+  const { data: entryRows, error: entriesError } = await supabase
+    .from("ledger_entries")
+    .select("original_currency")
+    .eq("journey_id", journeyId);
+
+  if (entriesError) throw entriesError;
+
+  const currencies = [
+    ...new Set([
+      ledger.baseCurrency,
+      ...((entryRows ?? []) as Pick<LedgerEntryRow, "original_currency">[]).map(
+        (row) => normalizeCurrencyCode(row.original_currency),
+      ),
+    ]),
+  ].filter(Boolean);
+
+  const rateResults = await Promise.allSettled(
+    currencies.map(async (currency) => {
+      const quoteCurrency = normalizeCurrencyCode(currency);
+      if (quoteCurrency === ledger.baseCurrency) {
+        return upsertJourneyExchangeRate({
+          journeyId,
+          baseCurrency: ledger.baseCurrency,
+          quoteCurrency,
+          rate: 1,
+          rateDate: new Date().toISOString().slice(0, 10),
+          source: "same_currency",
+        });
+      }
+      const result = await getApproxExchangeRate(quoteCurrency, ledger.baseCurrency);
+      return upsertJourneyExchangeRate({
+        journeyId,
+        baseCurrency: ledger.baseCurrency,
+        quoteCurrency,
+        rate: result.rate,
+        rateDate: result.date,
+        source: result.source,
+      });
+    }),
+  );
+  const rates = rateResults.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+
+  if (rates.length === 0) {
+    throw new Error("Could not generate any exchange rates for this Journey.");
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const { data, error } = await supabase
+    .from("journey_ledgers")
+    .update({
+      exchange_rates_snapshot_date: today,
+      exchange_rates_snapshot_source: "owner_refresh",
+      exchange_rates_refreshed_at: new Date().toISOString(),
+      exchange_rates_refreshed_by: user.id,
+      exchange_rates_refresh_count: 1,
+    })
+    .eq("journey_id", journeyId)
+    .eq("exchange_rates_refresh_count", 0)
+    .select("*")
+    .single();
+
+  if (error) throw error;
+
+  return {
+    ledger: mapLedger(data as JourneyLedgerRow),
+    rates,
+  };
 }
 
 function emptyCategoryTotals() {
@@ -443,50 +673,6 @@ function calculateSummary(
   };
 }
 
-async function rebaseEntriesForDisplayCurrency(
-  entries: LedgerEntry[],
-  displayCurrency: string,
-) {
-  const targetCurrency = displayCurrency.toUpperCase();
-  const rateCache = new Map<string, number>();
-
-  async function rateFor(fromCurrency: string) {
-    const from = fromCurrency.toUpperCase();
-    const cacheKey = `${from}-${targetCurrency}`;
-
-    if (rateCache.has(cacheKey)) {
-      return rateCache.get(cacheKey)!;
-    }
-
-    const result = await getApproxExchangeRate(from, targetCurrency);
-    rateCache.set(cacheKey, result.rate);
-    return result.rate;
-  }
-
-  return Promise.all(
-    entries.map(async (entry) => {
-      const rate = await rateFor(entry.originalCurrency);
-      const baseAmount = Number((entry.originalAmount * rate).toFixed(2));
-      const equalShare =
-        entry.participants.length > 0
-          ? Number((baseAmount / entry.participants.length).toFixed(2))
-          : null;
-
-      return {
-        ...entry,
-        baseAmount,
-        baseCurrency: targetCurrency,
-        exchangeRate: rate,
-        participants: entry.participants.map((participant) => ({
-          ...participant,
-          computedShareBaseAmount:
-            equalShare ?? participant.computedShareBaseAmount,
-        })),
-      };
-    }),
-  );
-}
-
 export async function getLedgerData(journeyId: string): Promise<LedgerData> {
   const [ledger, members] = await Promise.all([
     ensureJourneyLedger(journeyId),
@@ -528,21 +714,12 @@ export async function getLedgerData(journeyId: string): Promise<LedgerData> {
     mapEntry(entry, participantsByEntry.get(entry.id) ?? [], membersById),
   );
   const rangeAwareEntries = await applyLinkedDateRanges(mappedEntries);
-  const displayCurrency = ledger.displayCurrency || ledger.baseCurrency;
-  const displayEntries = await rebaseEntriesForDisplayCurrency(
-    rangeAwareEntries,
-    displayCurrency,
-  );
 
   return {
     ledger,
     members,
-    entries: displayEntries,
-    summary: calculateSummary(
-      displayEntries,
-      members,
-      displayCurrency,
-    ),
+    entries: rangeAwareEntries,
+    summary: calculateSummary(rangeAwareEntries, members, ledger.baseCurrency),
   };
 }
 
@@ -556,16 +733,24 @@ export async function updateJourneyLedgerCurrency({
   displayCurrency: string;
 }) {
   await ensureJourneyLedger(journeyId);
+  const nextBaseCurrency = normalizeCurrencyCode(baseCurrency);
+  const nextDisplayCurrency = normalizeCurrencyCode(displayCurrency || baseCurrency);
 
   const { error } = await supabase
     .from("journey_ledgers")
     .update({
-      base_currency: baseCurrency.trim().toUpperCase(),
-      display_currency: displayCurrency.trim().toUpperCase(),
+      base_currency: nextBaseCurrency,
+      display_currency: nextDisplayCurrency,
+      exchange_rates_snapshot_date: new Date().toISOString().slice(0, 10),
+      exchange_rates_snapshot_source: "base_currency_change",
+      exchange_rates_refresh_count: 0,
+      exchange_rates_refreshed_at: null,
+      exchange_rates_refreshed_by: null,
     })
     .eq("journey_id", journeyId);
 
   if (error) throw error;
+  await ensureJourneyExchangeRate(journeyId, nextBaseCurrency, nextBaseCurrency);
 }
 
 export async function createLedgerEntry(input: CreateLedgerEntryInput) {
@@ -575,7 +760,11 @@ export async function createLedgerEntry(input: CreateLedgerEntryInput) {
   const members = await getJourneyMembers(input.journeyId);
   const creatorMember = currentUserMember(members, user.id);
   const amount = Number(input.originalAmount);
-  const rate = Number(input.exchangeRate || 1);
+  const { ledger, rate: rateSnapshot } = await rateForLedgerEntry({
+    journeyId: input.journeyId,
+    originalCurrency: input.originalCurrency,
+  });
+  const rate = Number(rateSnapshot.rateToBase || 1);
   const baseAmount = Number((amount * rate).toFixed(2));
   const participantMemberIds = [
     ...new Set(
@@ -606,15 +795,12 @@ export async function createLedgerEntry(input: CreateLedgerEntryInput) {
       start_date: input.startDate || null,
       end_date: input.endDate || null,
       original_amount: amount,
-      original_currency: input.originalCurrency.toUpperCase(),
+      original_currency: normalizeCurrencyCode(input.originalCurrency),
       base_amount: baseAmount,
-      base_currency: input.baseCurrency.toUpperCase(),
+      base_currency: ledger.baseCurrency,
       exchange_rate: rate,
-      exchange_rate_date: input.expenseDate,
-      exchange_rate_source:
-        input.originalCurrency.toUpperCase() === input.baseCurrency.toUpperCase()
-          ? "same_currency"
-          : "manual",
+      exchange_rate_date: rateSnapshot.rateDate,
+      exchange_rate_source: rateSnapshot.source,
       payer_member_id: input.payerMemberId || null,
       address_text: input.addressText?.trim() || null,
       location_source: input.addressText?.trim() ? "manual" : null,
@@ -652,7 +838,11 @@ export async function updateLedgerEntry(input: UpdateLedgerEntryInput) {
   if (!user) throw new Error("You must be logged in to update expenses.");
 
   const amount = Number(input.originalAmount);
-  const rate = Number(input.exchangeRate || 1);
+  const { ledger, rate: rateSnapshot } = await rateForLedgerEntry({
+    journeyId: input.journeyId,
+    originalCurrency: input.originalCurrency,
+  });
+  const rate = Number(rateSnapshot.rateToBase || 1);
   const baseAmount = Number((amount * rate).toFixed(2));
   const participantMemberIds = [
     ...new Set(
@@ -679,15 +869,12 @@ export async function updateLedgerEntry(input: UpdateLedgerEntryInput) {
       start_date: input.startDate || null,
       end_date: input.endDate || null,
       original_amount: amount,
-      original_currency: input.originalCurrency.toUpperCase(),
+      original_currency: normalizeCurrencyCode(input.originalCurrency),
       base_amount: baseAmount,
-      base_currency: input.baseCurrency.toUpperCase(),
+      base_currency: ledger.baseCurrency,
       exchange_rate: rate,
-      exchange_rate_date: input.expenseDate,
-      exchange_rate_source:
-        input.originalCurrency.toUpperCase() === input.baseCurrency.toUpperCase()
-          ? "same_currency"
-          : "manual",
+      exchange_rate_date: rateSnapshot.rateDate,
+      exchange_rate_source: rateSnapshot.source,
       payer_member_id: input.payerMemberId || null,
       address_text: input.addressText?.trim() || null,
       location_source: input.addressText?.trim() ? "manual" : null,

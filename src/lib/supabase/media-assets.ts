@@ -241,6 +241,22 @@ export async function getTripPhotoAssets(
   }));
 }
 
+export async function getMediaAssetsByMemoryIds(memoryIds: string[]) {
+  const uniqueIds = [...new Set(memoryIds.filter(Boolean))];
+  if (uniqueIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("media_assets")
+    .select("*")
+    .in("memory_entry_id", uniqueIds);
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as MediaAssetRow[]).map(mapMediaAsset);
+}
+
 export async function getPhotoFacesForAssets(assetIds: string[]) {
   if (assetIds.length === 0) {
     return {};

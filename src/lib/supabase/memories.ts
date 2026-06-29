@@ -21,6 +21,24 @@ type MemoryRow = {
   created_at: string;
 };
 
+type MemoryLikeRow = {
+  memory_entry_id: string;
+  user_id: string;
+  like_count: number | null;
+};
+
+type MemoryFavoriteRow = {
+  memory_entry_id: string;
+  user_id: string;
+};
+
+export type MemoryEngagement = {
+  likeCount: number;
+  favoriteCount: number;
+  myLikeCount: number;
+  isFavorited: boolean;
+};
+
 export type CreateMemoryBaseInput = {
   capturedAt: string;
   locationName: string;
@@ -29,6 +47,13 @@ export type CreateMemoryBaseInput = {
   itineraryEventId?: string | null;
   itineraryReservationId?: string | null;
 };
+
+const emptyMemoryEngagement = {
+  likeCount: 0,
+  favoriteCount: 0,
+  myLikeCount: 0,
+  isFavorited: false,
+} satisfies MemoryEngagement;
 
 export type UpdateMemoryInput = {
   memoryId: string;
@@ -101,7 +126,9 @@ export async function getTripMemories(tripId: string) {
     throw error;
   }
 
-  return withContributorProfiles((data ?? []).map(mapMemory));
+  return withMemoryEngagement(
+    await withContributorProfiles((data ?? []).map(mapMemory)),
+  );
 }
 
 export async function getTripMemoriesForDate(tripId: string, date: string) {
@@ -123,7 +150,144 @@ export async function getTripMemoriesForDate(tripId: string, date: string) {
     throw error;
   }
 
-  return withContributorProfiles((data ?? []).map(mapMemory));
+  return withMemoryEngagement(
+    await withContributorProfiles((data ?? []).map(mapMemory)),
+  );
+}
+
+async function withMemoryEngagement(memories: MemoryEntry[]) {
+  const memoryIds = memories.map((memory) => memory.id);
+  if (memoryIds.length === 0) return memories;
+
+  const user = await getCurrentUser();
+
+  const [likesResult, favoritesResult] = await Promise.all([
+    supabase
+      .from("memory_likes")
+      .select("memory_entry_id, user_id, like_count")
+      .in("memory_entry_id", memoryIds),
+    supabase
+      .from("memory_favorites")
+      .select("memory_entry_id, user_id")
+      .in("memory_entry_id", memoryIds),
+  ]);
+
+  if (likesResult.error || favoritesResult.error) {
+    return memories.map((memory) => ({
+      ...memory,
+      ...emptyMemoryEngagement,
+    }));
+  }
+
+  const likesByMemory = new Map<string, { total: number; mine: number }>();
+  ((likesResult.data ?? []) as MemoryLikeRow[]).forEach((like) => {
+    const current = likesByMemory.get(like.memory_entry_id) ?? {
+      total: 0,
+      mine: 0,
+    };
+    const count = like.like_count ?? 0;
+    current.total += count;
+    if (user && like.user_id === user.id) current.mine = count;
+    likesByMemory.set(like.memory_entry_id, current);
+  });
+
+  const favoritesByMemory = new Map<string, { total: number; mine: boolean }>();
+  ((favoritesResult.data ?? []) as MemoryFavoriteRow[]).forEach((favorite) => {
+    const current = favoritesByMemory.get(favorite.memory_entry_id) ?? {
+      total: 0,
+      mine: false,
+    };
+    current.total += 1;
+    if (user && favorite.user_id === user.id) current.mine = true;
+    favoritesByMemory.set(favorite.memory_entry_id, current);
+  });
+
+  return memories.map((memory) => {
+    const likes = likesByMemory.get(memory.id);
+    const favorites = favoritesByMemory.get(memory.id);
+
+    return {
+      ...memory,
+      likeCount: likes?.total ?? 0,
+      myLikeCount: likes?.mine ?? 0,
+      favoriteCount: favorites?.total ?? 0,
+      isFavorited: favorites?.mine ?? false,
+    };
+  });
+}
+
+export async function getMemoryEngagement(memoryId: string) {
+  const [memory] = await withMemoryEngagement([{ id: memoryId } as MemoryEntry]);
+  return {
+    likeCount: memory.likeCount ?? 0,
+    favoriteCount: memory.favoriteCount ?? 0,
+    myLikeCount: memory.myLikeCount ?? 0,
+    isFavorited: memory.isFavorited ?? false,
+  } satisfies MemoryEngagement;
+}
+
+export async function incrementMemoryLike(memoryId: string) {
+  const user = await getCurrentUser();
+
+  if (!user) {
+    throw new Error("You must be logged in to like a memory.");
+  }
+
+  const { data: existing, error: existingError } = await supabase
+    .from("memory_likes")
+    .select("like_count")
+    .eq("memory_entry_id", memoryId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (existingError) throw existingError;
+
+  const nextLikeCount = Math.min(
+    ((existing as { like_count?: number } | null)?.like_count ?? 0) + 1,
+    5,
+  );
+
+  const { error } = await supabase.from("memory_likes").upsert(
+    {
+      memory_entry_id: memoryId,
+      user_id: user.id,
+      like_count: nextLikeCount,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "memory_entry_id,user_id" },
+  );
+
+  if (error) throw error;
+
+  return getMemoryEngagement(memoryId);
+}
+
+export async function toggleMemoryFavorite(memoryId: string, shouldFavorite: boolean) {
+  const user = await getCurrentUser();
+
+  if (!user) {
+    throw new Error("You must be logged in to favorite a memory.");
+  }
+
+  if (shouldFavorite) {
+    const { error } = await supabase.from("memory_favorites").upsert(
+      {
+        memory_entry_id: memoryId,
+        user_id: user.id,
+      },
+      { onConflict: "memory_entry_id,user_id" },
+    );
+    if (error) throw error;
+  } else {
+    const { error } = await supabase
+      .from("memory_favorites")
+      .delete()
+      .eq("memory_entry_id", memoryId)
+      .eq("user_id", user.id);
+    if (error) throw error;
+  }
+
+  return getMemoryEngagement(memoryId);
 }
 
 async function withContributorProfiles(memories: MemoryEntry[]) {
@@ -256,6 +420,10 @@ export async function createTextMemory(
     contributorName: user.user_metadata?.full_name || user.email || "Traveler",
     contributorAvatarUrl:
       user.user_metadata?.avatar_url || user.user_metadata?.picture || null,
+    likeCount: 0,
+    favoriteCount: 0,
+    myLikeCount: 0,
+    isFavorited: false,
   } satisfies MemoryEntry;
 }
 
@@ -484,6 +652,10 @@ export async function createPhotoMemory(
     contributorName: user.user_metadata?.full_name || user.email || "Traveler",
     contributorAvatarUrl:
       user.user_metadata?.avatar_url || user.user_metadata?.picture || null,
+    likeCount: 0,
+    favoriteCount: 0,
+    myLikeCount: 0,
+    isFavorited: false,
   } satisfies MemoryEntry;
 }
 

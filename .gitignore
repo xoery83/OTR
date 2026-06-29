@@ -4,6 +4,7 @@
 /node_modules
 face-service/.venv/
 face-service/**/__pycache__/
+face-service/.models/
 /.pnp
 .pnp.*
 .yarn/*

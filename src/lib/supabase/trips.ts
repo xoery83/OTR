@@ -1,4 +1,5 @@
 import type { CreateTripInput, PhotoStorageProvider, Trip } from "@/types";
+import { inferCurrencyFromText } from "@/lib/currencies";
 import { getCurrentUser } from "./auth";
 import { supabase } from "./client";
 import { upsertProfileForUser } from "./profiles";
@@ -100,6 +101,15 @@ export async function createTrip(input: CreateTripInput) {
   if (error) {
     throw error;
   }
+
+  const defaultCurrency = inferCurrencyFromText(input.destination) ?? "NZD";
+  await supabase.from("journey_ledgers").insert({
+    journey_id: tripId,
+    base_currency: defaultCurrency,
+    display_currency: defaultCurrency,
+    exchange_rates_snapshot_date: createdAt.slice(0, 10),
+    exchange_rates_snapshot_source: "default_at_creation",
+  });
 
   return {
     id: tripId,

@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import type { CSSProperties } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
+import { MemoryEngagementActions } from "@/components/MemoryEngagementActions";
 import { createBackgroundJob } from "@/lib/background-jobs/client";
 import { executeCaptureAction } from "@/lib/capture-ai/actions";
 import { detectCaptureIntent } from "@/lib/capture-ai/client";
@@ -27,8 +28,10 @@ import {
   deleteMemoryEntry,
   getSignedMemoryImageUrls,
   getTripMemories,
+  type MemoryEngagement,
   updateMemoryEntry,
 } from "@/lib/supabase/memories";
+import { supabase } from "@/lib/supabase/client";
 import { getPlannerV2, type PlannerV2Data } from "@/lib/supabase/planner-v2";
 import { getTrip } from "@/lib/supabase/trips";
 import type {
@@ -36,10 +39,9 @@ import type {
   MemoryEntry,
   PhotoAssetWithMemory,
   PhotoFace,
-  Trip,
 } from "@/types";
 
-type TimelineView = "feed" | "timeline" | "album" | "debug";
+type TimelineView = "feed" | "timeline" | "album" | "favorites" | "debug";
 
 type TimelineSessionState = {
   view?: TimelineView;
@@ -76,7 +78,12 @@ function writeTimelineSession(tripId: string, state: TimelineSessionState) {
 }
 
 function parseTimelineView(value: string | null): TimelineView {
-  if (value === "timeline" || value === "album" || value === "debug") {
+  if (
+    value === "timeline" ||
+    value === "album" ||
+    value === "favorites" ||
+    value === "debug"
+  ) {
     return value;
   }
 
@@ -504,9 +511,11 @@ function looksLikeExpenseReply(value: string) {
 function ReplyBubble({
   reply,
   currentUserId,
+  onEngagementChange,
 }: {
   reply: TimelineItem;
   currentUserId: string;
+  onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const mine = reply.memory.userId === currentUserId;
   const bubbleTone = mine
@@ -516,9 +525,20 @@ function ReplyBubble({
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
       <div className={`max-w-[88%] ${mine ? "text-right" : "text-left"}`}>
-        <p className="mb-1 px-1 text-xs font-bold text-emerald-900">
-          {reply.memory.contributorName || "旅伴"} 说
-        </p>
+        <div
+          className={`mb-1 flex items-center gap-2 px-1 ${
+            mine ? "justify-end" : "justify-start"
+          }`}
+        >
+          <p className="text-xs font-bold text-emerald-900">
+            {reply.memory.contributorName || "旅伴"} 说
+          </p>
+          <MemoryEngagementActions
+            memory={reply.memory}
+            onChange={onEngagementChange}
+            compact
+          />
+        </div>
         <div className={`rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${bubbleTone}`}>
           {reply.memory.type === "photo" && reply.photo?.displayUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -545,6 +565,7 @@ function CompactMemoryCard({
   onSave,
   onDelete,
   onReplyCreated,
+  onEngagementChange,
 }: {
   item: TimelineItem;
   tripId: string;
@@ -555,6 +576,7 @@ function CompactMemoryCard({
   ) => Promise<void>;
   onDelete: (memoryId: string) => Promise<void>;
   onReplyCreated: () => Promise<void>;
+  onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const isPhoto = item.memory.type === "photo" && item.photo?.displayUrl;
   const canManage = item.memory.userId === currentUserId;
@@ -813,6 +835,11 @@ function CompactMemoryCard({
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <MemoryEngagementActions
+              memory={item.memory}
+              onChange={onEngagementChange}
+              compact
+            />
             {item.hasUnassignedFaces ? (
               <span className="rounded-full bg-amber-100 px-2 py-1 text-[11px] font-black text-amber-900">
                 Face check
@@ -897,6 +924,7 @@ function CompactMemoryCard({
                 key={reply.id}
                 reply={reply}
                 currentUserId={currentUserId}
+                onEngagementChange={onEngagementChange}
               />
             ))}
           </div>
@@ -1005,6 +1033,7 @@ function UploadFeedView({
   onSaveMemory,
   onDeleteMemory,
   onReplyCreated,
+  onEngagementChange,
 }: {
   items: TimelineItem[];
   tripId: string;
@@ -1015,6 +1044,7 @@ function UploadFeedView({
   ) => Promise<void>;
   onDeleteMemory: (memoryId: string) => Promise<void>;
   onReplyCreated: () => Promise<void>;
+  onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const sorted = [...items].sort(
     (left, right) =>
@@ -1032,6 +1062,7 @@ function UploadFeedView({
             onSave={onSaveMemory}
             onDelete={onDeleteMemory}
             onReplyCreated={onReplyCreated}
+            onEngagementChange={onEngagementChange}
           />
         </div>
       ))}
@@ -1047,6 +1078,7 @@ function TrueTimelineView({
   onSaveMemory,
   onDeleteMemory,
   onReplyCreated,
+  onEngagementChange,
 }: {
   items: TimelineItem[];
   tripId: string;
@@ -1058,6 +1090,7 @@ function TrueTimelineView({
   ) => Promise<void>;
   onDeleteMemory: (memoryId: string) => Promise<void>;
   onReplyCreated: () => Promise<void>;
+  onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const { t } = useI18n();
   const dates = [
@@ -1131,6 +1164,7 @@ function TrueTimelineView({
             onSave={onSaveMemory}
             onDelete={onDeleteMemory}
             onReplyCreated={onReplyCreated}
+            onEngagementChange={onEngagementChange}
           />
         ))}
       </div>
@@ -1144,12 +1178,14 @@ function AlbumView({
   members,
   tripId,
   onFaceConfirmed,
+  onEngagementChange,
 }: {
   items: TimelineItem[];
   members: JourneyMember[];
   tripId: string;
   onOpenDebug: () => void;
   onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
+  onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const { t } = useI18n();
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
@@ -1257,7 +1293,13 @@ function AlbumView({
                     : ""}
                 </p>
               </div>
-              <div className="flex shrink-0 gap-2">
+              <div className="flex shrink-0 items-center gap-2">
+                <MemoryEngagementActions
+                  memory={activeItem.memory}
+                  onChange={onEngagementChange}
+                  compact
+                  className="rounded-full bg-white/10 px-1 py-1 text-white"
+                />
                 <button
                   type="button"
                   onClick={() => setShowInfo((current) => !current)}
@@ -2029,7 +2071,6 @@ function TimelineContent({ user }: { user: User }) {
   const initialView = parseTimelineView(searchParams.get("view"));
   const targetAssetId = searchParams.get("asset");
   const initialSession = readTimelineSession(tripId);
-  const [trip, setTrip] = useState<Trip | null>(null);
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [photoAssets, setPhotoAssets] = useState<PhotoAssetWithMemory[]>([]);
   const [plannerData, setPlannerData] = useState<PlannerV2Data | null>(null);
@@ -2049,6 +2090,21 @@ function TimelineContent({ user }: { user: User }) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const refreshMemorySnapshot = useCallback(async () => {
+    const [memoryData, assetData] = await Promise.all([
+      getTripMemories(tripId),
+      getTripPhotoAssets(tripId),
+    ]);
+    const [signedUrls, faceData] = await Promise.all([
+      getSignedMemoryImageUrls(memoryData),
+      getPhotoFacesForAssets(assetData.map((asset) => asset.id)),
+    ]);
+    setMemories(memoryData);
+    setPhotoAssets(assetData);
+    setFacesByAssetId(faceData);
+    setImageUrls(signedUrls);
+  }, [tripId]);
+
   useEffect(() => {
     let isMounted = true;
 
@@ -2067,7 +2123,6 @@ function TimelineContent({ user }: { user: User }) {
         ]);
 
         if (isMounted) {
-          setTrip(tripData);
           setMemories(memoryData);
           setPhotoAssets(assetData);
           setPlannerData(loadedPlannerData);
@@ -2095,7 +2150,65 @@ function TimelineContent({ user }: { user: User }) {
     return () => {
       isMounted = false;
     };
-  }, [tripId]);
+  }, [refreshMemorySnapshot, t, tripId]);
+
+  useEffect(() => {
+    let refreshTimer: number | null = null;
+
+    const scheduleRefresh = () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+      }
+
+      refreshTimer = window.setTimeout(() => {
+        refreshMemorySnapshot().catch((refreshError) => {
+          setError(
+            refreshError instanceof Error
+              ? refreshError.message
+              : t("timeline.error.load"),
+          );
+        });
+      }, 350);
+    };
+
+    const channel = supabase
+      .channel(`timeline-refresh:${tripId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "memory_entries",
+          filter: `trip_id=eq.${tripId}`,
+        },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "media_assets",
+          filter: `trip_id=eq.${tripId}`,
+        },
+        scheduleRefresh,
+      )
+      .subscribe();
+
+    window.addEventListener("otr:capture-completed", scheduleRefresh);
+    window.addEventListener("otr:background-jobs-changed", scheduleRefresh);
+    window.addEventListener("otr:photo-upload-completed", scheduleRefresh);
+
+    return () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+      }
+      window.removeEventListener("otr:capture-completed", scheduleRefresh);
+      window.removeEventListener("otr:background-jobs-changed", scheduleRefresh);
+      window.removeEventListener("otr:photo-upload-completed", scheduleRefresh);
+      void supabase.removeChannel(channel);
+    };
+  }, [refreshMemorySnapshot, t, tripId]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2172,6 +2285,10 @@ function TimelineContent({ user }: { user: User }) {
     const allowedMemoryIds = new Set(filteredItems.map((item) => item.id));
     return photoAssets.filter((photo) => allowedMemoryIds.has(photo.memoryEntryId));
   }, [filteredItems, photoAssets]);
+  const favoriteItems = useMemo(
+    () => filteredItems.filter((item) => item.memory.isFavorited),
+    [filteredItems],
+  );
 
   function toggleMember(memberId: string) {
     setSelectedMemberIds((current) =>
@@ -2188,21 +2305,6 @@ function TimelineContent({ user }: { user: User }) {
         item.id === face.id ? face : item,
       ),
     }));
-  }
-
-  async function refreshMemorySnapshot() {
-    const [memoryData, assetData] = await Promise.all([
-      getTripMemories(tripId),
-      getTripPhotoAssets(tripId),
-    ]);
-    const [signedUrls, faceData] = await Promise.all([
-      getSignedMemoryImageUrls(memoryData),
-      getPhotoFacesForAssets(assetData.map((asset) => asset.id)),
-    ]);
-    setMemories(memoryData);
-    setPhotoAssets(assetData);
-    setFacesByAssetId(faceData);
-    setImageUrls(signedUrls);
   }
 
   async function handleSaveMemory(
@@ -2238,6 +2340,17 @@ function TimelineContent({ user }: { user: User }) {
     );
   }
 
+  function handleMemoryEngagementChange(
+    memoryId: string,
+    engagement: MemoryEngagement,
+  ) {
+    setMemories((current) =>
+      current.map((memory) =>
+        memory.id === memoryId ? { ...memory, ...engagement } : memory,
+      ),
+    );
+  }
+
   if (isLoading) {
     return (
       <div className="rounded-2xl border border-stone-200 bg-white p-5 text-sm font-medium text-stone-600 shadow-sm">
@@ -2255,11 +2368,12 @@ function TimelineContent({ user }: { user: User }) {
       </section>
 
       <div className="sticky top-0 z-30 space-y-2 rounded-3xl bg-stone-50/95 p-3 shadow-sm backdrop-blur">
-        <div className="grid grid-cols-4 gap-1 rounded-2xl border border-stone-200 bg-white p-1">
+        <div className="grid grid-cols-5 gap-1 rounded-2xl border border-stone-200 bg-white p-1">
           {[
             ["feed", t("timeline.tab.feed")],
             ["timeline", t("timeline.tab.timeline")],
             ["album", t("timeline.tab.album")],
+            ["favorites", t("timeline.tab.favorites")],
             ["debug", t("timeline.tab.debug")],
           ].map(([mode, label]) => (
             <button
@@ -2344,6 +2458,15 @@ function TimelineContent({ user }: { user: User }) {
         </div>
       ) : null}
 
+      {!error &&
+      view === "favorites" &&
+      filteredItems.length > 0 &&
+      favoriteItems.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-5 text-sm leading-6 text-stone-600">
+          {t("timeline.empty.favorites")}
+        </div>
+      ) : null}
+
       {view === "feed" ? (
         <UploadFeedView
           items={filteredItems}
@@ -2352,6 +2475,7 @@ function TimelineContent({ user }: { user: User }) {
           onSaveMemory={handleSaveMemory}
           onDeleteMemory={handleDeleteMemory}
           onReplyCreated={refreshMemorySnapshot}
+          onEngagementChange={handleMemoryEngagementChange}
         />
       ) : null}
 
@@ -2365,6 +2489,19 @@ function TimelineContent({ user }: { user: User }) {
           onSaveMemory={handleSaveMemory}
           onDeleteMemory={handleDeleteMemory}
           onReplyCreated={refreshMemorySnapshot}
+          onEngagementChange={handleMemoryEngagementChange}
+        />
+      ) : null}
+
+      {view === "favorites" ? (
+        <UploadFeedView
+          items={favoriteItems}
+          tripId={tripId}
+          currentUserId={user.id}
+          onSaveMemory={handleSaveMemory}
+          onDeleteMemory={handleDeleteMemory}
+          onReplyCreated={refreshMemorySnapshot}
+          onEngagementChange={handleMemoryEngagementChange}
         />
       ) : null}
 
@@ -2375,6 +2512,7 @@ function TimelineContent({ user }: { user: User }) {
           tripId={tripId}
           onFaceConfirmed={handleFaceConfirmed}
           onOpenDebug={() => setView("debug")}
+          onEngagementChange={handleMemoryEngagementChange}
         />
       ) : null}
 

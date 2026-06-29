@@ -3,14 +3,16 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { AuthGate } from "@/components/AuthGate";
+import { CurrencyCombobox } from "@/components/CurrencyCombobox";
 import { useI18n } from "@/components/I18nProvider";
-import { getApproxExchangeRate } from "@/lib/exchange-rates";
+import { inferCurrencyFromText, normalizeCurrencyCode } from "@/lib/currencies";
 import { getErrorMessage } from "@/lib/errors";
 import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
 import { getLedgerAllocationDates } from "@/lib/ledger/date-allocation";
 import {
   createLedgerEntry,
   deleteLedgerEntry,
+  ensureJourneyExchangeRate,
   getLedgerData,
   type LedgerData,
   updateLedgerEntry,
@@ -51,18 +53,6 @@ const categoryLabelKeys: Record<LedgerCategory, TranslationKey> = {
   insurance: "planner.expense.insurance",
   other: "planner.expense.other",
 };
-
-const commonCurrencies = [
-  "NZD",
-  "AUD",
-  "CHF",
-  "CNY",
-  "EUR",
-  "DKK",
-  "USD",
-  "ISK",
-  "GBP",
-];
 
 type LedgerFormState = {
   title: string;
@@ -748,8 +738,10 @@ function buildLedgerAuditWarnings({
 function initialForm(
   baseCurrency: string,
   members: JourneyMember[],
+  defaultCurrency?: string | null,
 ): LedgerFormState {
   const memberIds = activeMembers(members).map((member) => member.id);
+  const originalCurrency = normalizeCurrencyCode(defaultCurrency || baseCurrency);
   return {
     title: "",
     description: "",
@@ -759,8 +751,8 @@ function initialForm(
     startDate: "",
     endDate: "",
     originalAmount: "",
-    originalCurrency: baseCurrency,
-    exchangeRate: "1",
+    originalCurrency,
+    exchangeRate: originalCurrency === baseCurrency ? "1" : "",
     payerMemberId: "",
     participantMemberIds: memberIds,
     addressText: "",
@@ -1232,7 +1224,13 @@ function LedgerContent() {
   }) {
     setTrip(tripData);
     setLedgerData(data);
-    setForm(initialForm(data.ledger.baseCurrency, data.members));
+    setForm(
+      initialForm(
+        data.ledger.baseCurrency,
+        data.members,
+        inferCurrencyFromText(tripData.destination),
+      ),
+    );
   }
 
   useEffect(() => {
@@ -1385,7 +1383,13 @@ function LedgerContent() {
 
   function startCreateExpense() {
     if (ledgerData) {
-      setForm(initialForm(ledgerData.ledger.baseCurrency, ledgerData.members));
+      setForm(
+        initialForm(
+          ledgerData.ledger.baseCurrency,
+          ledgerData.members,
+          inferCurrencyFromText(trip?.destination),
+        ),
+      );
     }
     setEditingEntryId(null);
     setShowForm((current) => !current || Boolean(editingEntryId));
@@ -1435,7 +1439,13 @@ function LedgerContent() {
       });
       const data = await getLedgerData(tripId);
       setLedgerData(data);
-      setForm(initialForm(data.ledger.baseCurrency, data.members));
+      setForm(
+        initialForm(
+          data.ledger.baseCurrency,
+          data.members,
+          inferCurrencyFromText(trip?.destination),
+        ),
+      );
     } catch (currencyUpdateError) {
       setCurrencyError(
         getErrorMessage(currencyUpdateError, t("ledger.error.currency")),
@@ -1455,12 +1465,13 @@ function LedgerContent() {
 
       setIsLoadingRate(true);
       try {
-        const result = await getApproxExchangeRate(
+        const result = await ensureJourneyExchangeRate(
+          tripId,
           form.originalCurrency,
           baseCurrency,
         );
         if (isMounted) {
-          updateForm({ exchangeRate: result.rate.toFixed(4) });
+          updateForm({ exchangeRate: result.rateToBase.toFixed(4) });
         }
       } catch {
         if (isMounted && form.originalCurrency === baseCurrency) {
@@ -1580,40 +1591,30 @@ function LedgerContent() {
   return (
     <div className="space-y-5">
       <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h1 className="text-4xl font-black tracking-normal text-stone-950">
-              {t("ledger.title")}
-            </h1>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-2 rounded-full bg-stone-50 px-3 py-2 text-xs font-bold text-stone-700">
-              {t("ledger.base")}
-              <select
+        <div className="space-y-3">
+          <h1 className="text-3xl font-black tracking-normal text-stone-950 sm:text-4xl">
+            {t("ledger.title")}
+          </h1>
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-end gap-2">
+            <div className="min-w-0">
+              <CurrencyCombobox
                 value={baseCurrency}
                 disabled={isSavingCurrency}
-                onChange={(event) => saveCurrencySettings(event.target.value)}
-                className="bg-transparent text-sm font-bold text-stone-950 outline-none"
-                title={t("ledger.baseCurrency")}
-              >
-                {commonCurrencies.map((currency) => (
-                  <option key={currency} value={currency}>
-                    {currency}
-                  </option>
-                ))}
-              </select>
-            </label>
+                onChange={saveCurrencySettings}
+                label={t("ledger.base")}
+              />
+            </div>
             <button
               type="button"
               onClick={startCreateExpense}
-              className="shrink-0 rounded-full bg-emerald-700 px-4 py-2 text-sm font-bold text-white shadow-sm"
+              className="min-h-11 shrink-0 whitespace-nowrap rounded-full bg-emerald-700 px-3 py-2 text-xs font-bold text-white shadow-sm sm:min-h-12 sm:px-4 sm:text-sm"
             >
               {t("ledger.addExpense")}
             </button>
             <button
               type="button"
               onClick={() => setShowAuditPanel((current) => !current)}
-              className="shrink-0 rounded-full border border-emerald-100 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-800 shadow-sm"
+              className="min-h-11 shrink-0 whitespace-nowrap rounded-full border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 shadow-sm sm:min-h-12 sm:px-4 sm:text-sm"
             >
               {t("ledger.audit.button")}
             </button>
@@ -1816,28 +1817,16 @@ function LedgerContent() {
                 className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
               />
             </label>
-            <label className="space-y-1">
-              <span className="text-sm font-bold text-stone-800">
-                {t("planner.field.currency")}
-              </span>
-              <select
-                value={form.originalCurrency}
-                onChange={(event) => {
-                  const currency = event.target.value;
-                  updateForm({
-                    originalCurrency: currency,
-                    exchangeRate: currency === baseCurrency ? "1" : "",
-                  });
-                }}
-                className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
-              >
-                {commonCurrencies.map((currency) => (
-                  <option key={currency} value={currency}>
-                    {currency}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <CurrencyCombobox
+              value={form.originalCurrency}
+              onChange={(currency) =>
+                updateForm({
+                  originalCurrency: currency,
+                  exchangeRate: currency === baseCurrency ? "1" : "",
+                })
+              }
+              label={t("planner.field.currency")}
+            />
             <label className="space-y-1">
               <span className="text-sm font-bold text-stone-800">
                 {t("planner.field.rateTo", { currency: baseCurrency })}
@@ -1845,14 +1834,12 @@ function LedgerContent() {
               </span>
               <input
                 value={form.exchangeRate}
-                onChange={(event) =>
-                  updateForm({ exchangeRate: event.target.value })
-                }
+                readOnly
                 required
                 min="0"
                 step="0.0001"
                 type="number"
-                className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
+                className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-stone-600 outline-none"
               />
             </label>
           </div>

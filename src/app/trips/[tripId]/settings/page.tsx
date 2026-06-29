@@ -13,8 +13,16 @@ import {
   disconnectJourneyStorage,
   getJourneyStorageConnection,
 } from "@/lib/supabase/storage-connections";
+import {
+  ensureJourneyExchangeRate,
+  getJourneyExchangeRates,
+  getLedgerData,
+  refreshJourneyExchangeRatesOnce,
+} from "@/lib/supabase/ledger";
 import { deleteTrip, getTrip, updateTripSettings } from "@/lib/supabase/trips";
 import type {
+  JourneyExchangeRate,
+  JourneyLedger,
   JourneyStorageConnection,
   JourneyMember,
   PhotoStorageProvider,
@@ -24,17 +32,19 @@ import type {
 const storageProviders: {
   value: PhotoStorageProvider;
   label: string;
-  description: string;
+  descriptionKey:
+    | "journeySettings.storage.google.description"
+    | "journeySettings.storage.onedrive.description";
 }[] = [
   {
     value: "google_drive",
     label: "Google Drive",
-    description: "Original photos stay in the journey owner's Google Drive.",
+    descriptionKey: "journeySettings.storage.google.description",
   },
   {
     value: "onedrive",
     label: "Microsoft OneDrive",
-    description: "Original photos stay in the journey owner's OneDrive.",
+    descriptionKey: "journeySettings.storage.onedrive.description",
   },
 ];
 
@@ -49,6 +59,8 @@ function SettingsContent() {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [storageConnection, setStorageConnection] =
     useState<JourneyStorageConnection | null>(null);
+  const [ledger, setLedger] = useState<JourneyLedger | null>(null);
+  const [exchangeRates, setExchangeRates] = useState<JourneyExchangeRate[]>([]);
   const [journeyName, setJourneyName] = useState("");
   const [coverImageUrl, setCoverImageUrl] = useState("");
   const [storageProvider, setStorageProvider] =
@@ -59,6 +71,7 @@ function SettingsContent() {
   const [isSavingStorage, setIsSavingStorage] = useState(false);
   const [isConnectingStorage, setIsConnectingStorage] = useState(false);
   const [isDisconnectingStorage, setIsDisconnectingStorage] = useState(false);
+  const [isRefreshingRates, setIsRefreshingRates] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,17 +82,37 @@ function SettingsContent() {
 
     async function loadSettings() {
       try {
-        const [tripData, memberData, user, connectionData] = await Promise.all([
+        const [tripData, memberData, user, connectionData, ledgerData] =
+          await Promise.all([
           getTrip(tripId),
           getJourneyMembers(tripId),
           getCurrentUser(),
           getJourneyStorageConnection(tripId, "google_drive").catch(() => null),
+          getLedgerData(tripId),
         ]);
+        const usedCurrencies = [
+          ...new Set([
+            ledgerData.ledger.baseCurrency,
+            ...ledgerData.entries.map((entry) => entry.originalCurrency),
+          ]),
+        ];
+        await Promise.allSettled(
+          usedCurrencies.map((currency) =>
+            ensureJourneyExchangeRate(
+              tripId,
+              currency,
+              ledgerData.ledger.baseCurrency,
+            ),
+          ),
+        );
+        const rates = await getJourneyExchangeRates(tripId);
         if (!isMounted) return;
         setTrip(tripData);
         setMembers(memberData);
         setCurrentUserId(user?.id ?? null);
         setStorageConnection(connectionData);
+        setLedger(ledgerData.ledger);
+        setExchangeRates(rates);
         setJourneyName(tripData.name);
         setCoverImageUrl(tripData.coverImageUrl ?? "");
         setStorageProvider(
@@ -89,7 +122,7 @@ function SettingsContent() {
             : "",
         );
         if (searchParams.get("drive") === "connected") {
-          setNotice("Google Drive connected. Journey folders are ready.");
+          setNotice(t("journeySettings.storage.connected"));
         }
         const driveError = searchParams.get("drive_error");
         if (driveError) {
@@ -97,7 +130,7 @@ function SettingsContent() {
         }
       } catch (settingsError) {
         if (isMounted) {
-          setError(getErrorMessage(settingsError, "Could not load settings."));
+          setError(getErrorMessage(settingsError, t("journeySettings.error.load")));
         }
       } finally {
         if (isMounted) setIsLoading(false);
@@ -117,6 +150,12 @@ function SettingsContent() {
   async function saveJourneyName() {
     const nextName = journeyName.trim();
     if (!nextName || !canManageJourney) return;
+
+    if (nextName === (trip?.name ?? "")) {
+      setError(null);
+      setNotice(t("journeySettings.nameUnchanged"));
+      return;
+    }
 
     setIsSavingName(true);
     setError(null);
@@ -146,9 +185,9 @@ function SettingsContent() {
         coverImageUrl: coverImageUrl.trim() || null,
       });
       setTrip(updated);
-      setNotice("Cover image saved.");
+      setNotice(t("journeySettings.coverSaved"));
     } catch (saveError) {
-      setError(getErrorMessage(saveError, "Could not save cover image."));
+      setError(getErrorMessage(saveError, t("journeySettings.coverSaveError")));
     } finally {
       setIsSavingCover(false);
     }
@@ -164,12 +203,12 @@ function SettingsContent() {
         photoStorageProvider: storageProvider || null,
       });
       setTrip(updated);
-      setNotice("Storage preference saved. OAuth connection comes next.");
+      setNotice(t("journeySettings.storageSaved"));
     } catch (saveError) {
       setError(
         getErrorMessage(
           saveError,
-          "Could not save storage preference. Run the latest storage migrations first.",
+          t("journeySettings.storageSaveError"),
         ),
       );
     } finally {
@@ -187,7 +226,7 @@ function SettingsContent() {
       const accessToken = data.session?.access_token;
 
       if (!accessToken) {
-        throw new Error("You must be logged in to connect Google Drive.");
+        throw new Error(t("journeySettings.storage.connectLogin"));
       }
 
       const response = await fetch("/api/google-drive/connect", {
@@ -204,20 +243,20 @@ function SettingsContent() {
       };
 
       if (!response.ok || !payload.authUrl) {
-        throw new Error(payload.error || "Could not start Google Drive connection.");
+        throw new Error(payload.error || t("journeySettings.storage.connectError"));
       }
 
       window.location.href = payload.authUrl;
     } catch (connectError) {
       setIsConnectingStorage(false);
       setError(
-        getErrorMessage(connectError, "Could not start Google Drive connection."),
+        getErrorMessage(connectError, t("journeySettings.storage.connectError")),
       );
     }
   }
 
   async function disconnectGoogleDrive() {
-    if (!window.confirm("Disconnect Google Drive from this journey?")) {
+    if (!window.confirm(t("journeySettings.storage.disconnectConfirm"))) {
       return;
     }
 
@@ -233,13 +272,31 @@ function SettingsContent() {
       ]);
       setTrip(updatedTrip);
       setStorageConnection(connectionData);
-      setNotice(
-        "Google Drive disconnected from OTR. Existing Drive folders were not deleted.",
-      );
+      setNotice(t("journeySettings.storage.disconnected"));
     } catch (disconnectError) {
-      setError(getErrorMessage(disconnectError, "Could not disconnect storage."));
+      setError(getErrorMessage(disconnectError, t("journeySettings.storage.disconnectError")));
     } finally {
       setIsDisconnectingStorage(false);
+    }
+  }
+
+  async function refreshExchangeRates() {
+    if (!canManageJourney || !ledger || ledger.exchangeRatesRefreshCount > 0) {
+      return;
+    }
+
+    setIsRefreshingRates(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await refreshJourneyExchangeRatesOnce(tripId);
+      setLedger(result.ledger);
+      setExchangeRates(await getJourneyExchangeRates(tripId));
+      setNotice(t("journeySettings.exchangeRefreshed"));
+    } catch (refreshError) {
+      setError(getErrorMessage(refreshError, t("journeySettings.exchangeRefreshError")));
+    } finally {
+      setIsRefreshingRates(false);
     }
   }
 
@@ -247,7 +304,7 @@ function SettingsContent() {
     if (!trip || !canManageJourney) return;
 
     if (deleteConfirmation !== trip.name) {
-      setError("请输入完整旅程名称后再删除。");
+      setError(t("journeySettings.deleteNameError"));
       setNotice(null);
       return;
     }
@@ -259,27 +316,27 @@ function SettingsContent() {
       await deleteTrip(trip.id);
       router.replace("/trips");
     } catch (deleteError) {
-      setError(getErrorMessage(deleteError, "Could not delete journey."));
+      setError(getErrorMessage(deleteError, t("journeySettings.deleteError")));
       setIsDeleting(false);
     }
   }
 
   if (isLoading) {
-    return <div className="rounded-2xl bg-white p-5">Loading settings...</div>;
+    return (
+      <div className="rounded-2xl bg-white p-5">
+        {t("journeySettings.loading")}
+      </div>
+    );
   }
 
   return (
     <div className="space-y-6">
       <section className="space-y-2">
-        <p className="text-sm font-semibold text-emerald-700">
-          Journey Settings
-        </p>
         <h1 className="text-3xl font-semibold text-stone-950">
-          {trip?.name || "Journey"}
+          {t("journeySettings.title")}
         </h1>
         <p className="text-base leading-7 text-stone-600">
-          Manage the cover image, photo storage direction, and core journey
-          configuration.
+          {t("journeySettings.description")}
         </p>
       </section>
 
@@ -314,11 +371,7 @@ function SettingsContent() {
             <button
               type="button"
               onClick={saveJourneyName}
-              disabled={
-                isSavingName ||
-                !journeyName.trim() ||
-                journeyName.trim() === (trip?.name ?? "")
-              }
+              disabled={isSavingName || !journeyName.trim()}
               className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
             >
               {isSavingName
@@ -329,6 +382,7 @@ function SettingsContent() {
         </section>
       ) : null}
 
+      {canManageJourney ? (
       <section className="overflow-hidden rounded-3xl bg-white shadow-sm">
         <div
           className="h-48 bg-cover bg-center"
@@ -342,10 +396,11 @@ function SettingsContent() {
         />
         <div className="space-y-4 p-5">
           <div>
-            <h2 className="text-xl font-semibold text-stone-950">Cover image</h2>
+            <h2 className="text-xl font-semibold text-stone-950">
+              {t("journeySettings.coverTitle")}
+            </h2>
             <p className="mt-1 text-sm leading-6 text-stone-600">
-              Use an image URL for now. Uploading and choosing from journey
-              photos can come later.
+              {t("journeySettings.coverDescription")}
             </p>
           </div>
           <input
@@ -360,24 +415,26 @@ function SettingsContent() {
             disabled={isSavingCover}
             className="w-full rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
           >
-            {isSavingCover ? "Saving..." : "Save cover"}
+            {isSavingCover ? t("common.saving") : t("journeySettings.saveCover")}
           </button>
         </div>
       </section>
+      ) : null}
 
       <section className="rounded-3xl bg-white p-5 shadow-sm">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-xl font-semibold text-stone-950">
-              Photo storage
+              {t("journeySettings.storageTitle")}
             </h2>
             <p className="mt-1 text-sm leading-6 text-stone-600">
-              Journey will index photos, while original files stay in the
-              selected cloud provider.
+              {t("journeySettings.storageDescription")}
             </p>
           </div>
           <span className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600">
-            {trip?.photoStorageStatus ?? "not_connected"}
+            {trip?.photoStorageStatus === "connected"
+              ? t("journeySettings.storage.status.connected")
+              : t("journeySettings.storage.status.notConnected")}
           </span>
         </div>
 
@@ -388,7 +445,10 @@ function SettingsContent() {
               <button
                 key={provider.value}
                 type="button"
-                onClick={() => setStorageProvider(provider.value)}
+                onClick={() => {
+                  if (canManageJourney) setStorageProvider(provider.value);
+                }}
+                disabled={!canManageJourney}
                 className={`rounded-2xl border p-4 text-left transition ${
                   selected
                     ? "border-emerald-600 bg-emerald-50"
@@ -399,7 +459,7 @@ function SettingsContent() {
                   {provider.label}
                 </span>
                 <span className="mt-1 block text-sm leading-6 text-stone-600">
-                  {provider.description}
+                  {t(provider.descriptionKey)}
                 </span>
               </button>
             );
@@ -409,13 +469,13 @@ function SettingsContent() {
         {storageConnection?.status === "connected" ? (
           <div className="mt-5 rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
             <p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-800">
-              Connected account
+              {t("journeySettings.storage.connectedAccount")}
             </p>
             <p className="mt-2 text-base font-semibold text-stone-950">
               {storageConnection.accountLabel || "Google Drive"}
             </p>
             <p className="mt-1 text-sm leading-6 text-stone-600">
-              Folder:{" "}
+              {t("journeySettings.storage.folder")}{" "}
               {typeof storageConnection.metadata.journeyFolderName === "string"
                 ? storageConnection.metadata.journeyFolderName
                 : trip?.name || "Journey"}
@@ -428,21 +488,26 @@ function SettingsContent() {
                   rel="noreferrer"
                   className="rounded-2xl bg-emerald-700 px-5 py-3 text-center text-sm font-bold text-white"
                 >
-                  Open Journey Folder
+                  {t("journeySettings.storage.openFolder")}
                 </a>
               ) : null}
-              <button
-                type="button"
-                onClick={disconnectGoogleDrive}
-                disabled={isDisconnectingStorage}
-                className="rounded-2xl bg-stone-100 px-5 py-3 text-sm font-bold text-stone-700 disabled:cursor-not-allowed disabled:text-stone-400"
-              >
-                {isDisconnectingStorage ? "Disconnecting..." : "Disconnect"}
-              </button>
+              {canManageJourney ? (
+                <button
+                  type="button"
+                  onClick={disconnectGoogleDrive}
+                  disabled={isDisconnectingStorage}
+                  className="rounded-2xl bg-stone-100 px-5 py-3 text-sm font-bold text-stone-700 disabled:cursor-not-allowed disabled:text-stone-400"
+                >
+                  {isDisconnectingStorage
+                    ? t("journeySettings.storage.disconnecting")
+                    : t("journeySettings.storage.disconnect")}
+                </button>
+              ) : null}
             </div>
           </div>
         ) : null}
 
+        {canManageJourney ? (
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
           <button
             type="button"
@@ -450,7 +515,9 @@ function SettingsContent() {
             disabled={isSavingStorage}
             className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
           >
-            {isSavingStorage ? "Saving..." : "Save storage preference"}
+            {isSavingStorage
+              ? t("journeySettings.storageSaving")
+              : t("journeySettings.storageSave")}
           </button>
           {storageProvider === "google_drive" ? (
             <button
@@ -460,10 +527,10 @@ function SettingsContent() {
               className="rounded-2xl bg-stone-950 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
             >
               {isConnectingStorage
-                ? "Connecting..."
+                ? t("journeySettings.storage.connecting")
                 : storageConnection?.status === "connected"
-                  ? "Reconnect Google Drive"
-                  : "Connect Google Drive"}
+                  ? t("journeySettings.storage.reconnect")
+                  : t("journeySettings.storage.connect")}
             </button>
           ) : (
             <button
@@ -471,31 +538,101 @@ function SettingsContent() {
               disabled
               className="rounded-2xl bg-stone-100 px-5 py-3 text-sm font-bold text-stone-400"
             >
-              OneDrive soon
+              {t("journeySettings.storage.onedriveSoon")}
             </button>
           )}
         </div>
+        ) : (
+          <p className="mt-5 rounded-2xl bg-stone-50 p-4 text-sm leading-6 text-stone-600">
+            {t("journeySettings.storage.ownerOnly")}
+          </p>
+        )}
 
         <p className="mt-4 rounded-2xl bg-amber-50 p-4 text-sm leading-6 text-amber-900">
-          Current photo upload still uses Capture and the existing compressed
-          image flow. Google Drive connection creates folders now; original-photo
-          streaming comes next.
+          {t("journeySettings.storage.nextStep")}
         </p>
+      </section>
+
+      <section className="rounded-3xl bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-stone-950">
+              {t("journeySettings.exchangeTitle")}
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-stone-600">
+              {t("journeySettings.exchangeDescription", {
+                baseCurrency: ledger?.baseCurrency ?? "base",
+              })}
+            </p>
+            <p className="mt-2 text-xs font-bold text-stone-500">
+              {t("journeySettings.exchangeSnapshot")}{" "}
+              {ledger?.exchangeRatesSnapshotDate ?? "-"} ·{" "}
+              {ledger?.exchangeRatesSnapshotSource ?? "default_at_creation"}
+            </p>
+          </div>
+          {canManageJourney ? (
+            <button
+              type="button"
+              onClick={refreshExchangeRates}
+              disabled={
+                isRefreshingRates || (ledger?.exchangeRatesRefreshCount ?? 0) > 0
+              }
+              className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
+            >
+              {isRefreshingRates
+                ? t("journeySettings.exchangeRefreshing")
+                : (ledger?.exchangeRatesRefreshCount ?? 0) > 0
+                  ? t("journeySettings.exchangeRefreshUsed")
+                  : t("journeySettings.exchangeRefresh")}
+            </button>
+          ) : null}
+        </div>
+        <div className="mt-4 overflow-hidden rounded-2xl border border-stone-100">
+          {exchangeRates.length === 0 ? (
+            <p className="p-4 text-sm text-stone-500">
+              {t("journeySettings.exchangeEmpty")}
+            </p>
+          ) : (
+            exchangeRates.map((rate) => (
+              <div
+                key={rate.id}
+                className="grid grid-cols-[1fr_auto] gap-3 border-b border-stone-100 px-4 py-3 last:border-b-0"
+              >
+                <div>
+                  <p className="text-sm font-black text-stone-950">
+                    1 {rate.quoteCurrency} = {rate.rateToBase.toFixed(4)}{" "}
+                    {rate.baseCurrency}
+                  </p>
+                  <p className="mt-1 text-xs text-stone-500">
+                    {rate.rateDate} · {rate.source}
+                  </p>
+                </div>
+                <span className="rounded-full bg-stone-100 px-2.5 py-1 text-xs font-bold text-stone-600">
+                  {rate.quoteCurrency}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
       </section>
 
       {canManageJourney ? (
         <section className="rounded-3xl border border-red-200 bg-red-50 p-5 shadow-sm">
           <div>
-            <h2 className="text-xl font-semibold text-red-900">删除旅程</h2>
+            <h2 className="text-xl font-semibold text-red-900">
+              {t("journeySettings.deleteTitle")}
+            </h2>
             <p className="mt-2 text-sm leading-6 text-red-800">
-              删除后，这个 Journey 以及相关成员、行程、记忆和账本记录会被移除。这个操作不可恢复。
+              {t("journeySettings.deleteDescription")}
             </p>
           </div>
           <label
             htmlFor="delete-journey-confirm"
             className="mt-4 block text-sm font-bold text-red-900"
           >
-            输入 “{trip?.name}” 确认删除
+            {t("journeySettings.deleteConfirmLabel", {
+              name: trip?.name ?? "",
+            })}
           </label>
           <input
             id="delete-journey-confirm"
@@ -509,7 +646,9 @@ function SettingsContent() {
             disabled={isDeleting || deleteConfirmation !== trip?.name}
             className="mt-4 w-full rounded-2xl bg-red-700 px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-red-200 disabled:text-red-500"
           >
-            {isDeleting ? "正在删除..." : "删除 Journey"}
+            {isDeleting
+              ? t("journeySettings.deleting")
+              : t("journeySettings.deleteButton")}
           </button>
         </section>
       ) : null}
@@ -518,7 +657,7 @@ function SettingsContent() {
         href={`/trips/${tripId}/planner`}
         className="block rounded-2xl bg-emerald-50 px-5 py-3 text-center text-sm font-bold text-emerald-900"
       >
-        返回行程
+        {t("journeySettings.backToPlanner")}
       </Link>
     </div>
   );

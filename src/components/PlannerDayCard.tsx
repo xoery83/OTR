@@ -13,7 +13,9 @@ import {
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { AiRouteRecommendationPanel } from "@/components/AiRouteRecommendationPanel";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
+import { CurrencyCombobox } from "@/components/CurrencyCombobox";
 import { useI18n } from "@/components/I18nProvider";
+import { MemoryEngagementActions } from "@/components/MemoryEngagementActions";
 import { enqueueMediaProcessingJobs } from "@/lib/background-jobs/client";
 import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
 import { allocatedLedgerAmountForDay } from "@/lib/ledger/date-allocation";
@@ -22,7 +24,6 @@ import {
   upsertTripDay,
   type PlannerV2Day,
 } from "@/lib/supabase/planner-v2";
-import { getApproxExchangeRate } from "@/lib/exchange-rates";
 import {
   formatJourneyTime,
   journeyDateKey,
@@ -40,11 +41,16 @@ import {
   updateItineraryReservation,
 } from "@/lib/supabase/itinerary";
 import { upsertItineraryItemRating } from "@/lib/supabase/itinerary-ratings";
-import { createLedgerEntry, updateLedgerEntry } from "@/lib/supabase/ledger";
+import {
+  createLedgerEntry,
+  ensureJourneyExchangeRate,
+  updateLedgerEntry,
+} from "@/lib/supabase/ledger";
 import {
   createPhotoMemory,
   createTextMemory,
   getSignedMemoryImageUrls,
+  type MemoryEngagement,
 } from "@/lib/supabase/memories";
 import { requestVoiceTranscription } from "@/lib/supabase/media-assets";
 import type {
@@ -192,17 +198,6 @@ const expenseCategories: LedgerCategory[] = [
   "other",
 ];
 
-const expenseCurrencies = [
-  "ISK",
-  "NZD",
-  "AUD",
-  "CHF",
-  "DKK",
-  "EUR",
-  "CNY",
-  "USD",
-  "GBP",
-];
 const eventTypes: ItineraryEventType[] = [
   "flight",
   "hotel",
@@ -1293,6 +1288,9 @@ export function PlannerDayCard({
   const attachmentByItemRef = useRef(attachmentByItem);
   const activeVoiceItemIdRef = useRef<string | null>(null);
   const [inlineMemories, setInlineMemories] = useState<InlineMemoryState>({});
+  const [memoryEngagementById, setMemoryEngagementById] = useState<
+    Record<string, MemoryEngagement>
+  >({});
   const [savingMemoryId, setSavingMemoryId] = useState<string | null>(null);
   const [recordingMemoryId, setRecordingMemoryId] = useState<string | null>(null);
   const [transcribingMemoryId, setTranscribingMemoryId] = useState<string | null>(
@@ -1685,11 +1683,28 @@ export function PlannerDayCard({
       byId.set(memory.id, memory);
     });
 
-    return [...byId.values()].sort(
-      (first, second) =>
-        new Date(second.createdAt || second.capturedAt).getTime() -
-        new Date(first.createdAt || first.capturedAt).getTime(),
-    );
+    return [...byId.values()]
+      .map(memoryWithEngagement)
+      .sort(
+        (first, second) =>
+          new Date(second.createdAt || second.capturedAt).getTime() -
+          new Date(first.createdAt || first.capturedAt).getTime(),
+      );
+  }
+
+  function memoryWithEngagement(memory: MemoryEntry): MemoryEntry {
+    const engagement = memoryEngagementById[memory.id];
+    return engagement ? { ...memory, ...engagement } : memory;
+  }
+
+  function handleMemoryEngagementChange(
+    memoryId: string,
+    engagement: MemoryEngagement,
+  ) {
+    setMemoryEngagementById((current) => ({
+      ...current,
+      [memoryId]: engagement,
+    }));
   }
 
   function currentMemberAliases() {
@@ -2112,13 +2127,14 @@ export function PlannerDayCard({
 
       setIsLoadingRate(true);
       try {
-        const result = await getApproxExchangeRate(
+        const result = await ensureJourneyExchangeRate(
+          tripId,
           pendingExpense.currency,
           ledgerBaseCurrency,
         );
         if (isMounted) {
           updatePendingExpense({
-            exchangeRate: result.rate.toFixed(4),
+            exchangeRate: result.rateToBase.toFixed(4),
           });
         }
       } catch {
@@ -2726,9 +2742,17 @@ export function PlannerDayCard({
                     key={memory.id}
                     className="rounded-2xl bg-white px-3 py-2"
                   >
-                    <p className="text-xs font-semibold text-emerald-800">
-                      {memory.contributorName || t("planner.traveler")}
-                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="min-w-0 truncate text-xs font-semibold text-emerald-800">
+                        {memory.contributorName || t("planner.traveler")} ·{" "}
+                        {formatJourneyTime(memory.capturedAt, locale)}
+                      </p>
+                      <MemoryEngagementActions
+                        memory={memory}
+                        onChange={handleMemoryEngagementChange}
+                        compact
+                      />
+                    </div>
                     {memory.type === "photo" &&
                     memory.mediaUrl &&
                     imageUrlByMemoryPath[memory.mediaUrl] ? (
@@ -2801,23 +2825,16 @@ export function PlannerDayCard({
                     <span className="text-xs font-bold text-stone-700">
                       {t("planner.field.currency")}
                     </span>
-                    <select
+                    <CurrencyCombobox
                       value={pendingExpense.currency}
-                      onChange={(event) =>
+                      onChange={(currency) =>
                         updatePendingExpense({
-                          currency: event.target.value,
+                          currency,
                           exchangeRate:
-                            event.target.value === ledgerBaseCurrency ? "1" : "",
+                            currency === ledgerBaseCurrency ? "1" : "",
                         })
                       }
-                      className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
-                    >
-                      {expenseCurrencies.map((currency) => (
-                        <option key={currency} value={currency}>
-                          {currency}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </label>
                   <label className="space-y-1">
                     <span className="text-xs font-bold text-stone-700">
@@ -3111,9 +3128,18 @@ export function PlannerDayCard({
                               key={memory.id}
                               className="rounded-2xl bg-emerald-50 px-3 py-2"
                             >
-                              <p className="text-xs font-semibold text-emerald-800">
-                                {memory.contributorName || t("planner.traveler")}
-                              </p>
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="min-w-0 truncate text-xs font-semibold text-emerald-800">
+                                  {memory.contributorName ||
+                                    t("planner.traveler")}{" "}
+                                  · {formatJourneyTime(memory.capturedAt, locale)}
+                                </p>
+                                <MemoryEngagementActions
+                                  memory={memory}
+                                  onChange={handleMemoryEngagementChange}
+                                  compact
+                                />
+                              </div>
                               {memory.type === "photo" &&
                               memory.mediaUrl &&
                               imageUrlByMemoryPath[memory.mediaUrl] ? (
@@ -3378,25 +3404,16 @@ export function PlannerDayCard({
                               <span className="text-xs font-bold text-stone-700">
                                 {t("planner.field.currency")}
                               </span>
-                              <select
+                              <CurrencyCombobox
                                 value={pendingExpense.currency}
-                                onChange={(event) =>
+                                onChange={(currency) =>
                                   updatePendingExpense({
-                                    currency: event.target.value,
+                                    currency,
                                     exchangeRate:
-                                      event.target.value === ledgerBaseCurrency
-                                        ? "1"
-                                        : "",
+                                      currency === ledgerBaseCurrency ? "1" : "",
                                   })
                                 }
-                                className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
-                              >
-                                {expenseCurrencies.map((currency) => (
-                                  <option key={currency} value={currency}>
-                                    {currency}
-                                  </option>
-                                ))}
-                              </select>
+                              />
                             </label>
                             <label className="space-y-1">
                               <span className="text-xs font-bold text-stone-700">
@@ -3700,9 +3717,17 @@ export function PlannerDayCard({
                       <div className="mt-3 space-y-2 border-t border-sky-50 pt-3">
                         {memoriesForItem(item).map((memory) => (
                           <div key={memory.id} className="rounded-2xl bg-sky-50 px-3 py-2">
-                            <p className="text-xs font-semibold text-sky-800">
-                              {memory.contributorName || t("planner.traveler")}
-                            </p>
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="min-w-0 truncate text-xs font-semibold text-sky-800">
+                                {memory.contributorName || t("planner.traveler")}{" "}
+                                · {formatJourneyTime(memory.capturedAt, locale)}
+                              </p>
+                              <MemoryEngagementActions
+                                memory={memory}
+                                onChange={handleMemoryEngagementChange}
+                                compact
+                              />
+                            </div>
                             {memory.content ? (
                               <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
                                 {memory.content}
@@ -3743,23 +3768,16 @@ export function PlannerDayCard({
                             type="number"
                             className="w-full rounded-2xl border border-amber-100 bg-white px-3 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
                           />
-                          <select
+                          <CurrencyCombobox
                             value={pendingExpense.currency}
-                            onChange={(event) =>
+                            onChange={(currency) =>
                               updatePendingExpense({
-                                currency: event.target.value,
+                                currency,
                                 exchangeRate:
-                                  event.target.value === ledgerBaseCurrency ? "1" : "",
+                                  currency === ledgerBaseCurrency ? "1" : "",
                               })
                             }
-                            className="w-full rounded-2xl border border-amber-100 bg-white px-2 py-2 text-sm text-stone-950 outline-none focus:border-amber-300"
-                          >
-                            {expenseCurrencies.map((currency) => (
-                              <option key={currency} value={currency}>
-                                {currency}
-                              </option>
-                            ))}
-                          </select>
+                          />
                           <input
                             value={pendingExpense.exchangeRate}
                             onChange={(event) =>
@@ -3953,9 +3971,10 @@ export function PlannerDayCard({
           <DayMemoryPreview
             tripId={tripId}
             date={day.dayDate}
-            memories={memories}
+            memories={memories.map(memoryWithEngagement)}
             imageUrls={imageUrlByMemoryPath}
             onOpenImage={setImagePreview}
+            onEngagementChange={handleMemoryEngagementChange}
           />
         </section>
 
@@ -4594,23 +4613,16 @@ export function PlannerDayCard({
                 <span className="text-sm font-bold text-stone-800">
                   {t("planner.field.currency")}
                 </span>
-                <select
+                <CurrencyCombobox
                   value={pendingExpense.currency}
-                  onChange={(event) =>
+                  onChange={(currency) =>
                     updatePendingExpense({
-                      currency: event.target.value,
+                      currency,
                       exchangeRate:
-                        event.target.value === ledgerBaseCurrency ? "1" : "",
+                        currency === ledgerBaseCurrency ? "1" : "",
                     })
                   }
-                  className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-stone-950 outline-none focus:border-emerald-300"
-                >
-                  {expenseCurrencies.map((currency) => (
-                    <option key={currency} value={currency}>
-                      {currency}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
 
               <label className="space-y-1">

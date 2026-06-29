@@ -10,6 +10,10 @@ import { getLedgerData } from "@/lib/supabase/ledger";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import { getItineraryRatingCountsByUser } from "@/lib/supabase/itinerary-ratings";
 import {
+  getSignedMemoryImageUrls,
+  getTripMemories,
+} from "@/lib/supabase/memories";
+import {
   getTripFaceTagCountsByMember,
   getTripImageUploadCountsByUser,
 } from "@/lib/supabase/media-assets";
@@ -22,6 +26,7 @@ import type {
   LedgerCategory,
   LedgerEntry,
   LedgerMemberBalance,
+  MemoryEntry,
   Trip,
 } from "@/types";
 import { getErrorMessage } from "@/lib/errors";
@@ -37,7 +42,12 @@ type BestItem = {
   rating: ItineraryItemRatingSummary;
 };
 
-type HighlightTab = "spending" | "journey" | "contribution";
+type HighlightTab =
+  | "spending"
+  | "contribution"
+  | "likes"
+  | "favorites"
+  | "journey";
 
 type ContributionRankItem = {
   id: string;
@@ -103,6 +113,15 @@ function money(amount: number, currency: string, locale: string) {
     currency,
     maximumFractionDigits: 0,
   }).format(amount);
+}
+
+function dateTimeLabel(value: string, locale: string) {
+  return new Intl.DateTimeFormat(locale === "zh-CN" ? "zh-CN" : "en", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function ratedItems(planner: PlannerV2Data): BestItem[] {
@@ -204,6 +223,22 @@ function memberLabel(member: JourneyMember | null | undefined) {
   return member?.displayName || "Traveler";
 }
 
+function rankedMemoriesBy(
+  memories: MemoryEntry[],
+  getCount: (memory: MemoryEntry) => number,
+) {
+  return [...memories]
+    .filter((memory) => getCount(memory) > 0)
+    .sort((first, second) => {
+      const countOrder = getCount(second) - getCount(first);
+      if (countOrder) return countOrder;
+      return (
+        new Date(second.capturedAt).getTime() -
+        new Date(first.capturedAt).getTime()
+      );
+    });
+}
+
 function HighlightsContent() {
   const { tripId } = useParams<{ tripId: string }>();
   const { locale } = useI18n();
@@ -216,6 +251,9 @@ function HighlightsContent() {
   const [imageUploadCounts, setImageUploadCounts] = useState<Record<string, number>>({});
   const [faceTagCounts, setFaceTagCounts] = useState<Record<string, number>>({});
   const [ratingCounts, setRatingCounts] = useState<Record<string, number>>({});
+  const [memories, setMemories] = useState<MemoryEntry[]>([]);
+  const [memoryImageUrls, setMemoryImageUrls] = useState<Record<string, string>>({});
+  const [selectedMemory, setSelectedMemory] = useState<MemoryEntry | null>(null);
   const [activeTab, setActiveTab] = useState<HighlightTab>("spending");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -233,6 +271,7 @@ function HighlightsContent() {
           imageCounts,
           faceCounts,
           ratingCountsByUser,
+          memoryData,
         ] = await Promise.all([
           getPlannerV2(tripData),
           getLedgerData(tripData.id),
@@ -240,7 +279,9 @@ function HighlightsContent() {
           getTripImageUploadCountsByUser(tripData.id),
           getTripFaceTagCountsByMember(tripData.id),
           getItineraryRatingCountsByUser(tripData.id),
+          getTripMemories(tripData.id),
         ]);
+        const signedImageUrls = await getSignedMemoryImageUrls(memoryData);
         if (!isMounted) return;
         setTrip(tripData);
         setPlanner(plannerData);
@@ -251,6 +292,8 @@ function HighlightsContent() {
         setImageUploadCounts(imageCounts);
         setFaceTagCounts(faceCounts);
         setRatingCounts(ratingCountsByUser);
+        setMemories(memoryData);
+        setMemoryImageUrls(signedImageUrls);
       } catch (loadError) {
         if (isMounted) {
           setError(getErrorMessage(loadError, "Could not load highlights."));
@@ -396,6 +439,21 @@ function HighlightsContent() {
     ratingCounts,
     tripId,
   ]);
+  const likedMemories = useMemo(
+    () => rankedMemoriesBy(memories, (memory) => memory.likeCount ?? 0),
+    [memories],
+  );
+  const favoritedMemories = useMemo(
+    () => rankedMemoriesBy(memories, (memory) => memory.favoriteCount ?? 0),
+    [memories],
+  );
+  const activeMemoryRank =
+    activeTab === "likes"
+      ? likedMemories
+      : activeTab === "favorites"
+        ? favoritedMemories
+        : [];
+  const activeMemoryRankLabel = activeTab === "likes" ? "点赞" : "收藏";
 
   if (isLoading) {
     return <div className="rounded-2xl bg-white p-5">加载精选中...</div>;
@@ -427,11 +485,13 @@ function HighlightsContent() {
             <p className="text-sm font-black text-emerald-800">Highlights</p>
             <h2 className="text-xl font-semibold text-stone-950">排行榜</h2>
           </div>
-          <div className="grid grid-cols-3 rounded-full bg-stone-100 p-1 text-xs font-black text-stone-600">
+          <div className="grid grid-cols-5 rounded-full bg-stone-100 p-1 text-xs font-black text-stone-600">
             {(
               [
                 ["spending", `消费 ${spendingRankCount}`],
                 ["contribution", `贡献 ${contributionItems.length}`],
+                ["likes", `点赞 ${likedMemories.length}`],
+                ["favorites", `收藏 ${favoritedMemories.length}`],
                 ["journey", `行程 ${bestItems.length}`],
               ] as const
             ).map(([value, label]) => (
@@ -595,6 +655,66 @@ function HighlightsContent() {
           </div>
         ) : null}
 
+        {(activeTab === "likes" || activeTab === "favorites") &&
+        activeMemoryRank.length === 0 ? (
+          <div className="mt-4 rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
+            还没有{activeMemoryRankLabel}过的记忆。
+          </div>
+        ) : null}
+
+        {(activeTab === "likes" || activeTab === "favorites") &&
+        activeMemoryRank.length > 0 ? (
+          <div className="mt-4 grid grid-cols-3 gap-1 sm:grid-cols-4 lg:grid-cols-6">
+            {activeMemoryRank.map((memory, index) => {
+              const imageUrl = memory.mediaUrl ? memoryImageUrls[memory.mediaUrl] : null;
+              const count =
+                activeTab === "likes"
+                  ? memory.likeCount ?? 0
+                  : memory.favoriteCount ?? 0;
+
+              return (
+                <button
+                  type="button"
+                  key={memory.id}
+                  onClick={() => setSelectedMemory(memory)}
+                  className="group relative aspect-square overflow-hidden bg-stone-100 text-left"
+                >
+                  {memory.type === "photo" && imageUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={imageUrl}
+                      alt={memory.content || "Memory"}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <span className="flex h-full w-full flex-col justify-between bg-[#fffdf8] p-3">
+                      <span className="line-clamp-5 text-sm font-semibold leading-5 text-stone-950">
+                        {memory.content || memory.locationName || "Memory"}
+                      </span>
+                      <span className="text-[10px] font-black uppercase tracking-wide text-emerald-800">
+                        Text
+                      </span>
+                    </span>
+                  )}
+                  <span className="absolute left-2 top-2 grid size-7 place-items-center rounded-full bg-white/90 text-xs font-black text-stone-800 shadow-sm">
+                    {index + 1}
+                  </span>
+                  <span className="absolute right-2 top-2 rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-black text-emerald-950 shadow-sm">
+                    {count}
+                  </span>
+                  <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-stone-950/80 to-transparent p-2 text-white opacity-0 transition group-hover:opacity-100">
+                    <span className="line-clamp-2 text-xs font-bold">
+                      {memory.content ||
+                        memory.locationName ||
+                        dateTimeLabel(memory.capturedAt, locale)}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
         {activeTab === "journey" && bestItems.length === 0 ? (
           <div className="mt-4 rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
             还没有行程点评。打开任意行程卡片，点小星星就可以开始打分。
@@ -644,6 +764,92 @@ function HighlightsContent() {
           </div>
         ) : null}
       </section>
+
+      {selectedMemory ? (
+        <div
+          className="fixed inset-0 z-[2147482400] bg-stone-950/80 p-4 backdrop-blur-sm"
+          onClick={() => setSelectedMemory(null)}
+        >
+          <div
+            className="mx-auto flex h-full max-w-5xl flex-col gap-3"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 text-white">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-black">
+                  {selectedMemory.contributorName || "Traveler"}
+                </p>
+                <p className="mt-0.5 text-xs font-semibold text-white/65">
+                  {dateTimeLabel(selectedMemory.capturedAt, locale)}
+                  {selectedMemory.locationName
+                    ? ` · ${selectedMemory.locationName}`
+                    : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedMemory(null)}
+                className="rounded-full bg-white/15 px-3 py-2 text-xs font-black text-white"
+              >
+                关闭
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 place-items-center overflow-hidden rounded-3xl bg-white">
+              {selectedMemory.type === "photo" &&
+              selectedMemory.mediaUrl &&
+              memoryImageUrls[selectedMemory.mediaUrl] ? (
+                <div className="grid h-full w-full min-h-0 gap-0 lg:grid-cols-[minmax(0,1fr)_320px]">
+                  <div className="grid min-h-0 place-items-center bg-black">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={memoryImageUrls[selectedMemory.mediaUrl]}
+                      alt={selectedMemory.content || "Memory"}
+                      className="max-h-full max-w-full object-contain"
+                    />
+                  </div>
+                  <aside className="min-h-0 overflow-y-auto p-4">
+                    <p className="text-xs font-black uppercase tracking-wide text-emerald-800">
+                      Photo Memory
+                    </p>
+                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-stone-700">
+                      {selectedMemory.content || "没有文字说明。"}
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-2 text-xs font-black text-stone-600">
+                      <span className="rounded-full bg-stone-100 px-3 py-1">
+                        {selectedMemory.likeCount ?? 0} 赞
+                      </span>
+                      <span className="rounded-full bg-stone-100 px-3 py-1">
+                        {selectedMemory.favoriteCount ?? 0} 收藏
+                      </span>
+                    </div>
+                  </aside>
+                </div>
+              ) : (
+                <article className="max-h-full w-full overflow-y-auto p-6">
+                  <p className="text-xs font-black uppercase tracking-wide text-emerald-800">
+                    Text Memory
+                  </p>
+                  <h3 className="mt-3 text-2xl font-semibold text-stone-950">
+                    {selectedMemory.locationName || "全文"}
+                  </h3>
+                  <p className="mt-4 whitespace-pre-wrap text-base leading-8 text-stone-700">
+                    {selectedMemory.content || "没有文字内容。"}
+                  </p>
+                  <div className="mt-6 flex flex-wrap gap-2 text-xs font-black text-stone-600">
+                    <span className="rounded-full bg-stone-100 px-3 py-1">
+                      {selectedMemory.likeCount ?? 0} 赞
+                    </span>
+                    <span className="rounded-full bg-stone-100 px-3 py-1">
+                      {selectedMemory.favoriteCount ?? 0} 收藏
+                    </span>
+                  </div>
+                </article>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

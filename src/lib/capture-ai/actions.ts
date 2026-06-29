@@ -1,12 +1,15 @@
 import { getDefaultCapturedAt } from "@/lib/format";
-import { getApproxExchangeRate } from "@/lib/exchange-rates";
 import type { CompressedImage } from "@/lib/images";
 import { createRawCaptureEvent } from "@/lib/supabase/capture-events";
 import {
   createItineraryEvent,
   createItineraryReservation,
 } from "@/lib/supabase/itinerary";
-import { createLedgerEntry, getLedgerData } from "@/lib/supabase/ledger";
+import {
+  createLedgerEntry,
+  ensureJourneyExchangeRate,
+  getLedgerData,
+} from "@/lib/supabase/ledger";
 import {
   createPhotoMemory,
   createTextMemory,
@@ -237,7 +240,13 @@ async function executeActionGraph(input: ExecuteCaptureActionInput, capturedAt: 
     const rate =
       currency === baseCurrency
         ? 1
-        : (await getApproxExchangeRate(currency, baseCurrency)).rate;
+        : (
+            await ensureJourneyExchangeRate(
+              input.tripId,
+              currency,
+              baseCurrency,
+            )
+          ).rateToBase;
 
     await createLedgerEntry({
       journeyId: input.tripId,

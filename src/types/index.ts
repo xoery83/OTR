@@ -72,6 +72,10 @@ export type MemoryEntry = {
   createdAt: string;
   contributorName?: string;
   contributorAvatarUrl?: string | null;
+  likeCount?: number;
+  favoriteCount?: number;
+  myLikeCount?: number;
+  isFavorited?: boolean;
 };
 
 export type DailyReport = {
@@ -251,6 +255,7 @@ export type Profile = {
   id: string;
   displayName: string;
   globalAka?: string | null;
+  globalBaseCurrency?: string;
   avatarUrl: string | null;
   accountRole: AccountRole;
   createdAt: string;
@@ -518,6 +523,23 @@ export type JourneyLedger = {
   journeyId: string;
   baseCurrency: string;
   displayCurrency: string;
+  exchangeRatesSnapshotDate: string;
+  exchangeRatesSnapshotSource: string;
+  exchangeRatesRefreshedAt: string | null;
+  exchangeRatesRefreshedBy: string | null;
+  exchangeRatesRefreshCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type JourneyExchangeRate = {
+  id: string;
+  journeyId: string;
+  baseCurrency: string;
+  quoteCurrency: string;
+  rateToBase: number;
+  rateDate: string;
+  source: string;
   createdAt: string;
   updatedAt: string;
 };

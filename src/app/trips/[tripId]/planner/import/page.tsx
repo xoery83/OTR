@@ -4,9 +4,9 @@ import { useParams, useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AiRouteRecommendationPanel } from "@/components/AiRouteRecommendationPanel";
 import { AuthGate } from "@/components/AuthGate";
+import { CurrencyCombobox } from "@/components/CurrencyCombobox";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { getErrorMessage } from "@/lib/errors";
-import { getApproxExchangeRate } from "@/lib/exchange-rates";
 import {
   formatDateTime,
   journeyDateKey,
@@ -28,7 +28,11 @@ import {
   getItineraryReservations,
 } from "@/lib/supabase/itinerary";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
-import { createLedgerEntry, getLedgerData } from "@/lib/supabase/ledger";
+import {
+  createLedgerEntry,
+  ensureJourneyExchangeRate,
+  getLedgerData,
+} from "@/lib/supabase/ledger";
 import { requestVoiceTranscription } from "@/lib/supabase/media-assets";
 import { getTripMembers } from "@/lib/supabase/members";
 import { upsertTripDay, type PlannerV2Day } from "@/lib/supabase/planner-v2";
@@ -1292,7 +1296,8 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
       throw new Error(`${expense.title} 至少需要 1 个分摊成员。`);
     }
 
-    const rate = await getApproxExchangeRate(
+    const rate = await ensureJourneyExchangeRate(
+      tripId,
       expense.original_currency,
       ledgerBaseCurrency,
     );
@@ -1311,7 +1316,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
       originalAmount: expense.original_amount,
       originalCurrency: expense.original_currency,
       baseCurrency: ledgerBaseCurrency,
-      exchangeRate: rate.rate,
+      exchangeRate: rate.rateToBase,
       payerMemberId: expense.payer_member_id,
       participantMemberIds: expense.participant_member_ids,
       addressText: expense.address_text ?? undefined,
@@ -1486,7 +1491,8 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
             throw new Error(`${expense.title} 缺少日期，无法导入账本。`);
           }
 
-          const rate = await getApproxExchangeRate(
+          const rate = await ensureJourneyExchangeRate(
+            tripId,
             expense.original_currency,
             ledgerBaseCurrency,
           );
@@ -1508,7 +1514,7 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
             originalAmount: expense.original_amount,
             originalCurrency: expense.original_currency,
             baseCurrency: ledgerBaseCurrency,
-            exchangeRate: rate.rate,
+            exchangeRate: rate.rateToBase,
             payerMemberId: expense.payer_member_id,
             participantMemberIds: expense.participant_member_ids,
             addressText: expense.address_text ?? undefined,
@@ -2383,15 +2389,13 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                     className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
                     placeholder="金额"
                   />
-                  <input
+                  <CurrencyCombobox
                     value={expense.original_currency}
-                    onChange={(event) =>
+                    onChange={(currency) =>
                       updateExpenseDraft(expense.clientId, {
-                        original_currency: event.target.value.toUpperCase(),
+                        original_currency: currency,
                       })
                     }
-                    className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
-                    placeholder="币种"
                   />
                   <input
                     type="date"
@@ -3054,15 +3058,13 @@ function PlannerImportContent({ currentUserId }: { currentUserId: string }) {
                     className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
                     placeholder="金额"
                   />
-                  <input
+                  <CurrencyCombobox
                     value={expense.original_currency}
-                    onChange={(event) =>
+                    onChange={(currency) =>
                       updateExpenseDraft(expense.clientId, {
-                        original_currency: event.target.value.toUpperCase(),
+                        original_currency: currency,
                       })
                     }
-                    className="rounded-xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-stone-950"
-                    placeholder="币种"
                   />
                   <input
                     type="date"

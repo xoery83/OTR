@@ -67,6 +67,7 @@ export async function getPeopleOverview() {
       const profile = {
         id: member.userId ?? key,
         displayName: member.displayName || "Traveler",
+        globalBaseCurrency: "NZD",
         avatarUrl: member.avatarUrl,
         accountRole: "free_user" as const,
         createdAt: "",

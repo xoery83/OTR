@@ -6,6 +6,8 @@ type NominatimResult = {
   display_name?: string;
 };
 
+type GeocodeResponse = Partial<Coordinates> & Partial<NominatimResult>;
+
 const cachePrefix = "otr:geocode:";
 
 function normalizeQuery(value: string) {
@@ -56,23 +58,17 @@ export async function geocodePlace(
   const cached = readCachedCoordinates(normalized);
   if (cached) return cached;
 
-  const params = new URLSearchParams({
-    format: "jsonv2",
-    limit: "1",
-    q: normalized,
-  });
-  const endpoint =
-    process.env.NEXT_PUBLIC_GEOCODING_BASE_URL ??
-    "https://nominatim.openstreetmap.org/search";
+  const params = new URLSearchParams({ q: normalized });
+  const endpoint = process.env.NEXT_PUBLIC_GEOCODING_BASE_URL ?? "/api/geocode";
   const response = await fetch(`${endpoint}?${params.toString()}`, { signal });
   if (!response.ok) return null;
 
-  const results = (await response.json()) as NominatimResult[];
-  const first = results[0];
+  const result = (await response.json()) as GeocodeResponse | GeocodeResponse[];
+  const first = Array.isArray(result) ? result[0] : result;
   if (!first) return null;
 
-  const latitude = Number(first.lat);
-  const longitude = Number(first.lon);
+  const latitude = Number(first.latitude ?? first.lat);
+  const longitude = Number(first.longitude ?? first.lon);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
 
   const coordinates = { latitude, longitude };

@@ -9,6 +9,7 @@ type ProfileRow = {
   id: string;
   display_name: string;
   global_aka?: string | null;
+  global_base_currency?: string | null;
   avatar_url: string | null;
   account_role?: AccountRole | null;
   created_at: string;
@@ -28,6 +29,7 @@ function mapProfile(row: ProfileRow): Profile {
     id: row.id,
     displayName: row.display_name,
     globalAka: row.global_aka ?? null,
+    globalBaseCurrency: row.global_base_currency ?? "NZD",
     avatarUrl: row.avatar_url,
     accountRole: row.account_role ?? "free_user",
     createdAt: row.created_at,
@@ -73,6 +75,7 @@ export async function upsertProfileForUser(user: User) {
       id: user.id,
       display_name: getUserDisplayName(user),
       avatar_url: getUserAvatarUrl(user),
+      global_base_currency: "NZD",
       account_role:
         user.email?.toLocaleLowerCase() === "xoery83@gmail.com"
           ? "admin"
@@ -125,6 +128,7 @@ export async function updateProfile(input: {
   id: string;
   displayName: string;
   globalAka?: string | null;
+  globalBaseCurrency?: string;
   avatarUrl: string | null;
 }) {
   const payload: Record<string, string | null> = {
@@ -134,6 +138,10 @@ export async function updateProfile(input: {
 
   if (input.globalAka !== undefined) {
     payload.global_aka = input.globalAka?.trim() || null;
+  }
+
+  if (input.globalBaseCurrency !== undefined) {
+    payload.global_base_currency = input.globalBaseCurrency.trim().toUpperCase();
   }
 
   const { data, error } = await supabase

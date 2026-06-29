@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { useI18n } from "@/components/I18nProvider";
+import { MemoryEngagementActions } from "@/components/MemoryEngagementActions";
 import type { MemoryEntry } from "@/types";
 import { formatTime } from "@/lib/format";
+import type { MemoryEngagement } from "@/lib/supabase/memories";
 
 export function DayMemoryPreview({
   tripId,
@@ -12,12 +14,14 @@ export function DayMemoryPreview({
   memories,
   imageUrls = {},
   onOpenImage,
+  onEngagementChange,
 }: {
   tripId: string;
   date: string;
   memories: MemoryEntry[];
   imageUrls?: Record<string, string>;
   onOpenImage?: (image: { src: string; alt: string }) => void;
+  onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const { t } = useI18n();
   const latestMemories = useMemo(
@@ -48,10 +52,17 @@ export function DayMemoryPreview({
                 key={memory.id}
                 className="rounded-2xl bg-white/80 p-3 text-sm shadow-sm"
               >
-                <p className="font-bold text-stone-800">
-                  {memory.contributorName || t("planner.traveler")} ·{" "}
-                  {formatTime(memory.capturedAt)}
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="min-w-0 truncate font-bold text-stone-800">
+                    {memory.contributorName || t("planner.traveler")} ·{" "}
+                    {formatTime(memory.capturedAt)}
+                  </p>
+                  <MemoryEngagementActions
+                    memory={memory}
+                    onChange={onEngagementChange}
+                    compact
+                  />
+                </div>
                 <div className="mt-2 flex items-start gap-3">
                   {imageUrl ? (
                     <button

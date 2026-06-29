@@ -23,6 +23,7 @@ import {
 } from "@/lib/uploads/photo-upload-manager";
 
 const DISMISSED_FAILURES_STORAGE_KEY = "otr:activity-center:dismissed-failures";
+const DISMISSED_ACTIVITY_STORAGE_KEY = "otr:activity-center:dismissed-activity";
 const FAILED_WARNING_AUTO_HIDE_MS = 18000;
 
 function payloadString(job: BackgroundJob, key: string) {
@@ -90,6 +91,14 @@ function batchFailureKey(batch: BackgroundJobBatch) {
   return `batch:${batch.id}`;
 }
 
+function jobActivityKey(job: BackgroundJob) {
+  return `job:${job.id}:${job.status}`;
+}
+
+function batchActivityKey(batch: BackgroundJobBatch) {
+  return `batch:${batch.id}:${batch.status}`;
+}
+
 function loadDismissedFailureKeys() {
   if (typeof window === "undefined") return new Set<string>();
 
@@ -105,6 +114,25 @@ function loadDismissedFailureKeys() {
 function saveDismissedFailureKeys(keys: Set<string>) {
   window.localStorage.setItem(
     DISMISSED_FAILURES_STORAGE_KEY,
+    JSON.stringify([...keys]),
+  );
+}
+
+function loadDismissedActivityKeys() {
+  if (typeof window === "undefined") return new Set<string>();
+
+  try {
+    const raw = window.localStorage.getItem(DISMISSED_ACTIVITY_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter(Boolean).map(String) : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function saveDismissedActivityKeys(keys: Set<string>) {
+  window.localStorage.setItem(
+    DISMISSED_ACTIVITY_STORAGE_KEY,
     JSON.stringify([...keys]),
   );
 }
@@ -178,29 +206,44 @@ export function ActivityCenter() {
   const [dismissedFailureKeys, setDismissedFailureKeys] = useState<Set<string>>(
     loadDismissedFailureKeys,
   );
+  const [dismissedActivityKeys, setDismissedActivityKeys] = useState<Set<string>>(
+    loadDismissedActivityKeys,
+  );
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runningJobIds = useRef(new Set<string>());
+  const currentActivityKeys = useMemo(
+    () => [
+      ...jobs
+        .filter((job) => !isPlaceholderProcessingJob(job))
+        .filter((job) => activeJob(job) || job.status === "failed")
+        .map((job) => jobActivityKey(job)),
+      ...batches
+        .filter((batch) => activeBatch(batch) || batch.status === "failed")
+        .map((batch) => batchActivityKey(batch)),
+    ],
+    [batches, jobs],
+  );
   const visibleBatches = useMemo(
     () =>
       batches
         .filter((batch) => activeBatch(batch) || batch.status === "failed")
-        .slice(0, 4),
-    [batches],
+        .filter((batch) => !dismissedActivityKeys.has(batchActivityKey(batch))),
+    [batches, dismissedActivityKeys],
   );
   const visibleJobs = useMemo(
     () =>
       jobs
         .filter((job) => !isPlaceholderProcessingJob(job))
         .filter((job) => activeJob(job) || job.status === "failed")
-        .slice(0, 8),
-    [jobs],
+        .filter((job) => !dismissedActivityKeys.has(jobActivityKey(job))),
+    [dismissedActivityKeys, jobs],
   );
   const countableJobs = useMemo(
     () => jobs.filter((job) => !isPlaceholderProcessingJob(job)),
     [jobs],
   );
   const activeCount =
-    countableJobs.filter(activeJob).length + batches.filter(activeBatch).length;
+    visibleJobs.filter(activeJob).length + visibleBatches.filter(activeBatch).length;
   const currentFailureKeys = useMemo(
     () => [
       ...countableJobs
@@ -216,8 +259,9 @@ export function ActivityCenter() {
     (key) => !dismissedFailureKeys.has(key),
   ).length;
   const attentionCount =
-    countableJobs.filter((job) => job.status === "waiting_for_user").length +
-    batches.filter((batch) => batch.status === "waiting_for_user").length;
+    visibleJobs.filter((job) => job.status === "waiting_for_user").length +
+    visibleBatches.filter((batch) => batch.status === "waiting_for_user").length;
+  const visibleActivityCount = visibleJobs.length + visibleBatches.length;
 
   const acknowledgeCurrentFailures = useCallback(() => {
     if (currentFailureKeys.length === 0) return;
@@ -236,6 +280,22 @@ export function ActivityCenter() {
     setIsOpen(false);
     acknowledgeCurrentFailures();
   }, [acknowledgeCurrentFailures]);
+
+  const dismissCurrentActivity = useCallback(() => {
+    acknowledgeCurrentFailures();
+    if (currentActivityKeys.length > 0) {
+      setDismissedActivityKeys((current) => {
+        const next = new Set(current);
+        for (const key of currentActivityKeys) {
+          next.add(key);
+        }
+        saveDismissedActivityKeys(next);
+        return next;
+      });
+    }
+    setNotice(null);
+    setIsOpen(false);
+  }, [acknowledgeCurrentFailures, currentActivityKeys]);
 
   async function refreshJobs() {
     setIsLoading(true);
@@ -360,7 +420,10 @@ export function ActivityCenter() {
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [closePanel, isOpen]);
 
-  if (activeCount === 0 && visibleFailedCount === 0 && !notice && !isOpen) {
+  if (
+    (activeCount === 0 && visibleFailedCount === 0 && !notice && !isOpen) ||
+    (visibleActivityCount === 0 && !notice && !isOpen)
+  ) {
     return null;
   }
 
@@ -386,16 +449,25 @@ export function ActivityCenter() {
                 {t("activity.title")}
               </h2>
             </div>
-            <button
-              type="button"
-              onClick={closePanel}
-              className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
-            >
-              {t("common.close")}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={dismissCurrentActivity}
+                className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
+              >
+                {t("activity.action.clear")}
+              </button>
+              <button
+                type="button"
+                onClick={closePanel}
+                className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600"
+              >
+                {t("common.close")}
+              </button>
+            </div>
           </div>
 
-          <div className="mt-4 space-y-2">
+          <div className="mt-4 max-h-[430px] space-y-2 overflow-y-auto overscroll-contain pr-1 sm:max-h-[520px]">
             {visibleBatches.length === 0 && visibleJobs.length === 0 ? (
               <p className="rounded-2xl bg-stone-50 p-3 text-sm font-medium text-stone-500">
                 {isLoading ? t("activity.loading") : t("activity.empty")}
@@ -527,23 +599,36 @@ export function ActivityCenter() {
         </section>
       ) : null}
 
-      <button
-        type="button"
-        onClick={() => {
-          if (isOpen) {
-            closePanel();
-            return;
-          }
-          setIsOpen(true);
-        }}
-        className="rounded-full bg-stone-950 px-4 py-3 text-sm font-black text-white shadow-2xl"
-      >
-        {attentionCount > 0
-          ? t("activity.summary.attention", { count: attentionCount })
-          : activeCount > 0
-            ? t("activity.summary.running", { count: activeCount })
-            : t("activity.summary.failed", { count: visibleFailedCount })}
-      </button>
+      <div className="inline-flex overflow-hidden rounded-full bg-stone-950 text-white shadow-2xl">
+        <button
+          type="button"
+          onClick={() => {
+            if (isOpen) {
+              closePanel();
+              return;
+            }
+            setIsOpen(true);
+          }}
+          className="px-4 py-3 text-sm font-black"
+        >
+          {attentionCount > 0
+            ? t("activity.summary.attention", { count: attentionCount })
+            : activeCount > 0
+              ? t("activity.summary.running", { count: activeCount })
+              : t("activity.summary.failed", { count: visibleFailedCount })}
+        </button>
+        <button
+          type="button"
+          aria-label={t("activity.action.dismiss")}
+          onClick={(event) => {
+            event.stopPropagation();
+            dismissCurrentActivity();
+          }}
+          className="grid min-h-11 w-10 place-items-center border-l border-white/10 bg-white/10 text-sm font-black hover:bg-white/20"
+        >
+          ×
+        </button>
+      </div>
     </div>
   );
 }

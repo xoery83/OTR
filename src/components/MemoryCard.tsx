@@ -1,5 +1,7 @@
 import type { MemoryEntry } from "@/types";
 import { formatTime } from "@/lib/format";
+import type { MemoryEngagement } from "@/lib/supabase/memories";
+import { MemoryEngagementActions } from "./MemoryEngagementActions";
 
 const typeLabels: Record<MemoryEntry["type"], string> = {
   text: "Text note",
@@ -11,9 +13,14 @@ const typeLabels: Record<MemoryEntry["type"], string> = {
 type MemoryCardProps = {
   memory: MemoryEntry;
   displayUrl?: string;
+  onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 };
 
-export function MemoryCard({ memory, displayUrl }: MemoryCardProps) {
+export function MemoryCard({
+  memory,
+  displayUrl,
+  onEngagementChange,
+}: MemoryCardProps) {
   const imageUrl = displayUrl ?? memory.mediaUrl;
   const contributor = memory.contributorName || "Traveler";
 
@@ -32,6 +39,11 @@ export function MemoryCard({ memory, displayUrl }: MemoryCardProps) {
           <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold uppercase tracking-wide text-emerald-800">
             {typeLabels[memory.type]}
           </span>
+          <MemoryEngagementActions
+            memory={memory}
+            onChange={onEngagementChange}
+            compact
+          />
         </div>
         <div className="flex items-center gap-3 text-xs font-semibold text-stone-500">
           <div className="grid size-7 shrink-0 place-items-center overflow-hidden rounded-full bg-emerald-100 text-emerald-800">

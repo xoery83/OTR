@@ -370,11 +370,35 @@ function geocodeQuery(
   return location || name || "";
 }
 
+function hasPlannerLocation(locationName: string | null | undefined) {
+  return Boolean(locationName?.trim());
+}
+
+function isFlightReservation(reservation: ItineraryReservation) {
+  return reservation.reservationType === "flight";
+}
+
+function isFlightEvent(event: ItineraryEvent) {
+  return event.eventType === "flight";
+}
+
 function shouldGeocodeQuery(query: string) {
   return /\d/.test(query) || query.includes(",");
 }
 
+function isAlpsTripText(text: string) {
+  return (
+    text.includes("tmb") ||
+    text.includes("mont blanc") ||
+    text.includes("france") ||
+    text.includes("法国") ||
+    text.includes("chamonix") ||
+    text.includes("bourg-saint-maurice")
+  );
+}
+
 function hasKnownCoordinates(
+  trip: Trip | null,
   objects: JourneyMapObject[],
   sourceType: string,
   sourceId: string | null,
@@ -390,15 +414,28 @@ function hasKnownCoordinates(
     locationName ?? null,
   );
   return Boolean(
-    getCoordinates(object ?? null) ??
-      coordinateLookupValue(
-        geocodedCoordinates,
-        sourceType,
-        sourceId,
-        title,
-        locationName,
+    destinationScopedCoordinates(trip, getCoordinates(object ?? null)) ??
+      destinationScopedCoordinates(
+        trip,
+        coordinateLookupValue(
+          geocodedCoordinates,
+          sourceType,
+          sourceId,
+          title,
+          locationName,
+        ),
       ),
   );
+}
+
+function destinationScopedCoordinates(
+  trip: Trip | null,
+  coordinates: Coordinates | null,
+) {
+  if (!coordinates) return null;
+  return containsCoordinate(destinationFallbackBounds(trip), coordinates)
+    ? coordinates
+    : null;
 }
 
 function approximatePlaceCoordinates(
@@ -432,6 +469,150 @@ function approximatePlaceCoordinates(
     )
   ) {
     const match = aucklandPlaces.find((place) =>
+      place.keys.some((key) => text.includes(normalizeText(key))),
+    );
+    if (match) return match.coordinates;
+  }
+
+  const greenlandPlaces: Array<{ keys: string[]; coordinates: Coordinates }> = [
+    {
+      keys: ["ilulissat airport", "jav airport", "mittarfik ilulissat", " jav"],
+      coordinates: { latitude: 69.2433, longitude: -51.0572 },
+    },
+    {
+      keys: ["hotel arctic", "mittarfimmut", "mittarfimmut b 1128"],
+      coordinates: { latitude: 69.2267, longitude: -51.0911 },
+    },
+    {
+      keys: ["hotel soma", "hotel søma", "nuussuattaap", "nuussuattaap aqq"],
+      coordinates: { latitude: 69.2188, longitude: -51.1047 },
+    },
+    {
+      keys: ["brugseni", "kaaleeraq poulsenip", "kaaleeraq poulsenip aqq"],
+      coordinates: { latitude: 69.2199, longitude: -51.0997 },
+    },
+    {
+      keys: ["icefjord viewpoint", "ilulissat icefjord", "kangiata", "sermeq kujalleq"],
+      coordinates: { latitude: 69.2019, longitude: -51.1376 },
+    },
+    {
+      keys: ["ilulissat", "disko bay", "qeqertarsuup tunua"],
+      coordinates: { latitude: 69.2198, longitude: -51.0986 },
+    },
+  ];
+
+  if (
+    tripText.includes("greenland") ||
+    tripText.includes("格陵兰") ||
+    tripText.includes("ilulissat") ||
+    greenlandPlaces.some((place) =>
+      place.keys.some((key) => text.includes(normalizeText(key))),
+    )
+  ) {
+    const match = greenlandPlaces.find((place) =>
+      place.keys.some((key) => text.includes(normalizeText(key))),
+    );
+    if (match) return match.coordinates;
+  }
+
+  const faroePlaces: Array<{ keys: string[]; coordinates: Coordinates }> = [
+    {
+      keys: ["vagar airport", "vágar airport", "fae airport", "sorvagur airport"],
+      coordinates: { latitude: 62.0636, longitude: -7.2772 },
+    },
+    {
+      keys: ["58 leitisvegur", "leitisvegur", "bonus", "bónus", "midvagur", "miðvágur"],
+      coordinates: { latitude: 62.0472, longitude: -7.1936 },
+    },
+    {
+      keys: ["torshavn", "tórshavn", "thorshavn"],
+      coordinates: { latitude: 62.0097, longitude: -6.7716 },
+    },
+    {
+      keys: ["gasadalur", "gásadalur", "mulafossur", "múlafossur"],
+      coordinates: { latitude: 62.1111, longitude: -7.4349 },
+    },
+    {
+      keys: ["saksun"],
+      coordinates: { latitude: 62.2481, longitude: -7.1768 },
+    },
+    {
+      keys: ["gjogv", "gjógv"],
+      coordinates: { latitude: 62.3252, longitude: -6.9406 },
+    },
+    {
+      keys: ["faroe", "法罗"],
+      coordinates: { latitude: 62.0079, longitude: -6.7909 },
+    },
+  ];
+
+  if (
+    tripText.includes("faroe") ||
+    tripText.includes("法罗") ||
+    faroePlaces.some((place) =>
+      place.keys.some((key) => text.includes(normalizeText(key))),
+    )
+  ) {
+    const match = faroePlaces.find((place) =>
+      place.keys.some((key) => text.includes(normalizeText(key))),
+    );
+    if (match) return match.coordinates;
+  }
+
+  const alpsPlaces: Array<{ keys: string[]; coordinates: Coordinates }> = [
+    {
+      keys: ["le coeur d'or", "202 route de montrigon", "montrigon", "appartment relax"],
+      coordinates: { latitude: 45.6169, longitude: 6.7754 },
+    },
+    {
+      keys: ["bourg-saint-maurice", "bourg saint maurice"],
+      coordinates: { latitude: 45.6186, longitude: 6.7691 },
+    },
+    {
+      keys: ["les contamines", "les contamines-montjoie"],
+      coordinates: { latitude: 45.8217, longitude: 6.7281 },
+    },
+    {
+      keys: ["les chapieux"],
+      coordinates: { latitude: 45.6962, longitude: 6.7332 },
+    },
+    {
+      keys: ["chamonix", "chamonix-mont-blanc"],
+      coordinates: { latitude: 45.9237, longitude: 6.8694 },
+    },
+    {
+      keys: ["les houches"],
+      coordinates: { latitude: 45.8904, longitude: 6.7987 },
+    },
+    {
+      keys: ["courmayeur"],
+      coordinates: { latitude: 45.7969, longitude: 6.9689 },
+    },
+    {
+      keys: ["la fouly"],
+      coordinates: { latitude: 45.9322, longitude: 7.0989 },
+    },
+    {
+      keys: ["champex", "champex-lac"],
+      coordinates: { latitude: 46.0316, longitude: 7.1178 },
+    },
+    {
+      keys: ["trient"],
+      coordinates: { latitude: 46.0571, longitude: 6.9943 },
+    },
+    {
+      keys: ["mont blanc", "tmb"],
+      coordinates: { latitude: 45.8326, longitude: 6.8652 },
+    },
+  ];
+
+  if (
+    isAlpsTripText(tripText) ||
+    alpsPlaces.some((place) =>
+      place.keys.some((key) => text.includes(normalizeText(key))),
+    )
+  ) {
+    const match = alpsPlaces.find((place) =>
       place.keys.some((key) => text.includes(normalizeText(key))),
     );
     if (match) return match.coordinates;
@@ -540,13 +721,7 @@ function approximatePlaceCoordinates(
     },
   ];
 
-  if (
-    !tripText.includes("iceland") &&
-    !tripText.includes("reykjavik") &&
-    !icelandPlaces.some((place) =>
-      place.keys.some((key) => text.includes(normalizeText(key))),
-    )
-  ) {
+  if (!tripText.includes("iceland") && !tripText.includes("reykjavik")) {
     return null;
   }
 
@@ -566,6 +741,9 @@ function reservationStop(
   trip: Trip | null,
   geocodedCoordinates: CoordinateLookup,
 ): MapStop | null {
+  if (isFlightReservation(reservation)) return null;
+  if (!hasPlannerLocation(reservation.locationName)) return null;
+
   const object = findObjectForSource(
     objects,
     "itinerary_reservation",
@@ -574,13 +752,16 @@ function reservationStop(
     reservation.locationName,
   );
   const coordinates =
-    getCoordinates(object ?? null) ??
-    coordinateLookupValue(
-      geocodedCoordinates,
-      "itinerary_reservation",
-      reservation.id,
-      reservation.title,
-      reservation.locationName,
+    destinationScopedCoordinates(trip, getCoordinates(object ?? null)) ??
+    destinationScopedCoordinates(
+      trip,
+      coordinateLookupValue(
+        geocodedCoordinates,
+        "itinerary_reservation",
+        reservation.id,
+        reservation.title,
+        reservation.locationName,
+      ),
     ) ??
     approximatePlaceCoordinates(trip, reservation.title, reservation.locationName);
   if (!coordinates) return null;
@@ -616,6 +797,9 @@ function eventStop(
   trip: Trip | null,
   geocodedCoordinates: CoordinateLookup,
 ): MapStop | null {
+  if (isFlightEvent(event)) return null;
+  if (!hasPlannerLocation(event.locationName)) return null;
+
   const object = findObjectForSource(
     objects,
     "itinerary_event",
@@ -624,13 +808,16 @@ function eventStop(
     event.locationName,
   );
   const coordinates =
-    getCoordinates(object ?? null) ??
-    coordinateLookupValue(
-      geocodedCoordinates,
-      "itinerary_event",
-      event.id,
-      event.title,
-      event.locationName,
+    destinationScopedCoordinates(trip, getCoordinates(object ?? null)) ??
+    destinationScopedCoordinates(
+      trip,
+      coordinateLookupValue(
+        geocodedCoordinates,
+        "itinerary_event",
+        event.id,
+        event.title,
+        event.locationName,
+      ),
     ) ??
     approximatePlaceCoordinates(trip, event.title, event.locationName);
   if (!coordinates) return null;
@@ -801,13 +988,14 @@ function destinationFallbackCenter(trip: Trip | null): Coordinates {
 
   if (destination.includes("faroe")) return { latitude: 62.0079, longitude: -6.7909 };
   if (destination.includes("greenland")) return { latitude: 71.7069, longitude: -42.6043 };
+  if (isAlpsTripText(destination)) return { latitude: 45.8326, longitude: 6.8652 };
   if (destination.includes("iceland") || destination.includes("reykjavik")) {
     return { latitude: 64.9631, longitude: -19.0208 };
   }
   if (destination.includes("auckland")) return { latitude: -36.8485, longitude: 174.7633 };
   if (destination.includes("new zealand")) return { latitude: -41.2865, longitude: 174.7762 };
 
-  return { latitude: 64.9631, longitude: -19.0208 };
+  return { latitude: 0, longitude: 0 };
 }
 
 function destinationFallbackBounds(trip: Trip | null) {
@@ -818,6 +1006,9 @@ function destinationFallbackBounds(trip: Trip | null) {
   }
   if (destination.includes("greenland")) {
     return { minLat: 59.5, maxLat: 83.7, minLon: -73, maxLon: -11 };
+  }
+  if (isAlpsTripText(destination)) {
+    return { minLat: 45.3, maxLat: 46.3, minLon: 6.2, maxLon: 7.4 };
   }
   if (destination.includes("iceland") || destination.includes("reykjavik")) {
     return { minLat: 63.0, maxLat: 67.2, minLon: -25.5, maxLon: -13.0 };
@@ -1021,6 +1212,9 @@ function JourneyMapContent() {
 
     days.forEach((day) => {
       day.reservations.forEach((reservation) => {
+        if (isFlightReservation(reservation)) return;
+        if (!hasPlannerLocation(reservation.locationName)) return;
+
         const key = coordinateLookupKey(
           "itinerary_reservation",
           reservation.id,
@@ -1029,6 +1223,7 @@ function JourneyMapContent() {
         );
         if (
           hasKnownCoordinates(
+            trip,
             mapObjects,
             "itinerary_reservation",
             reservation.id,
@@ -1041,12 +1236,15 @@ function JourneyMapContent() {
         }
 
         const query = geocodeQuery(reservation.title, reservation.locationName);
-        if (query.length >= 4 && shouldGeocodeQuery(query)) {
+        if (query.length >= 4) {
           targets.set(key, query);
         }
       });
 
       day.activities.forEach((activity) => {
+        if (isFlightEvent(activity)) return;
+        if (!hasPlannerLocation(activity.locationName)) return;
+
         const key = coordinateLookupKey(
           "itinerary_event",
           activity.id,
@@ -1055,6 +1253,7 @@ function JourneyMapContent() {
         );
         if (
           hasKnownCoordinates(
+            trip,
             mapObjects,
             "itinerary_event",
             activity.id,
@@ -1067,7 +1266,7 @@ function JourneyMapContent() {
         }
 
         const query = geocodeQuery(activity.title, activity.locationName);
-        if (query.length >= 4 && shouldGeocodeQuery(query)) {
+        if (query.length >= 4) {
           targets.set(key, query);
         }
       });
@@ -1082,6 +1281,7 @@ function JourneyMapContent() {
         );
         if (
           hasKnownCoordinates(
+            trip,
             mapObjects,
             "memory",
             memory.id,
@@ -1101,7 +1301,7 @@ function JourneyMapContent() {
     });
 
     return [...targets.entries()].map(([key, query]) => ({ key, query }));
-  }, [days, geocodedCoordinates, mapObjects]);
+  }, [days, geocodedCoordinates, mapObjects, trip]);
 
   useEffect(() => {
     if (!geocodeTargets.length) return;
@@ -1116,7 +1316,8 @@ function JourneyMapContent() {
         const coordinates = await geocodePlace(target.query, controller.signal).catch(
           () => null,
         );
-        if (coordinates) resolved[target.key] = coordinates;
+        const scopedCoordinates = destinationScopedCoordinates(trip, coordinates);
+        if (scopedCoordinates) resolved[target.key] = scopedCoordinates;
       }
 
       if (!controller.signal.aborted && Object.keys(resolved).length) {
@@ -1127,7 +1328,7 @@ function JourneyMapContent() {
     resolveCoordinates();
 
     return () => controller.abort();
-  }, [geocodeTargets]);
+  }, [geocodeTargets, trip]);
 
   const hotelStops = useMemo(
     () =>

@@ -5,21 +5,31 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { AuthGate } from "@/components/AuthGate";
+import { CurrencyCombobox } from "@/components/CurrencyCombobox";
 import { useI18n } from "@/components/I18nProvider";
 import { getErrorMessage } from "@/lib/errors";
 import { getMemoryStats } from "@/lib/journeys/stats";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
+import { getMediaAssetsByMemoryIds } from "@/lib/supabase/media-assets";
 import { logout } from "@/lib/supabase/auth";
 import { getMyItineraryRatingCount } from "@/lib/supabase/itinerary-ratings";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
-import { getLedgerData, type LedgerData } from "@/lib/supabase/ledger";
-import { getTripMemories } from "@/lib/supabase/memories";
+import {
+  ensureJourneyExchangeRate,
+  getLedgerData,
+  type LedgerData,
+} from "@/lib/supabase/ledger";
+import {
+  getSignedMemoryImageUrls,
+  getTripMemories,
+} from "@/lib/supabase/memories";
 import { getProfile, updateProfile } from "@/lib/supabase/profiles";
 import { getTripsForCurrentUser } from "@/lib/supabase/trips";
 import type {
   JourneyMember,
   LedgerCategory,
   LedgerEntry,
+  MemoryEntry,
   Profile,
   Trip,
   AccountRole,
@@ -61,6 +71,8 @@ const categoryLabelKeys: Record<LedgerCategory, TranslationKey> = {
 type ProfileLedgerReport = {
   trip: Trip;
   data: LedgerData;
+  globalCurrency: string;
+  conversionRateToGlobal: number;
 };
 
 type MyLedgerReport = {
@@ -88,6 +100,11 @@ type LedgerSearchResult = {
   amount: number;
 };
 
+type FavoriteMemorySummary = MemoryEntry & {
+  tripName: string;
+  tripDestination: string;
+};
+
 function emptyCategoryTotals() {
   return ledgerCategories.reduce(
     (totals, category) => ({ ...totals, [category]: 0 }),
@@ -105,6 +122,13 @@ function money(amount: number, currency: string, locale: "en" | "zh-CN") {
 
 function normalize(value: unknown) {
   return String(value ?? "").trim().toLocaleLowerCase();
+}
+
+function formatShortDate(value: string, locale: "en" | "zh-CN") {
+  return new Date(value).toLocaleDateString(locale === "zh-CN" ? "zh-CN" : "en", {
+    month: "numeric",
+    day: "numeric",
+  });
 }
 
 function memberShareForEntry(entry: LedgerEntry, member: JourneyMember) {
@@ -137,16 +161,17 @@ function buildMyLedgerReport(
   data.entries.forEach((entry) => {
     const amount = memberShareForEntry(entry, member);
     if (amount <= 0) return;
-    categories[entry.category] += amount;
+    categories[entry.category] += amount * report.conversionRateToGlobal;
     entries += 1;
   });
 
-  const shared = balance?.owedTotal ?? 0;
-  const statsOnly = balance?.statsOnlyTotal ?? 0;
+  const shared = (balance?.owedTotal ?? 0) * report.conversionRateToGlobal;
+  const statsOnly =
+    (balance?.statsOnlyTotal ?? 0) * report.conversionRateToGlobal;
 
   return {
     trip,
-    currency: data.ledger.displayCurrency || data.ledger.baseCurrency,
+    currency: report.globalCurrency,
     total: shared + statsOnly,
     shared,
     statsOnly,
@@ -243,10 +268,22 @@ function ProfileContent({ user }: { user: User }) {
   >(new Map());
   const [memoryCount, setMemoryCount] = useState(0);
   const [photoCount, setPhotoCount] = useState(0);
+  const [favoriteMemories, setFavoriteMemories] = useState<
+    FavoriteMemorySummary[]
+  >([]);
+  const [favoriteImageUrls, setFavoriteImageUrls] = useState<
+    Record<string, string>
+  >({});
+  const [favoriteDriveUrls, setFavoriteDriveUrls] = useState<
+    Record<string, string>
+  >({});
+  const [selectedFavorite, setSelectedFavorite] =
+    useState<FavoriteMemorySummary | null>(null);
   const [ratingCount, setRatingCount] = useState(0);
   const [ledgerReports, setLedgerReports] = useState<ProfileLedgerReport[]>([]);
   const [displayName, setDisplayName] = useState("");
   const [globalAka, setGlobalAka] = useState("");
+  const [globalBaseCurrency, setGlobalBaseCurrency] = useState("NZD");
   const [isSaving, setIsSaving] = useState(false);
   const [isLedgerLoading, setIsLedgerLoading] = useState(true);
   const [ledgerUnlocked, setLedgerUnlocked] = useState(false);
@@ -267,10 +304,24 @@ function ProfileContent({ user }: { user: User }) {
         const [memoryGroups, ledgerResults, memberResults] = await Promise.all([
           Promise.all(trips.map((trip) => getTripMemories(trip.id))),
           Promise.allSettled(
-            trips.map(async (trip) => ({
-              trip,
-              data: await getLedgerData(trip.id),
-            })),
+            trips.map(async (trip) => {
+              const data = await getLedgerData(trip.id);
+              const globalCurrency = profileData.globalBaseCurrency || "NZD";
+              const rate =
+                data.ledger.baseCurrency === globalCurrency
+                  ? { rateToBase: 1 }
+                  : await ensureJourneyExchangeRate(
+                      trip.id,
+                      globalCurrency,
+                      data.ledger.baseCurrency,
+                    );
+              return {
+                trip,
+                data,
+                globalCurrency,
+                conversionRateToGlobal: 1 / Number(rate.rateToBase || 1),
+              };
+            }),
           ),
           Promise.allSettled(
             trips.map(async (trip) => ({
@@ -285,12 +336,54 @@ function ProfileContent({ user }: { user: User }) {
         const allMemories = memoryGroups.flat();
         const mine = allMemories.filter((memory) => memory.userId === user.id);
         const stats = getMemoryStats(mine);
+        const tripsById = new Map(trips.map((trip) => [trip.id, trip]));
         setProfile(profileData);
         setDisplayName(profileData.displayName);
         setGlobalAka(profileData.globalAka ?? "");
+        setGlobalBaseCurrency(profileData.globalBaseCurrency || "NZD");
         setJourneys(trips);
         setMemoryCount(stats.total);
         setPhotoCount(stats.photos);
+        const favorites = allMemories
+          .filter((memory) => memory.isFavorited)
+          .map((memory) => {
+            const trip = tripsById.get(memory.tripId);
+            return {
+              ...memory,
+              tripName: trip?.name ?? "Journey",
+              tripDestination: trip?.destination ?? "",
+            };
+          })
+          .sort(
+            (left, right) =>
+              new Date(right.capturedAt).getTime() -
+                new Date(left.capturedAt).getTime() ||
+              new Date(right.createdAt).getTime() -
+                new Date(left.createdAt).getTime(),
+          );
+        setFavoriteMemories(favorites);
+        getSignedMemoryImageUrls(favorites)
+          .then((urls) => {
+            if (isMounted) setFavoriteImageUrls(urls);
+          })
+          .catch(() => {
+            if (isMounted) setFavoriteImageUrls({});
+          });
+        getMediaAssetsByMemoryIds(favorites.map((memory) => memory.id))
+          .then((assets) => {
+            if (!isMounted) return;
+            setFavoriteDriveUrls(
+              assets.reduce<Record<string, string>>((urls, asset) => {
+                if (asset.memoryEntryId && asset.providerWebUrl) {
+                  urls[asset.memoryEntryId] = asset.providerWebUrl;
+                }
+                return urls;
+              }, {}),
+            );
+          })
+          .catch(() => {
+            if (isMounted) setFavoriteDriveUrls({});
+          });
         setRatingCount(ratings);
         setLedgerReports(
           ledgerResults.flatMap((result) =>
@@ -367,15 +460,16 @@ function ProfileContent({ user }: { user: User }) {
       .flatMap((report): LedgerSearchResult[] => {
         const member = report.data.members.find((item) => item.userId === user.id);
         if (!member) return [];
-        const currency =
-          report.data.ledger.displayCurrency || report.data.ledger.baseCurrency;
+        const currency = report.globalCurrency;
 
         return report.data.entries
           .map((entry) => ({
             trip: report.trip,
             entry,
             currency,
-            amount: memberShareForEntry(entry, member),
+            amount:
+              memberShareForEntry(entry, member) *
+              report.conversionRateToGlobal,
           }))
           .filter((item) => item.amount > 0)
           .filter((item) =>
@@ -433,11 +527,13 @@ function ProfileContent({ user }: { user: User }) {
         id: user.id,
         displayName,
         globalAka,
+        globalBaseCurrency,
         avatarUrl: profile?.avatarUrl ?? null,
       });
       setProfile(updated);
       setDisplayName(updated.displayName);
       setGlobalAka(updated.globalAka ?? "");
+      setGlobalBaseCurrency(updated.globalBaseCurrency || "NZD");
       setNotice("Profile saved.");
     } catch (saveError) {
       setError(getErrorMessage(saveError, "Could not save profile."));
@@ -523,6 +619,11 @@ function ProfileContent({ user }: { user: User }) {
           onChange={(event) => setGlobalAka(event.target.value)}
           placeholder="Global AKA, separated by spaces, commas, / or ;"
           className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3"
+        />
+        <CurrencyCombobox
+          value={globalBaseCurrency}
+          onChange={setGlobalBaseCurrency}
+          label="全局账本基准货币"
         />
         <div className="rounded-2xl bg-stone-50 px-4 py-3 text-sm font-bold text-stone-600">
           当前级别：{accountRoleLabels[profile?.accountRole ?? "free_user"]}
@@ -772,6 +873,165 @@ function ProfileContent({ user }: { user: User }) {
           </>
         )}
       </section>
+
+      <section className="space-y-4 rounded-3xl bg-white p-5 shadow-sm">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-bold text-emerald-800">Favorites</p>
+            <h2 className="mt-1 text-xl font-semibold text-stone-950">
+              我的收藏
+            </h2>
+            <p className="mt-1 text-sm text-stone-500">
+              跨旅程保存的照片和文字记忆。
+            </p>
+          </div>
+          <span className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-800">
+            {favoriteMemories.length} 条
+          </span>
+        </div>
+        {favoriteMemories.length === 0 ? (
+          <p className="rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
+            还没有收藏的记忆。
+          </p>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {favoriteMemories.map((memory) => (
+              <button
+                key={memory.id}
+                type="button"
+                onClick={() => setSelectedFavorite(memory)}
+                className="group relative aspect-square overflow-hidden rounded-2xl border border-stone-100 bg-emerald-50 text-left shadow-sm transition hover:border-emerald-200 hover:shadow-md"
+              >
+                {memory.type === "photo" && memory.mediaUrl ? (
+                  favoriteImageUrls[memory.mediaUrl] ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={favoriteImageUrls[memory.mediaUrl]}
+                      alt={memory.content || "Favorite memory"}
+                      className="size-full object-cover transition duration-200 group-hover:scale-[1.03]"
+                    />
+                  ) : (
+                    <div className="grid size-full place-items-center bg-stone-100 text-3xl">
+                      IMG
+                    </div>
+                  )
+                ) : (
+                  <div className="flex size-full flex-col justify-between p-3">
+                    <p className="line-clamp-5 text-sm font-semibold leading-5 text-stone-800">
+                      {memory.content || "Memory"}
+                    </p>
+                    <span className="text-xs font-black text-emerald-800">
+                      TEXT
+                    </span>
+                  </div>
+                )}
+                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/35 to-transparent p-2 text-white">
+                  <p className="truncate text-xs font-black">{memory.tripName}</p>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-bold">
+                    <span>
+                      {formatShortDate(memory.capturedAt, locale)} ·{" "}
+                      {memory.favoriteCount ?? 0} 收藏
+                    </span>
+                    <span>{memory.likeCount ?? 0} 赞</span>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {selectedFavorite ? (
+        <div className="fixed inset-0 z-[1200] flex items-end bg-black/50 p-3 sm:items-center sm:justify-center">
+          <div className="max-h-[88vh] w-full overflow-hidden rounded-3xl bg-white shadow-2xl sm:max-w-3xl">
+            <div className="flex items-start justify-between gap-3 border-b border-stone-100 p-4">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-black text-emerald-800">
+                  {selectedFavorite.tripName}
+                </p>
+                <h3 className="mt-1 truncate text-xl font-black text-stone-950">
+                  {selectedFavorite.content ||
+                    (selectedFavorite.type === "photo" ? "Photo memory" : "Memory")}
+                </h3>
+                <p className="mt-1 truncate text-xs font-semibold text-stone-500">
+                  {new Date(selectedFavorite.capturedAt).toLocaleString(
+                    locale === "zh-CN" ? "zh-CN" : "en",
+                  )}
+                  {selectedFavorite.locationName
+                    ? ` · ${selectedFavorite.locationName}`
+                    : selectedFavorite.tripDestination
+                      ? ` · ${selectedFavorite.tripDestination}`
+                      : ""}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {selectedFavorite.type === "photo" &&
+                (favoriteDriveUrls[selectedFavorite.id] ||
+                  (selectedFavorite.mediaUrl
+                    ? favoriteImageUrls[selectedFavorite.mediaUrl]
+                    : "")) ? (
+                  <a
+                    href={
+                      favoriteDriveUrls[selectedFavorite.id] ||
+                      (selectedFavorite.mediaUrl
+                        ? favoriteImageUrls[selectedFavorite.mediaUrl]
+                        : "")
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full bg-emerald-700 px-4 py-2 text-sm font-bold text-white"
+                  >
+                    {favoriteDriveUrls[selectedFavorite.id]
+                      ? "云盘下载"
+                      : "下载图片"}
+                  </a>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setSelectedFavorite(null)}
+                  className="rounded-full bg-stone-100 px-4 py-2 text-sm font-bold text-stone-700"
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+            <div className="max-h-[70vh] overflow-auto p-4">
+              {selectedFavorite.type === "photo" &&
+              selectedFavorite.mediaUrl &&
+              favoriteImageUrls[selectedFavorite.mediaUrl] ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={favoriteImageUrls[selectedFavorite.mediaUrl]}
+                  alt={selectedFavorite.content || "Favorite memory"}
+                  className="max-h-[62vh] w-full rounded-2xl object-contain"
+                />
+              ) : null}
+              {selectedFavorite.content ? (
+                <p className="mt-4 whitespace-pre-wrap rounded-2xl bg-stone-50 p-4 text-base leading-7 text-stone-800 first:mt-0">
+                  {selectedFavorite.content}
+                </p>
+              ) : selectedFavorite.type === "photo" ? (
+                <p className="rounded-2xl bg-stone-50 p-4 text-sm text-stone-500">
+                  这是一条照片记忆。
+                </p>
+              ) : null}
+              <div className="mt-4 flex flex-wrap gap-2 text-xs font-black text-stone-600">
+                <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-800">
+                  {selectedFavorite.likeCount ?? 0} 赞
+                </span>
+                <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-800">
+                  {selectedFavorite.favoriteCount ?? 0} 人收藏
+                </span>
+                {selectedFavorite.locationName ? (
+                  <span className="max-w-full truncate rounded-full bg-stone-100 px-3 py-1.5">
+                    {selectedFavorite.locationName}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <section className="space-y-4 rounded-3xl bg-white p-5 shadow-sm">
         <div>
