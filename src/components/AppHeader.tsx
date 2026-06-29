@@ -134,6 +134,7 @@ export function AppHeader() {
   return (
     <>
       <header
+        data-mobile-app-header
         style={journeyHeaderStyle}
         className={
           isMapPage

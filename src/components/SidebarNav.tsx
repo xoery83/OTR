@@ -10,6 +10,7 @@ import {
   getJourneyStatus,
 } from "@/lib/journeys/status";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
+import { hasUnreadJourneyChat } from "@/lib/supabase/chat";
 import { getTripsForCurrentUser } from "@/lib/supabase/trips";
 import type { Trip } from "@/types";
 
@@ -24,6 +25,7 @@ type NavIcon =
   | "capture"
   | "map"
   | "ledger"
+  | "chat"
   | "timeline"
   | "highlights"
   | "settings";
@@ -124,6 +126,14 @@ function Icon({ name }: { name: NavIcon }) {
           <path d="M9 16h3" />
         </svg>
       );
+    case "chat":
+      return (
+        <svg {...common}>
+          <path d="M21 12a8 8 0 0 1-8 8H8l-5 2 1.6-4A8 8 0 1 1 21 12Z" />
+          <path d="M8 11h8" />
+          <path d="M8 15h5" />
+        </svg>
+      );
     case "timeline":
       return (
         <svg {...common}>
@@ -160,6 +170,8 @@ export function SidebarNav() {
   const { t } = useI18n();
   const { openCapture } = useCaptureModal();
   const tripId = getActiveTripId(pathname);
+  const isChatPage = Boolean(pathname.match(/^\/trips\/[^/]+\/chat$/));
+  const [hasUnreadChat, setHasUnreadChat] = useState(false);
   const [quickTrips, setQuickTrips] = useState<Trip[]>([]);
   const mainItems: NavItem[] = [
     { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
@@ -174,7 +186,7 @@ export function SidebarNav() {
         { labelKey: "nav.capture", href: `/trips/${tripId}/capture`, icon: "capture" },
         { labelKey: "nav.map", href: `/trips/${tripId}/map`, icon: "map" },
         { labelKey: "nav.ledger", href: `/trips/${tripId}/ledger`, icon: "ledger" },
-        { labelKey: "nav.people", href: `/trips/${tripId}/people`, icon: "people" },
+        { labelKey: "nav.chat", href: `/trips/${tripId}/chat`, icon: "chat" },
         {
           labelKey: "nav.timeline",
           href: `/trips/${tripId}/timeline`,
@@ -185,6 +197,7 @@ export function SidebarNav() {
           href: `/trips/${tripId}/highlights`,
           icon: "highlights",
         },
+        { labelKey: "nav.people", href: `/trips/${tripId}/people`, icon: "people" },
         {
           labelKey: "nav.settings",
           href: `/trips/${tripId}/settings`,
@@ -227,6 +240,33 @@ export function SidebarNav() {
       isMounted = false;
     };
   }, [tripId]);
+
+  useEffect(() => {
+    if (!tripId || isChatPage) {
+      setHasUnreadChat(false);
+      return;
+    }
+
+    let cancelled = false;
+    async function refreshUnread() {
+      const unread = await hasUnreadJourneyChat(tripId!).catch(() => false);
+      if (!cancelled) setHasUnreadChat(unread);
+    }
+
+    void refreshUnread();
+    const interval = window.setInterval(refreshUnread, 30_000);
+    const onFocus = () => void refreshUnread();
+    const onChatChanged = () => void refreshUnread();
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("otr:chat-changed", onChatChanged);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("otr:chat-changed", onChatChanged);
+    };
+  }, [isChatPage, tripId]);
 
   function isActive(href: string) {
     if (href === "/" || href.startsWith("/?")) return pathname === "/";
@@ -272,6 +312,12 @@ export function SidebarNav() {
         aria-label={label}
       >
         <Icon name={item.icon} />
+        {item.icon === "chat" && hasUnreadChat && !isChatPage ? (
+          <span
+            aria-label={t("chat.unread")}
+            className="absolute right-3 top-2 h-2.5 w-2.5 rounded-full bg-red-500 shadow-sm ring-2 ring-white"
+          />
+        ) : null}
         <span className="truncate">
           {label}
         </span>

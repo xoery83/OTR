@@ -2247,6 +2247,7 @@ function TimelineContent({ user }: { user: User }) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activePhotoItemId, setActivePhotoItemId] = useState<string | null>(null);
+  const mobileSearchShellRef = useRef<HTMLDivElement | null>(null);
 
   const refreshMemorySnapshot = useCallback(async () => {
     await repairCurrentUserOrphanPhotoMemories(tripId).catch(() => 0);
@@ -2460,8 +2461,17 @@ function TimelineContent({ user }: { user: User }) {
     if (!isMobileSearchActive) return;
 
     document.body.classList.add("otr-mobile-search-active");
+    const scrollFrame = window.requestAnimationFrame(() => {
+      if (window.matchMedia("(max-width: 767px)").matches) {
+        mobileSearchShellRef.current?.scrollIntoView({
+          block: "start",
+          behavior: "auto",
+        });
+      }
+    });
 
     return () => {
+      window.cancelAnimationFrame(scrollFrame);
       document.body.classList.remove("otr-mobile-search-active");
     };
   }, [isMobileSearchActive]);
@@ -2544,13 +2554,14 @@ function TimelineContent({ user }: { user: User }) {
 
   return (
     <div className="space-y-4 sm:space-y-6">
-      <section>
+      <section className={isMobileSearchActive ? "hidden md:block" : undefined}>
         <h1 className="text-3xl font-semibold text-stone-950">
           {t("timeline.title")}
         </h1>
       </section>
 
       <div
+        ref={mobileSearchShellRef}
         className={`space-y-2 p-3 backdrop-blur md:sticky md:top-0 md:z-30 md:rounded-3xl md:bg-stone-50/95 md:shadow-sm ${
           isMobileSearchActive
             ? "sticky top-0 z-[2147482600] -mx-4 rounded-none border-b border-stone-200 bg-white shadow-lg sm:-mx-6"

@@ -133,6 +133,42 @@ export type PhotoAssetWithMemory = MediaAsset & {
   displayUrl?: string;
 };
 
+export type JourneyChatMessageType = "text" | "image" | "voice" | "system";
+
+export type JourneyChatMessageSourceType = "chat" | "timeline_memory" | "system";
+
+export type JourneyChatTranscriptStatus =
+  | "pending"
+  | "processing"
+  | "completed"
+  | "failed";
+
+export type JourneyChatMessage = {
+  id: string;
+  tripId: string;
+  userId: string | null;
+  journeyMemberId: string | null;
+  messageType: JourneyChatMessageType;
+  textContent: string | null;
+  mediaAssetId: string | null;
+  memoryEntryId: string | null;
+  mediaUrl: string | null;
+  voiceDurationMs: number | null;
+  transcriptText: string | null;
+  transcriptStatus: JourneyChatTranscriptStatus | null;
+  sourceType: JourneyChatMessageSourceType;
+  sourceId: string | null;
+  deletedAt: string | null;
+  deletedBy: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  senderName?: string;
+  senderAvatarUrl?: string | null;
+  mediaDisplayUrl?: string | null;
+  photoAsset?: PhotoAssetWithMemory | null;
+};
+
 export type PhotoStorageProvider =
   | "supabase_legacy"
   | "google_drive"

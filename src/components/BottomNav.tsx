@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
+import { hasUnreadJourneyChat } from "@/lib/supabase/chat";
 
 type MobileNavIcon =
   | "journeys"
@@ -13,6 +15,7 @@ type MobileNavIcon =
   | "planner"
   | "map"
   | "ledger"
+  | "chat"
   | "people"
   | "timeline"
   | "highlights"
@@ -101,6 +104,14 @@ function Icon({ name }: { name: MobileNavIcon }) {
           <path d="M9 16h3" />
         </svg>
       );
+    case "chat":
+      return (
+        <svg {...common}>
+          <path d="M21 12a8 8 0 0 1-8 8H8l-5 2 1.6-4A8 8 0 1 1 21 12Z" />
+          <path d="M8 11h8" />
+          <path d="M8 15h5" />
+        </svg>
+      );
     case "people":
       return (
         <svg {...common}>
@@ -177,6 +188,8 @@ export function BottomNav() {
   const { openCapture } = useCaptureModal();
   const activeTripId = getActiveTripId(pathname);
   const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
+  const isChatPage = Boolean(pathname.match(/^\/trips\/[^/]+\/chat$/));
+  const [hasUnreadChat, setHasUnreadChat] = useState(false);
   const globalItems: MobileNavItem[] = [
     { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
     { labelKey: "nav.discover", href: "/discover", icon: "discover" },
@@ -231,10 +244,16 @@ export function BottomNav() {
               <Link
                 key={item.href}
                 href={item.href}
-                className={navItemClass(isActive(item.href), isMapPage)}
+                className={`${navItemClass(isActive(item.href), isMapPage)} relative`}
                 aria-label={t(item.labelKey)}
               >
                 <Icon name={item.icon} />
+                {item.icon === "chat" && hasUnreadChat && !isChatPage ? (
+                  <span
+                    aria-label={t("chat.unread")}
+                    className="absolute right-4 top-2 h-2.5 w-2.5 rounded-full bg-red-500 shadow-sm ring-2 ring-white"
+                  />
+                ) : null}
                 <span className="leading-none">{t(item.labelKey)}</span>
               </Link>
             ))}
@@ -260,6 +279,33 @@ export function BottomNav() {
     </button>
   );
 
+  useEffect(() => {
+    if (!activeTripId || isChatPage) {
+      setHasUnreadChat(false);
+      return;
+    }
+
+    let cancelled = false;
+    async function refreshUnread() {
+      const unread = await hasUnreadJourneyChat(activeTripId!).catch(() => false);
+      if (!cancelled) setHasUnreadChat(unread);
+    }
+
+    void refreshUnread();
+    const interval = window.setInterval(refreshUnread, 30_000);
+    const onFocus = () => void refreshUnread();
+    const onChatChanged = () => void refreshUnread();
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("otr:chat-changed", onChatChanged);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("otr:chat-changed", onChatChanged);
+    };
+  }, [activeTripId, isChatPage]);
+
   if (!activeTripId) {
     return (
       <>
@@ -281,11 +327,7 @@ export function BottomNav() {
       href: `/trips/${activeTripId}/ledger`,
       icon: "ledger",
     },
-    {
-      labelKey: "nav.people",
-      href: `/trips/${activeTripId}/people`,
-      icon: "people",
-    },
+    { labelKey: "nav.chat", href: `/trips/${activeTripId}/chat`, icon: "chat" },
     {
       labelKey: "nav.timeline",
       href: `/trips/${activeTripId}/timeline`,
@@ -297,6 +339,11 @@ export function BottomNav() {
       icon: "highlights",
     },
     {
+      labelKey: "nav.people",
+      href: `/trips/${activeTripId}/people`,
+      icon: "people",
+    },
+    {
       labelKey: "nav.settings",
       href: `/trips/${activeTripId}/settings`,
       icon: "settings",
@@ -306,7 +353,7 @@ export function BottomNav() {
   return (
     <>
       {renderBottomBar(journeyItems)}
-      {captureButton}
+      {isChatPage ? null : captureButton}
     </>
   );
 }
