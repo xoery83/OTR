@@ -259,6 +259,10 @@ function PlannerContent() {
   const selectedDay = planner.days[selectedIndex] ?? null;
   const previousSelectedDay =
     selectedIndex > 0 ? planner.days[selectedIndex - 1] ?? null : null;
+  const nextSelectedDay =
+    selectedIndex < planner.days.length - 1
+      ? planner.days[selectedIndex + 1] ?? null
+      : null;
   const activeMembers = getActiveJourneyMembers(members);
   const focusedPlannerItemId = manualFocusedPlannerItemId ?? requestedItemId;
   const trimmedPlannerSearchQuery = plannerSearchQuery.trim();
@@ -328,21 +332,64 @@ function PlannerContent() {
       })
       .slice(0, 40);
   }, [locale, planner.days, t, trimmedPlannerSearchQuery]);
-  const selectedDayMapHref =
-    selectedDay && selectedDay.day.dayDate !== "unscheduled"
-      ? `/trips/${tripId}/map?date=${selectedDay.day.dayDate}`
+  const plannerSwipeTransition = isPlannerSwipeDragging
+    ? "none"
+    : "transform 180ms ease";
+
+  function plannerSwipePanelStyle(position: -1 | 0 | 1): CSSProperties {
+    const baseOffset =
+      position === 0
+        ? `${plannerSwipeOffset}px`
+        : `calc(${position * 100}% + ${plannerSwipeOffset}px)`;
+    return {
+      transform: `translate3d(${baseOffset}, 0, 0)`,
+      transition: plannerSwipeTransition,
+      touchAction: position === 0 ? "pan-y" : undefined,
+    };
+  }
+
+  function plannerDayMapHref(plannerDay: PlannerV2Data["days"][number]) {
+    return plannerDay.day.dayDate !== "unscheduled"
+      ? `/trips/${tripId}/map?date=${plannerDay.day.dayDate}`
       : `/trips/${tripId}/map`;
-  const plannerSwipePreviewDay =
-    plannerSwipeOffset > 0
-      ? planner.days[selectedIndex - 1] ?? null
-      : plannerSwipeOffset < 0
-        ? planner.days[selectedIndex + 1] ?? null
-        : null;
-  const plannerSwipeStyle: CSSProperties = {
-    transform: `translate3d(${plannerSwipeOffset}px, 0, 0)`,
-    transition: isPlannerSwipeDragging ? "none" : "transform 180ms ease",
-    touchAction: "pan-y",
-  };
+  }
+
+  function previousPlannerDayFor(dayId: string) {
+    const index = planner.days.findIndex((day) => day.day.id === dayId);
+    return index > 0 ? planner.days[index - 1] ?? null : null;
+  }
+
+  function renderPlannerSwipeCard(
+    plannerDay: PlannerV2Data["days"][number],
+    options?: { inert?: boolean },
+  ) {
+    return (
+      <div
+        aria-hidden={options?.inert ? "true" : undefined}
+        className={options?.inert ? "pointer-events-none" : undefined}
+      >
+        <PlannerDayCard
+          tripId={tripId}
+          plannerDay={plannerDay}
+          journeyMembers={activeMembers}
+          ledgerEntries={ledgerEntries}
+          ledgerBaseCurrency={ledgerBaseCurrency}
+          journeyName={trip?.name ?? ""}
+          journeyDestination={trip?.destination ?? ""}
+          previousPlannerDay={previousPlannerDayFor(plannerDay.day.id)}
+          preserveOriginalPhotos={trip?.photoStorageStatus === "connected"}
+          onLedgerEntryCreated={async () => {
+            const data = await getLedgerData(tripId);
+            setLedgerEntries(data.entries);
+            setLedgerBaseCurrency(data.ledger.baseCurrency);
+          }}
+          onPlannerChanged={refreshPlanner}
+          mapHref={plannerDayMapHref(plannerDay)}
+          focusedItemId={options?.inert ? null : focusedPlannerItemId}
+        />
+      </div>
+    );
+  }
 
   function scrollSelectedDayToTop() {
     const keepImmersive = keepPlannerImmersiveDuringResetRef.current;
@@ -947,44 +994,24 @@ function PlannerContent() {
             onTouchEnd={handlePlannerSwipeEnd}
             onTouchCancel={handlePlannerSwipeCancel}
           >
-            {plannerSwipePreviewDay ? (
+            {previousSelectedDay ? (
               <div
-                aria-hidden="true"
-                className={`pointer-events-none absolute top-8 z-0 rounded-2xl bg-emerald-700/10 px-4 py-3 text-sm font-black text-emerald-900 ${
-                  plannerSwipeOffset > 0 ? "left-4" : "right-4 text-right"
-                }`}
+                className="pointer-events-none absolute inset-x-0 top-0"
+                style={plannerSwipePanelStyle(-1)}
               >
-                <p>
-                  {plannerSwipePreviewDay.dayTag ??
-                    t("planner.day.short", {
-                      number: plannerSwipePreviewDay.dayNumber,
-                    })}
-                </p>
-                <p className="mt-0.5 text-xs font-bold text-emerald-700">
-                  {compactDate(plannerSwipePreviewDay.day.dayDate, locale)}
-                </p>
+                {renderPlannerSwipeCard(previousSelectedDay, { inert: true })}
               </div>
             ) : null}
-            <div className="relative z-10" style={plannerSwipeStyle}>
-              <PlannerDayCard
-                tripId={tripId}
-                plannerDay={selectedDay}
-                journeyMembers={activeMembers}
-                ledgerEntries={ledgerEntries}
-                ledgerBaseCurrency={ledgerBaseCurrency}
-                journeyName={trip?.name ?? ""}
-                journeyDestination={trip?.destination ?? ""}
-                previousPlannerDay={previousSelectedDay}
-                preserveOriginalPhotos={trip?.photoStorageStatus === "connected"}
-                onLedgerEntryCreated={async () => {
-                  const data = await getLedgerData(tripId);
-                  setLedgerEntries(data.entries);
-                  setLedgerBaseCurrency(data.ledger.baseCurrency);
-                }}
-                onPlannerChanged={refreshPlanner}
-                mapHref={selectedDayMapHref}
-                focusedItemId={focusedPlannerItemId}
-              />
+            {nextSelectedDay ? (
+              <div
+                className="pointer-events-none absolute inset-x-0 top-0"
+                style={plannerSwipePanelStyle(1)}
+              >
+                {renderPlannerSwipeCard(nextSelectedDay, { inert: true })}
+              </div>
+            ) : null}
+            <div className="relative z-10" style={plannerSwipePanelStyle(0)}>
+              {renderPlannerSwipeCard(selectedDay)}
             </div>
           </section>
         ) : (

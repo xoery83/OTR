@@ -106,6 +106,20 @@ export async function listAccountRoles() {
   );
 }
 
+export async function searchAccountRoles(query: string) {
+  const { data, error } = await supabase.rpc("search_account_roles", {
+    search_query: query.trim(),
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as Parameters<typeof mapAccountRoleRow>[0][]).map(
+    mapAccountRoleRow,
+  );
+}
+
 export async function updateAccountRole(input: {
   profileId: string;
   accountRole: AccountRole;

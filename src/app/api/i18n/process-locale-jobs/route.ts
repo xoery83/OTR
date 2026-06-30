@@ -4,7 +4,8 @@ import {
   i18nBaseVersion,
   i18nDefaultNamespace,
 } from "@/lib/i18n/bundles";
-import { generateLocaleBundle } from "@/lib/i18n/generate-locale-bundle";
+import { generateLocaleBundleBatch } from "@/lib/i18n/generate-locale-bundle";
+import { normalizeLanguageCode } from "@/lib/i18n/dictionaries";
 import {
   getServiceSupabase,
   isAuthorizedI18nWorker,
@@ -15,6 +16,8 @@ export const dynamic = "force-dynamic";
 type BackgroundJobRow = {
   id: string;
   payload: Record<string, unknown> | null;
+  attempts: number;
+  progress: number;
 };
 
 type LocaleBundleRow = {
@@ -29,6 +32,15 @@ function jsonError(message: string, status: number) {
 function payloadString(payload: Record<string, unknown> | null, key: string) {
   const value = payload?.[key];
   return typeof value === "string" ? value : null;
+}
+
+function isRateLimitError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /slowdown|rate|limit|too many/i.test(message);
+}
+
+function secondsFromNow(seconds: number) {
+  return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
 async function markJob(
@@ -48,11 +60,12 @@ async function processJob(
   supabase: ReturnType<typeof getServiceSupabase>,
   job: BackgroundJobRow,
 ) {
-  const languageCode = payloadString(job.payload, "language_code");
+  const rawLanguageCode = payloadString(job.payload, "language_code");
+  const languageCode = normalizeLanguageCode(rawLanguageCode);
   const namespace = payloadString(job.payload, "namespace") ?? i18nDefaultNamespace;
   const baseVersion = payloadString(job.payload, "base_version") ?? i18nBaseVersion;
 
-  if (!languageCode) {
+  if (!rawLanguageCode) {
     throw new Error("Locale generation job is missing language_code.");
   }
 
@@ -62,10 +75,11 @@ async function processJob(
 
   await markJob(supabase, job.id, {
     status: "processing",
-    progress: 5,
+    progress: Math.max(1, Math.min(99, job.progress || 5)),
     current_step: `Generating ${languageCode}`,
     started_at: new Date().toISOString(),
-    attempts: 1,
+    attempts: job.attempts + 1,
+    error_message: null,
   });
 
   if (getBuiltinLocaleBundle(languageCode)) {
@@ -101,7 +115,7 @@ async function processJob(
     return { jobId: job.id, languageCode, skipped: "reviewed" };
   }
 
-  const generated = await generateLocaleBundle({
+  const generated = await generateLocaleBundleBatch({
     targetLanguage: languageCode,
     existingTranslations: existing?.translations_json ?? null,
   });
@@ -123,6 +137,40 @@ async function processJob(
     );
 
   if (upsertError) throw upsertError;
+
+  if (!generated.complete) {
+    const progress = Math.max(
+      1,
+      Math.min(
+        99,
+        Math.round((generated.translatedKeyCount / generated.totalKeyCount) * 100),
+      ),
+    );
+
+    await markJob(supabase, job.id, {
+      status: "queued",
+      progress,
+      current_step: `Generated ${generated.translatedKeyCount}/${generated.totalKeyCount} keys`,
+      result: {
+        languageCode,
+        translatedKeyCount: generated.translatedKeyCount,
+        translatedThisBatch: generated.translatedThisBatch,
+        remainingKeyCount: generated.remainingKeyCount,
+        totalKeyCount: generated.totalKeyCount,
+      },
+      available_at: secondsFromNow(15),
+    });
+
+    return {
+      jobId: job.id,
+      languageCode,
+      status: "queued",
+      translatedKeyCount: generated.translatedKeyCount,
+      translatedThisBatch: generated.translatedThisBatch,
+      remainingKeyCount: generated.remainingKeyCount,
+      totalKeyCount: generated.totalKeyCount,
+    };
+  }
 
   await markJob(supabase, job.id, {
     status: "completed",
@@ -154,21 +202,35 @@ export async function POST(request: Request) {
       limit?: number;
       languageCode?: string;
     };
-    const limit = Math.max(1, Math.min(3, Math.round(body.limit ?? 1)));
+    const limit = 1;
     const supabase = getServiceSupabase();
-    let query = supabase
-      .from("background_jobs")
-      .select("id, payload")
-      .eq("job_type", "generate_locale_bundle")
-      .eq("status", "queued")
-      .order("created_at", { ascending: true })
-      .limit(limit);
+    const now = new Date().toISOString();
+    const buildQuery = (status: "queued" | "failed") => {
+      let query = supabase
+        .from("background_jobs")
+        .select("id, payload, attempts, progress")
+        .eq("job_type", "generate_locale_bundle")
+        .eq("status", status)
+        .lte("available_at", now)
+        .order("created_at", { ascending: true })
+        .limit(limit);
 
-    if (body.languageCode) {
-      query = query.eq("payload->>language_code", body.languageCode);
+      if (body.languageCode) {
+        query = query.eq("payload->>language_code", body.languageCode);
+      }
+
+      return query;
+    };
+
+    let { data: jobs, error } = await buildQuery("queued");
+    if (error) throw error;
+
+    if (!jobs || jobs.length === 0) {
+      const failedResult = await buildQuery("failed");
+      jobs = failedResult.data;
+      error = failedResult.error;
     }
 
-    const { data: jobs, error } = await query;
     if (error) throw error;
 
     const results = [];
@@ -176,6 +238,25 @@ export async function POST(request: Request) {
       try {
         results.push(await processJob(supabase, job));
       } catch (jobError) {
+        if (isRateLimitError(jobError)) {
+          await markJob(supabase, job.id, {
+            status: "queued",
+            progress: Math.max(1, Math.min(99, job.progress || 1)),
+            current_step: "Rate limited; retry queued",
+            error_message:
+              jobError instanceof Error ? jobError.message : "Rate limited.",
+            available_at: secondsFromNow(75),
+          });
+          results.push({
+            jobId: job.id,
+            status: "queued",
+            retryAfterSeconds: 75,
+            error:
+              jobError instanceof Error ? jobError.message : "Rate limited.",
+          });
+          continue;
+        }
+
         await markJob(supabase, job.id, {
           status: "failed",
           progress: 100,

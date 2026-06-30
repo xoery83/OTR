@@ -104,14 +104,26 @@ export type MediaAsset = {
   providerWebUrl?: string | null;
   providerThumbnailUrl?: string | null;
   providerOriginalReference?: string | null;
+  originalDriveFileId?: string | null;
+  originalDriveWebUrl?: string | null;
+  thumbnailDriveFileId?: string | null;
+  thumbnailDriveWebUrl?: string | null;
+  thumbnailUrl?: string | null;
+  previewUrl?: string | null;
   originalFileSize: number | null;
   compressedFileSize: number | null;
+  thumbnailSize?: number | null;
   mimeType: string | null;
   width: number | null;
   height: number | null;
+  thumbnailWidth?: number | null;
+  thumbnailHeight?: number | null;
   storageTier: "standard" | "pro_original";
   isOriginalPreserved: boolean;
   retentionUntil: string | null;
+  processingStatus?: "pending" | "processing" | "ready" | "failed" | "legacy";
+  legacySupabasePath?: string | null;
+  legacyThumbnailPath?: string | null;
   takenAt?: string | null;
   gpsLatitude?: number | null;
   gpsLongitude?: number | null;
@@ -131,6 +143,8 @@ export type MediaAsset = {
 export type PhotoAssetWithMemory = MediaAsset & {
   memory: MemoryEntry | null;
   displayUrl?: string;
+  displayPreviewUrl?: string;
+  displayFallbackUrl?: string;
 };
 
 export type JourneyChatMessageType = "text" | "image" | "voice" | "system";

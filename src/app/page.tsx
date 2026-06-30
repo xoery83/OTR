@@ -8,23 +8,22 @@ import {
   getJourneyDayNumber,
   getJourneyStatus,
 } from "@/lib/journeys/status";
-import {
-  getJourneyParticipantCount,
-  getMemoryStats,
-  getTodayMemoryStats,
-} from "@/lib/journeys/stats";
+import { getJourneyParticipantCount } from "@/lib/journeys/stats";
 import { signInWithGoogle } from "@/lib/supabase/auth";
 import { supabase } from "@/lib/supabase/client";
 import { getItineraryEvents } from "@/lib/supabase/itinerary";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
-import { getTripMemories } from "@/lib/supabase/memories";
+import {
+  getTripMemorySummary,
+  type TripMemorySummary,
+} from "@/lib/supabase/memories";
 import { getTripsForCurrentUser } from "@/lib/supabase/trips";
 import { ensureRestoredSession } from "@/lib/supabase/session-fallback";
-import type { ItineraryEvent, MemoryEntry, Trip } from "@/types";
+import type { ItineraryEvent, Trip } from "@/types";
 
 type JourneyItem = {
   trip: Trip;
-  memories: MemoryEntry[];
+  memorySummary: TripMemorySummary;
   memberCount: number;
   events: ItineraryEvent[];
 };
@@ -88,14 +87,14 @@ function HomeDashboard() {
         const trips = await getTripsForCurrentUser();
         const loaded = await Promise.all(
           trips.map(async (trip) => {
-            const [memories, members, events] = await Promise.all([
-              getTripMemories(trip.id),
+            const [memorySummary, members, events] = await Promise.all([
+              getTripMemorySummary(trip.id),
               getJourneyMembers(trip.id),
               getItineraryEvents(trip.id),
             ]);
             return {
               trip,
-              memories,
+              memorySummary,
               memberCount: getJourneyParticipantCount(members),
               events,
             };
@@ -191,23 +190,25 @@ function HomeDashboard() {
               ) : null}
             </div>
             <div className="grid grid-cols-3 gap-3">
-              {Object.entries(getTodayMemoryStats(current.memories)).map(
-                ([label, value]) => (
-                  <div key={label} className="rounded-2xl bg-emerald-50 p-3">
-                    <p className="text-xl font-semibold text-stone-950">{value}</p>
-                    <p className="text-xs text-stone-500">{label}</p>
-                  </div>
-                ),
-              )}
+              {[
+                ["memories", current.memorySummary.total],
+                ["photos", current.memorySummary.photos],
+                ["contributors", current.memorySummary.contributors],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-2xl bg-emerald-50 p-3">
+                  <p className="text-xl font-semibold text-stone-950">{value}</p>
+                  <p className="text-xs text-stone-500">{label}</p>
+                </div>
+              ))}
             </div>
             {current.events[0] ? (
               <p className="rounded-2xl bg-stone-50 p-4 text-sm text-stone-700">
                 Next plan: <strong>{current.events[0].title}</strong>
               </p>
             ) : null}
-            {current.memories[0] ? (
+            {current.memorySummary.latest ? (
               <p className="text-sm leading-6 text-stone-600">
-                Latest: {current.memories[0].content || "Photo memory"}
+                Latest: {current.memorySummary.latest.content || "Photo memory"}
               </p>
             ) : null}
             <div className="grid gap-3 sm:grid-cols-2">
@@ -256,13 +257,12 @@ function HomeDashboard() {
           </h2>
           <div className="grid gap-4 sm:grid-cols-2">
             {groups[status].slice(0, 4).map((item) => {
-              const stats = getMemoryStats(item.memories);
               return (
                 <TripCard
                   key={item.trip.id}
                   trip={item.trip}
-                  memoryCount={stats.total}
-                  photoCount={stats.photos}
+                  memoryCount={item.memorySummary.total}
+                  photoCount={item.memorySummary.photos}
                   memberCount={item.memberCount}
                   status={status}
                   actionLabel={status === "upcoming" ? "View Plan" : "View Memories"}

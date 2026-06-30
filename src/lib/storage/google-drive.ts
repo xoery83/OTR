@@ -8,6 +8,8 @@ type GoogleDriveFile = {
   size?: string;
 };
 
+export type GoogleDriveUploadedFile = GoogleDriveFile;
+
 type GoogleTokenResponse = {
   access_token?: string;
   expires_in?: number;
@@ -55,6 +57,83 @@ export async function createGoogleDriveFolder(input: {
   return createFolder(input.accessToken, input.name, input.parentFolderId);
 }
 
+export async function ensureGoogleDriveFolder(input: {
+  accessToken: string;
+  name: string;
+  parentFolderId?: string | null;
+}) {
+  const parentClause = input.parentFolderId
+    ? `'${input.parentFolderId}' in parents`
+    : "'root' in parents";
+  const query = [
+    `mimeType='${DRIVE_FOLDER_MIME_TYPE}'`,
+    `name='${input.name.replace(/'/g, "\\'")}'`,
+    parentClause,
+    "trashed=false",
+  ].join(" and ");
+  const response = await fetch(
+    `https://www.googleapis.com/drive/v3/files?${new URLSearchParams({
+      q: query,
+      fields: "files(id,name,webViewLink)",
+      pageSize: "1",
+    }).toString()}`,
+    {
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+      },
+    },
+  );
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not find Google Drive folder.");
+  }
+
+  const payload = (await response.json()) as { files?: GoogleDriveFile[] };
+  const existing = payload.files?.[0];
+  if (existing?.id) return existing;
+
+  return createFolder(input.accessToken, input.name, input.parentFolderId);
+}
+
+export async function ensureGoogleDriveMediaFolders(input: {
+  accessToken: string;
+  journeyFolderId: string;
+}) {
+  const [originals, thumbnails, ai, outsideJourneyDates] = await Promise.all([
+    ensureGoogleDriveFolder({
+      accessToken: input.accessToken,
+      name: "Originals",
+      parentFolderId: input.journeyFolderId,
+    }),
+    ensureGoogleDriveFolder({
+      accessToken: input.accessToken,
+      name: "Thumbnails",
+      parentFolderId: input.journeyFolderId,
+    }),
+    ensureGoogleDriveFolder({
+      accessToken: input.accessToken,
+      name: "AI",
+      parentFolderId: input.journeyFolderId,
+    }),
+    ensureGoogleDriveFolder({
+      accessToken: input.accessToken,
+      name: "Outside Journey Dates",
+      parentFolderId: input.journeyFolderId,
+    }),
+  ]);
+
+  return {
+    originals: { ...originals, folderId: originals.id },
+    thumbnails: { ...thumbnails, folderId: thumbnails.id },
+    ai: { ...ai, folderId: ai.id },
+    outsideJourneyDates: {
+      ...outsideJourneyDates,
+      folderId: outsideJourneyDates.id,
+    },
+  };
+}
+
 function getTripDates(startDate: string | null, endDate: string | null) {
   if (!startDate || !endDate) return [];
 
@@ -76,7 +155,10 @@ export async function createGoogleDriveJourneyFolders(input: {
   startDate: string | null;
   endDate: string | null;
 }) {
-  const rootFolder = await createFolder(input.accessToken, "Journey");
+  const rootFolder = await ensureGoogleDriveFolder({
+    accessToken: input.accessToken,
+    name: "Journey",
+  });
   const journeyFolder = await createFolder(
     input.accessToken,
     input.tripName,
@@ -95,11 +177,16 @@ export async function createGoogleDriveJourneyFolders(input: {
     );
     dayFolders.push({ date, folderId: folder.id, name: folder.name });
   }
+  const mediaFolders = await ensureGoogleDriveMediaFolders({
+    accessToken: input.accessToken,
+    journeyFolderId: journeyFolder.id,
+  });
 
   return {
     rootFolder,
     journeyFolder,
     dayFolders,
+    mediaFolders,
   };
 }
 
@@ -193,4 +280,79 @@ export async function uploadOriginalPhotoToGoogleDrive(input: {
   }
 
   return payload;
+}
+
+export async function uploadBufferToGoogleDrive(input: {
+  accessToken: string;
+  folderId: string;
+  buffer: Buffer;
+  filename: string;
+  mimeType: string;
+}) {
+  const metadata = {
+    name: input.filename,
+    parents: [input.folderId],
+  };
+  const form = new FormData();
+  form.append(
+    "metadata",
+    new Blob([JSON.stringify(metadata)], { type: "application/json" }),
+  );
+  form.append(
+    "file",
+    new Blob([new Uint8Array(input.buffer)], { type: input.mimeType }),
+    input.filename,
+  );
+
+  const response = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,size,webViewLink,webContentLink,thumbnailLink",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+      },
+      body: form,
+    },
+  );
+  const payload = (await response.json()) as GoogleDriveFile & {
+    error?: { message?: string };
+  };
+
+  if (!response.ok || !payload.id) {
+    throw new Error(
+      payload.error?.message || "Could not upload file to Google Drive.",
+    );
+  }
+
+  return payload;
+}
+
+export async function makeGoogleDriveFileReadableByLink(input: {
+  accessToken: string;
+  fileId: string;
+}) {
+  const response = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${input.fileId}/permissions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        role: "reader",
+        type: "anyone",
+        allowFileDiscovery: false,
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not share Google Drive thumbnail.");
+  }
+}
+
+export function googleDriveImageViewUrl(fileId: string) {
+  return `https://drive.google.com/uc?export=view&id=${encodeURIComponent(fileId)}`;
 }

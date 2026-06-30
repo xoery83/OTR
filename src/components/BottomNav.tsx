@@ -294,6 +294,7 @@ export function BottomNav() {
     return (
       <nav
         data-mobile-bottom-nav
+        onContextMenu={(event) => event.preventDefault()}
         className={`fixed inset-x-0 bottom-0 z-30 backdrop-blur md:hidden ${
           isMapPage
             ? "border-t border-transparent bg-transparent shadow-none"
@@ -333,6 +334,8 @@ export function BottomNav() {
                   onPointerMove={updateNavExploration}
                   onPointerUp={finishNavExploration}
                   onPointerCancel={cancelNavExploration}
+                  onContextMenu={(event) => event.preventDefault()}
+                  onDragStart={(event) => event.preventDefault()}
                   onClick={(event) => {
                     if (
                       suppressNextNavClickRef.current ||
@@ -345,6 +348,7 @@ export function BottomNav() {
                   }}
                   className={`${navItemClass(active, isMapPage, isExploring)} relative`}
                   aria-label={t(item.labelKey)}
+                  draggable={false}
                 >
                   <span
                     className={`transition-transform duration-150 ${

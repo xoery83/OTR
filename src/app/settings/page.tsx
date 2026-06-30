@@ -14,7 +14,7 @@ import { logout } from "@/lib/supabase/auth";
 import {
   accountRoles,
   getProfile,
-  listAccountRoles,
+  searchAccountRoles,
   updateAccountRole,
   updateProfile,
   type AccountRoleRow,
@@ -54,7 +54,9 @@ function SettingsContent({ user }: { user: User }) {
   const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [languagePreference, setLanguagePreference] = useState("auto");
+  const [roleSearchQuery, setRoleSearchQuery] = useState("");
   const [roleRows, setRoleRows] = useState<AccountRoleRow[]>([]);
+  const [hasSearchedRoles, setHasSearchedRoles] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingRoles, setIsLoadingRoles] = useState(false);
   const [isSavingLanguage, setIsSavingLanguage] = useState(false);
@@ -74,20 +76,6 @@ function SettingsContent({ user }: { user: User }) {
           setProfile(profileData);
           setLanguagePreference(profileData.preferredLanguage || "auto");
           syncLocalePreference(profileData.preferredLanguage || "auto");
-        }
-
-        if (profileData.accountRole === "admin") {
-          setIsLoadingRoles(true);
-          try {
-            const roles = await listAccountRoles();
-            if (isMounted) setRoleRows(roles);
-          } catch (roleError) {
-            if (isMounted) {
-              setError(getErrorMessage(roleError, "无法读取用户角色。"));
-            }
-          } finally {
-            if (isMounted) setIsLoadingRoles(false);
-          }
         }
       } catch (profileError) {
         if (isMounted) {
@@ -112,16 +100,25 @@ function SettingsContent({ user }: { user: User }) {
   }, [user.id]);
 
   const loadAccountRoles = useCallback(async () => {
+    const query = roleSearchQuery.trim();
+    if (query.length < 2) {
+      setRoleRows([]);
+      setHasSearchedRoles(false);
+      setError("请输入至少 2 个字符搜索用户。");
+      return;
+    }
+
     setIsLoadingRoles(true);
     setError(null);
+    setHasSearchedRoles(true);
     try {
-      setRoleRows(await listAccountRoles());
+      setRoleRows(await searchAccountRoles(query));
     } catch (roleError) {
       setError(getErrorMessage(roleError, "无法读取用户角色。"));
     } finally {
       setIsLoadingRoles(false);
     }
-  }, []);
+  }, [roleSearchQuery]);
 
   async function handleRoleChange(profileId: string, accountRole: AccountRole) {
     setUpdatingRoleId(profileId);
@@ -314,7 +311,7 @@ function SettingsContent({ user }: { user: User }) {
 
       {profile?.accountRole === "admin" ? (
         <section className="rounded-2xl border border-emerald-100 bg-white p-5 shadow-sm">
-          <div className="flex items-start justify-between gap-3">
+          <div>
             <div>
               <p className="text-sm font-semibold text-emerald-700">Admin</p>
               <h2 className="mt-1 text-xl font-semibold text-stone-950">
@@ -324,14 +321,6 @@ function SettingsContent({ user }: { user: User }) {
                 管理用户角色。当前只用于权限可见性，会员功能差异后续再定义。
               </p>
             </div>
-            <button
-              type="button"
-              onClick={loadAccountRoles}
-              disabled={isLoadingRoles}
-              className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-700 disabled:text-stone-400"
-            >
-              刷新
-            </button>
           </div>
 
           <Link
@@ -341,9 +330,42 @@ function SettingsContent({ user }: { user: User }) {
             多语言管理：语言包预热、队列处理、机器翻译审核
           </Link>
 
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              loadAccountRoles();
+            }}
+            className="mt-4 flex flex-col gap-3 sm:flex-row"
+          >
+            <input
+              type="search"
+              value={roleSearchQuery}
+              onChange={(event) => {
+                setRoleSearchQuery(event.target.value);
+                if (!event.target.value.trim()) {
+                  setRoleRows([]);
+                  setHasSearchedRoles(false);
+                }
+              }}
+              placeholder="搜索邮箱或姓名"
+              className="min-h-12 flex-1 rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 text-sm font-semibold text-stone-950 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
+            />
+            <button
+              type="submit"
+              disabled={isLoadingRoles || roleSearchQuery.trim().length < 2}
+              className="min-h-12 rounded-2xl bg-emerald-700 px-5 text-sm font-bold text-white disabled:bg-stone-300"
+            >
+              {isLoadingRoles ? "搜索中..." : "搜索用户"}
+            </button>
+          </form>
+
           {isLoadingRoles ? (
             <p className="mt-4 rounded-2xl bg-stone-50 p-4 text-sm font-semibold text-stone-500">
-              正在读取用户...
+              正在搜索用户...
+            </p>
+          ) : hasSearchedRoles && roleRows.length === 0 ? (
+            <p className="mt-4 rounded-2xl bg-stone-50 p-4 text-sm font-semibold text-stone-500">
+              没有找到匹配用户。
             </p>
           ) : (
             <div className="mt-4 space-y-3">

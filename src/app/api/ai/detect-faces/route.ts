@@ -11,6 +11,10 @@ type MediaAssetRow = {
   id: string;
   trip_id: string;
   compressed_file_path: string | null;
+  thumbnail_url?: string | null;
+  preview_url?: string | null;
+  thumbnail_drive_web_url?: string | null;
+  provider_thumbnail_url?: string | null;
 };
 
 type FaceServiceResponse = {
@@ -74,6 +78,16 @@ const GLOBAL_FACE_MATCH_THRESHOLD = 0.5;
 
 function normalizeEmail(email?: string | null) {
   return email?.trim().toLowerCase() || null;
+}
+
+function publicImageUrlForAi(asset: MediaAssetRow, requestUrl: string) {
+  return (
+    asset.preview_url ??
+    asset.thumbnail_url ??
+    asset.provider_thumbnail_url ??
+    asset.thumbnail_drive_web_url ??
+    new URL(`/api/media/assets/${asset.id}/preview`, requestUrl).toString()
+  );
 }
 
 function memberIdentityKeys(member: {
@@ -430,7 +444,9 @@ export async function POST(request: Request) {
 
     const { data: asset, error: assetError } = await supabase
       .from("media_assets")
-      .select("id, trip_id, compressed_file_path")
+      .select(
+        "id, trip_id, compressed_file_path, thumbnail_url, preview_url, thumbnail_drive_web_url, provider_thumbnail_url",
+      )
       .eq("id", assetId)
       .eq("trip_id", tripId)
       .eq("asset_type", "image")
@@ -441,19 +457,9 @@ export async function POST(request: Request) {
     }
 
     const assetRow = asset as MediaAssetRow;
-    if (!assetRow.compressed_file_path) {
-      return jsonError("Photo does not have a compressed display file.", 409);
-    }
+    const imageUrl = publicImageUrlForAi(assetRow, request.url);
 
-    const { data: signedData, error: signedError } = await supabase.storage
-      .from("trip-media")
-      .createSignedUrl(assetRow.compressed_file_path, 10 * 60);
-
-    if (signedError || !signedData?.signedUrl) {
-      throw signedError || new Error("Could not create image URL.");
-    }
-
-    const detected = await callFaceService(signedData.signedUrl);
+    const detected = await callFaceService(imageUrl);
 
     if (detected.faces.length === 0) {
       return NextResponse.json({ faces: [], reused: false });

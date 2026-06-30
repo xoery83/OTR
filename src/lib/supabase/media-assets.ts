@@ -12,8 +12,19 @@ export type CreateMediaAssetInput = {
   tripId: string;
   userId: string;
   memoryEntryId?: string | null;
-  compressedFilePath: string;
-  compressedFileSize: number;
+  storageProvider?: MediaAsset["storageProvider"];
+  storageBucket?: string;
+  compressedFilePath?: string | null;
+  compressedFileSize?: number | null;
+  thumbnailFilePath?: string | null;
+  originalDriveFileId?: string | null;
+  originalDriveWebUrl?: string | null;
+  thumbnailDriveFileId?: string | null;
+  thumbnailDriveWebUrl?: string | null;
+  thumbnailSize?: number | null;
+  thumbnailWidth?: number | null;
+  thumbnailHeight?: number | null;
+  processingStatus?: MediaAsset["processingStatus"];
   width: number;
   height: number;
   originalFileSize?: number | null;
@@ -39,14 +50,26 @@ type MediaAssetRow = {
   provider_web_url?: string | null;
   provider_thumbnail_url?: string | null;
   provider_original_reference?: string | null;
+  original_drive_file_id?: string | null;
+  original_drive_web_url?: string | null;
+  thumbnail_drive_file_id?: string | null;
+  thumbnail_drive_web_url?: string | null;
+  thumbnail_url?: string | null;
+  preview_url?: string | null;
   original_file_size: number | null;
   compressed_file_size: number | null;
+  thumbnail_size?: number | null;
   mime_type: string | null;
   width: number | null;
   height: number | null;
+  thumbnail_width?: number | null;
+  thumbnail_height?: number | null;
   storage_tier: MediaAsset["storageTier"];
   is_original_preserved: boolean;
   retention_until: string | null;
+  processing_status?: MediaAsset["processingStatus"];
+  legacy_supabase_path?: string | null;
+  legacy_thumbnail_path?: string | null;
   taken_at?: string | null;
   gps_latitude?: number | null;
   gps_longitude?: number | null;
@@ -148,14 +171,26 @@ function mapMediaAsset(row: MediaAssetRow): MediaAsset {
     providerWebUrl: row.provider_web_url ?? null,
     providerThumbnailUrl: row.provider_thumbnail_url ?? null,
     providerOriginalReference: row.provider_original_reference ?? null,
+    originalDriveFileId: row.original_drive_file_id ?? null,
+    originalDriveWebUrl: row.original_drive_web_url ?? null,
+    thumbnailDriveFileId: row.thumbnail_drive_file_id ?? null,
+    thumbnailDriveWebUrl: row.thumbnail_drive_web_url ?? null,
+    thumbnailUrl: row.thumbnail_url ?? null,
+    previewUrl: row.preview_url ?? null,
     originalFileSize: row.original_file_size,
     compressedFileSize: row.compressed_file_size,
+    thumbnailSize: row.thumbnail_size ?? null,
     mimeType: row.mime_type,
     width: row.width,
     height: row.height,
+    thumbnailWidth: row.thumbnail_width ?? null,
+    thumbnailHeight: row.thumbnail_height ?? null,
     storageTier: row.storage_tier,
     isOriginalPreserved: row.is_original_preserved,
     retentionUntil: row.retention_until,
+    processingStatus: row.processing_status ?? "pending",
+    legacySupabasePath: row.legacy_supabase_path ?? null,
+    legacyThumbnailPath: row.legacy_thumbnail_path ?? null,
     takenAt: row.taken_at ?? null,
     gpsLatitude: row.gps_latitude ?? null,
     gpsLongitude: row.gps_longitude ?? null,
@@ -274,8 +309,8 @@ export async function getTripPhotoAssets(
   const compressedPaths = [
     ...new Set(
       assets
-        .map((asset) => asset.compressedFilePath)
-        .filter((path): path is string => Boolean(path)),
+      .map((asset) => asset.thumbnailFilePath ?? asset.compressedFilePath)
+      .filter((path): path is string => Boolean(path)),
     ),
   ];
   const signedUrls = new Map<string, string>();
@@ -296,13 +331,17 @@ export async function getTripPhotoAssets(
     }
   }
 
-  return assets.map((asset) => ({
-    ...asset,
-    memory: memoriesById.get(asset.memoryEntryId) ?? null,
-    displayUrl: asset.compressedFilePath
-      ? signedUrls.get(asset.compressedFilePath)
-      : undefined,
-  }));
+  return assets.map((asset) => {
+    const legacyPath = asset.thumbnailFilePath ?? asset.compressedFilePath;
+    const legacyUrl = legacyPath ? signedUrls.get(legacyPath) : undefined;
+    return {
+      ...asset,
+      memory: memoriesById.get(asset.memoryEntryId) ?? null,
+      displayUrl: asset.thumbnailUrl ?? `/api/media/assets/${asset.id}/thumbnail`,
+      displayPreviewUrl: asset.previewUrl ?? `/api/media/assets/${asset.id}/preview`,
+      displayFallbackUrl: legacyUrl,
+    };
+  });
 }
 
 export async function getMediaAssetsByMemoryIds(memoryIds: string[]) {
@@ -495,6 +534,86 @@ export async function requestPhotoIndexing(
   return payload.asset;
 }
 
+export async function requestThumbnailBackfillForAssets(
+  assetIds: string[],
+  tripId?: string,
+) {
+  const uniqueIds = [...new Set(assetIds.filter(Boolean))].slice(0, 10);
+  if (uniqueIds.length === 0) return null;
+
+  const { data } = await supabase.auth.getSession();
+  const accessToken = data.session?.access_token;
+
+  if (!accessToken) {
+    return null;
+  }
+
+  const response = await fetch("/api/media/migrate-drive-thumbnails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      tripId,
+      assetIds: uniqueIds,
+      limit: uniqueIds.length,
+      dryRun: false,
+    }),
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return response.json() as Promise<{
+    processed: number;
+    failed: number;
+    skipped: number;
+    results: {
+      assetId: string;
+      status: "processed" | "skipped" | "failed" | "dry_run";
+      thumbnailPath: string | null;
+    }[];
+  }>;
+}
+
+export async function requestDriveThumbnailRepairForAssets(
+  assetIds: string[],
+  tripId: string,
+) {
+  const uniqueIds = [...new Set(assetIds.filter(Boolean))].slice(0, 25);
+  if (!tripId || uniqueIds.length === 0) return null;
+
+  const { data } = await supabase.auth.getSession();
+  const accessToken = data.session?.access_token;
+
+  if (!accessToken) {
+    return null;
+  }
+
+  const response = await fetch("/api/media/repair-drive-thumbnails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      tripId,
+      assetIds: uniqueIds,
+    }),
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return response.json() as Promise<{
+    repaired: { assetId: string; status: string; error?: string }[];
+    count: number;
+  }>;
+}
+
 export async function requestVoiceTranscription(input: {
   tripId: string;
   audio: File;
@@ -541,6 +660,9 @@ export async function requestVoiceTranscription(input: {
 
 export async function createImageMediaAsset(input: CreateMediaAssetInput) {
   const createdAt = new Date().toISOString();
+  const storageProvider = input.storageProvider ?? "supabase_legacy";
+  const storageBucket =
+    input.storageBucket ?? (storageProvider === "google_drive" ? "google-drive" : "trip-media");
 
   const { error } = await supabase
     .from("media_assets")
@@ -550,17 +672,26 @@ export async function createImageMediaAsset(input: CreateMediaAssetInput) {
       user_id: input.userId,
       memory_entry_id: input.memoryEntryId ?? null,
       asset_type: "image",
-      storage_provider: "supabase_legacy",
-      storage_bucket: "trip-media",
+      storage_provider: storageProvider,
+      storage_bucket: storageBucket,
       original_file_path: null,
-      compressed_file_path: input.compressedFilePath,
+      compressed_file_path: input.compressedFilePath ?? null,
+      thumbnail_file_path: input.thumbnailFilePath ?? null,
+      original_drive_file_id: input.originalDriveFileId ?? null,
+      original_drive_web_url: input.originalDriveWebUrl ?? null,
+      thumbnail_drive_file_id: input.thumbnailDriveFileId ?? null,
+      thumbnail_drive_web_url: input.thumbnailDriveWebUrl ?? null,
       original_file_size: input.originalFileSize ?? null,
-      compressed_file_size: input.compressedFileSize,
+      compressed_file_size: input.compressedFileSize ?? null,
+      thumbnail_size: input.thumbnailSize ?? null,
       mime_type: input.mimeType || "image/jpeg",
       width: input.width,
       height: input.height,
+      thumbnail_width: input.thumbnailWidth ?? null,
+      thumbnail_height: input.thumbnailHeight ?? null,
       storage_tier: "standard",
-      is_original_preserved: false,
+      is_original_preserved: storageProvider === "google_drive",
+      processing_status: input.processingStatus ?? "pending",
       taken_at: input.takenAt ?? null,
       exif_json: input.exifJson ?? {},
       ai_status: "pending",
@@ -577,24 +708,36 @@ export async function createImageMediaAsset(input: CreateMediaAssetInput) {
     user_id: input.userId,
     memory_entry_id: input.memoryEntryId ?? null,
     asset_type: "image",
-    storage_bucket: "trip-media",
+    storage_bucket: storageBucket,
     original_file_path: null,
-    compressed_file_path: input.compressedFilePath,
-    thumbnail_file_path: null,
+    compressed_file_path: input.compressedFilePath ?? null,
+    thumbnail_file_path: input.thumbnailFilePath ?? null,
+    original_drive_file_id: input.originalDriveFileId ?? null,
+    original_drive_web_url: input.originalDriveWebUrl ?? null,
+    thumbnail_drive_file_id: input.thumbnailDriveFileId ?? null,
+    thumbnail_drive_web_url: input.thumbnailDriveWebUrl ?? null,
+    thumbnail_url: null,
+    preview_url: null,
     original_file_size: input.originalFileSize ?? null,
-    compressed_file_size: input.compressedFileSize,
+    compressed_file_size: input.compressedFileSize ?? null,
+    thumbnail_size: input.thumbnailSize ?? null,
     mime_type: input.mimeType || "image/jpeg",
     width: input.width,
     height: input.height,
+    thumbnail_width: input.thumbnailWidth ?? null,
+    thumbnail_height: input.thumbnailHeight ?? null,
     storage_tier: "standard",
-    is_original_preserved: false,
+    is_original_preserved: storageProvider === "google_drive",
     retention_until: null,
-    storage_provider: "supabase_legacy",
+    storage_provider: storageProvider,
     provider_file_id: null,
     provider_drive_id: null,
     provider_web_url: null,
     provider_thumbnail_url: null,
     provider_original_reference: null,
+    processing_status: input.processingStatus ?? "pending",
+    legacy_supabase_path: null,
+    legacy_thumbnail_path: null,
     taken_at: input.takenAt ?? null,
     gps_latitude: null,
     gps_longitude: null,

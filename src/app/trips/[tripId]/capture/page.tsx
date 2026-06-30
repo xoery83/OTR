@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
@@ -44,6 +45,7 @@ function CaptureContent() {
   const [voiceFileName, setVoiceFileName] = useState("");
   const [transcriptionModel, setTranscriptionModel] = useState<string | null>(null);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
+  const isGoogleDriveConnected = trip?.photoStorageStatus === "connected";
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -59,7 +61,7 @@ function CaptureContent() {
       try {
         const [tripData, memoryData] = await Promise.all([
           getTrip(tripId),
-          getTripMemories(tripId),
+          getTripMemories(tripId, { limit: 30 }),
         ]);
         const signedUrls = await getSignedMemoryImageUrls(memoryData);
 
@@ -326,7 +328,7 @@ function CaptureContent() {
             capturedAt,
             locationName: "",
           },
-          trip?.photoStorageStatus === "connected" ? originalPhotoFile : null,
+          originalPhotoFile,
         );
         const signedUrls = await getSignedMemoryImageUrls([memory]);
         setImageUrls((current) => ({ ...current, ...signedUrls }));
@@ -394,6 +396,21 @@ function CaptureContent() {
           </div>
         ) : null}
 
+        {!isGoogleDriveConnected ? (
+          <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-950">
+            <p>
+              为了避免照片占用 OTR 云存储，请先连接 Google Drive。连接后照片会保存到你自己的
+              Google Drive，并可正常使用 Timeline、Gallery、人脸识别等功能。
+            </p>
+            <Link
+              href={`/trips/${tripId}/settings`}
+              className="mt-3 inline-flex rounded-full bg-stone-950 px-4 py-2 text-sm font-bold text-white"
+            >
+              Connect Google Drive
+            </Link>
+          </div>
+        ) : null}
+
         <input
           ref={photoInputRef}
           type="file"
@@ -405,7 +422,7 @@ function CaptureContent() {
           <button
             type="button"
             onClick={() => photoInputRef.current?.click()}
-            disabled={isPhotoPreparing || isSubmitting}
+            disabled={!isGoogleDriveConnected || isPhotoPreparing || isSubmitting}
             className="rounded-full bg-stone-100 px-4 py-2 text-sm font-bold text-stone-800 disabled:text-stone-400"
           >
             {isPhotoPreparing ? "Preparing..." : "Attach"}

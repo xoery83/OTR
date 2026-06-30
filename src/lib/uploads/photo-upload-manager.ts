@@ -3,7 +3,6 @@
 import {
   createBackgroundJob,
   createBackgroundJobBatch,
-  enqueueMediaProcessingJobs,
   updateBackgroundJob,
   updateBackgroundJobBatch,
 } from "@/lib/background-jobs/client";
@@ -13,9 +12,9 @@ import type {
   UpdateBackgroundJobBatchInput,
   UpdateBackgroundJobInput,
 } from "@/lib/background-jobs/types";
-import { compressImageFile, makeSafeFileName } from "@/lib/images";
+import { compressImageFile } from "@/lib/images";
 import { supabase } from "@/lib/supabase/client";
-import { createImageMediaAsset } from "@/lib/supabase/media-assets";
+import { createPhotoMemory } from "@/lib/supabase/memories";
 
 type StartPhotoUploadBatchInput = {
   journeyId: string;
@@ -226,36 +225,6 @@ async function getCurrentUserId() {
   return data.user.id;
 }
 
-async function createBackgroundPhotoMemory(input: {
-  journeyId: string;
-  userId: string;
-  dayId?: string | null;
-  compressedFilePath: string;
-  takenAt?: string | null;
-}) {
-  const memoryId = crypto.randomUUID();
-  const capturedAt = input.takenAt ?? new Date().toISOString();
-  const { error } = await supabase.from("memory_entries").insert({
-    id: memoryId,
-    trip_id: input.journeyId,
-    user_id: input.userId,
-    trip_day_id: input.dayId || null,
-    type: "photo",
-    content: null,
-    media_url: input.compressedFilePath,
-    location_name: null,
-    location_text: null,
-    location_status: "none",
-    captured_at: capturedAt,
-  });
-
-  if (error) {
-    throw new Error(`Memory row failed: ${error.message}`);
-  }
-
-  return { id: memoryId, capturedAt };
-}
-
 async function uploadPhotoFile(input: {
   journeyId: string;
   userId: string;
@@ -265,63 +234,21 @@ async function uploadPhotoFile(input: {
   triggeredBy?: string;
 }) {
   const compressed = await compressImageFile(input.file);
-  const timestamp = Date.now();
-  const safeFileName = makeSafeFileName(input.file.name);
-  const compressedFilePath = `${input.journeyId}/${input.userId}/compressed/${timestamp}-${crypto.randomUUID()}-${safeFileName}`;
-
-  const { error: uploadError } = await supabase.storage
-    .from("trip-media")
-    .upload(compressedFilePath, compressed.blob, {
-      contentType: "image/jpeg",
-      upsert: false,
-    });
-
-  if (uploadError) {
-    throw new Error(`Storage upload failed: ${uploadError.message}`);
-  }
-
-  const mediaAssetId = crypto.randomUUID();
   const takenAt = input.file.lastModified
     ? new Date(input.file.lastModified).toISOString()
-    : null;
-  const memory = await createBackgroundPhotoMemory({
-    journeyId: input.journeyId,
-    userId: input.userId,
-    dayId: input.dayId ?? null,
-    compressedFilePath,
-    takenAt,
-  });
+    : new Date().toISOString();
+  const memory = await createPhotoMemory(input.journeyId, compressed, input.file.name, "", {
+    capturedAt: takenAt,
+    locationName: "",
+    tripDayId: input.dayId ?? null,
+    itineraryEventId: input.plannerItemId ?? null,
+  }, input.file);
 
-  const asset = await createImageMediaAsset({
-    id: mediaAssetId,
-    tripId: input.journeyId,
-    userId: input.userId,
+  return {
+    id: memory.mediaAssetId ?? "",
     memoryEntryId: memory.id,
-    compressedFilePath,
-    compressedFileSize: compressed.blob.size,
-    originalFileSize: input.file.size,
-    mimeType: "image/jpeg",
-    width: compressed.width,
-    height: compressed.height,
-    takenAt,
-    exifJson: metadataForFile(input.file),
-    aiMetadata: {
-      dayId: input.dayId ?? null,
-      plannerItemId: input.plannerItemId ?? null,
-      triggeredBy: input.triggeredBy ?? "capture",
-      originalFileName: input.file.name,
-      memoryEntryId: memory.id,
-    },
-  });
-
-  await enqueueMediaProcessingJobs({
-    tripId: input.journeyId,
-    mediaAssetId: asset.id,
-    title: input.file.name || "Photo processing",
-    currentStep: "Queued after upload",
-  }).catch(() => null);
-
-  return asset;
+    compressedFilePath: memory.mediaUrl,
+  };
 }
 
 async function processRuntimeBatch(runtime: UploadRuntimeBatch) {

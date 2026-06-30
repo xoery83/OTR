@@ -1,11 +1,17 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import sharp from "sharp";
+import { generateHetznerMediaVariants } from "@/lib/server/media-worker";
 import { decryptGoogleToken } from "@/lib/server/google-token";
 import {
-  createGoogleDriveFolder,
+  ensureGoogleDriveFolder,
+  ensureGoogleDriveMediaFolders,
   refreshGoogleDriveAccessToken,
-  uploadOriginalPhotoToGoogleDrive,
+  uploadBufferToGoogleDrive,
 } from "@/lib/storage/google-drive";
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
 
 type StorageConnectionRow = {
   token_reference: string | null;
@@ -13,6 +19,12 @@ type StorageConnectionRow = {
   metadata: {
     dayFolders?: { date: string; folderId: string; name: string }[];
     outsideJourneyFolder?: { folderId: string; name: string };
+    mediaFolders?: {
+      originals?: { id?: string; folderId?: string; name?: string };
+      thumbnails?: { id?: string; folderId?: string; name?: string };
+      ai?: { id?: string; folderId?: string; name?: string };
+      outsideJourneyDates?: { id?: string; folderId?: string; name?: string };
+    };
   } | null;
 };
 
@@ -56,43 +68,38 @@ function safeOriginalFileName(fileName: string) {
   return `${baseName || "photo"}${extension || ".jpg"}`;
 }
 
-function getDayFolderId(
-  connection: StorageConnectionRow,
-  capturedDate: string | null,
-) {
-  const dayFolder = capturedDate
-    ? connection.metadata?.dayFolders?.find((folder) => folder.date === capturedDate)
-    : null;
-
-  return dayFolder?.folderId ?? null;
-}
-
-async function getOrCreateOutsideJourneyFolder(input: {
+async function ensureMediaFolders(input: {
   accessToken: string;
   supabase: ReturnType<typeof getSupabaseForRequest>;
   tripId: string;
   connection: StorageConnectionRow;
 }) {
-  const existing = input.connection.metadata?.outsideJourneyFolder;
-
-  if (existing?.folderId) {
-    return existing.folderId;
-  }
-
   if (!input.connection.journey_folder_id) {
     throw new Error("Google Drive journey folder was not found.");
   }
 
-  const folder = await createGoogleDriveFolder({
+  const existing = input.connection.metadata?.mediaFolders;
+  const hasAllFolders =
+    existing?.originals &&
+    existing?.thumbnails &&
+    existing?.ai &&
+    existing?.outsideJourneyDates;
+
+  if (hasAllFolders) {
+    return existing;
+  }
+
+  const folders = await ensureGoogleDriveMediaFolders({
     accessToken: input.accessToken,
-    name: "Outside Journey Dates",
-    parentFolderId: input.connection.journey_folder_id,
+    journeyFolderId: input.connection.journey_folder_id,
   });
   const metadata = {
     ...(input.connection.metadata ?? {}),
-    outsideJourneyFolder: {
-      folderId: folder.id,
-      name: folder.name,
+    mediaFolders: {
+      originals: folders.originals,
+      thumbnails: folders.thumbnails,
+      ai: folders.ai,
+      outsideJourneyDates: folders.outsideJourneyDates,
     },
   };
 
@@ -107,7 +114,34 @@ async function getOrCreateOutsideJourneyFolder(input: {
     throw error;
   }
 
+  return metadata.mediaFolders;
+}
+
+function folderId(folder?: { id?: string; folderId?: string } | null) {
+  return folder?.id ?? folder?.folderId ?? null;
+}
+
+async function getUploadFolderId(input: {
+  accessToken: string;
+  parentFolderId: string;
+  capturedDate: string | null;
+  outsideJourney: boolean;
+}) {
+  if (input.outsideJourney || !input.capturedDate) return input.parentFolderId;
+  const folder = await ensureGoogleDriveFolder({
+    accessToken: input.accessToken,
+    name: input.capturedDate,
+    parentFolderId: input.parentFolderId,
+  });
   return folder.id;
+}
+
+function isOutsideJourneyDates(
+  capturedDate: string | null,
+  trip: { start_date: string | null; end_date: string | null },
+) {
+  if (!capturedDate || !trip.start_date || !trip.end_date) return false;
+  return capturedDate < trip.start_date || capturedDate > trip.end_date;
 }
 
 export async function POST(request: Request) {
@@ -145,6 +179,16 @@ export async function POST(request: Request) {
       return jsonError("Only the uploader can attach this original photo.", 403);
     }
 
+    const { data: trip, error: tripError } = await supabase
+      .from("trips")
+      .select("start_date, end_date")
+      .eq("id", tripId)
+      .single();
+
+    if (tripError || !trip) {
+      return jsonError("Journey was not found.", 404);
+    }
+
     const { data: connection, error: connectionError } = await supabase
       .from("journey_storage_connections")
       .select("token_reference, journey_folder_id, metadata")
@@ -164,35 +208,80 @@ export async function POST(request: Request) {
     const refreshToken = decryptGoogleToken(connection.token_reference);
     const accessToken = await refreshGoogleDriveAccessToken(refreshToken);
     const connectionRow = connection as StorageConnectionRow;
-    const folderId =
-      getDayFolderId(connectionRow, capturedDate) ??
-      (await getOrCreateOutsideJourneyFolder({
-        accessToken,
-        supabase,
-        tripId,
-        connection: connectionRow,
-      }));
-
-    const uploaded = await uploadOriginalPhotoToGoogleDrive({
+    const mediaFolders = await ensureMediaFolders({
       accessToken,
-      folderId,
-      file,
+      supabase,
+      tripId,
+      connection: connectionRow,
+    });
+    const outsideJourney = isOutsideJourneyDates(capturedDate, trip);
+    const originalParentFolderId = outsideJourney
+      ? folderId(mediaFolders.outsideJourneyDates)
+      : folderId(mediaFolders.originals);
+
+    if (!originalParentFolderId) {
+      throw new Error("Google Drive media folders were not found.");
+    }
+    const originalFolderId = await getUploadFolderId({
+      accessToken,
+      parentFolderId: originalParentFolderId,
+      capturedDate,
+      outsideJourney,
+    });
+
+    const originalBuffer = Buffer.from(await file.arrayBuffer());
+    const image = sharp(originalBuffer, { failOn: "none" }).rotate();
+    const metadata = await image.metadata();
+    const safeName = safeOriginalFileName(file.name);
+
+    const uploadedOriginal = await uploadBufferToGoogleDrive({
+      accessToken,
+      folderId: originalFolderId,
+      buffer: originalBuffer,
+      mimeType:
+        file.type || (metadata.format ? `image/${metadata.format}` : "application/octet-stream"),
       filename: `${Date.now()}-${safeOriginalFileName(file.name)}`,
+    });
+    const variants = await generateHetznerMediaVariants({
+      journeyId: tripId,
+      assetId: mediaAssetId,
+      filename: safeName,
+      mimeType:
+        file.type || (metadata.format ? `image/${metadata.format}` : "application/octet-stream"),
+      originalBuffer,
     });
 
     const { error: updateError } = await supabase
       .from("media_assets")
       .update({
         storage_provider: "google_drive",
-        provider_file_id: uploaded.id,
-        provider_web_url: uploaded.webViewLink ?? null,
-        provider_thumbnail_url: uploaded.thumbnailLink ?? null,
-        provider_original_reference: uploaded.webContentLink ?? null,
+        storage_bucket: "google-drive",
+        provider_file_id: uploadedOriginal.id,
+        provider_web_url: uploadedOriginal.webViewLink ?? null,
+        provider_thumbnail_url: variants.thumbnail.url,
+        provider_original_reference: uploadedOriginal.webContentLink ?? null,
+        original_drive_file_id: uploadedOriginal.id,
+        original_drive_web_url: uploadedOriginal.webViewLink ?? null,
+        thumbnail_drive_file_id: null,
+        thumbnail_drive_web_url: null,
         original_file_size: file.size,
-        original_file_path: uploaded.name,
-        mime_type: file.type || uploaded.mimeType || null,
+        thumbnail_url: variants.thumbnail.url,
+        preview_url: variants.preview.url,
+        thumbnail_size: variants.thumbnail.file_size,
+        original_file_path: uploadedOriginal.name,
+        compressed_file_path: null,
+        thumbnail_file_path: null,
+        compressed_file_size: null,
+        mime_type: file.type || uploadedOriginal.mimeType || null,
+        width: metadata.width ?? null,
+        height: metadata.height ?? null,
+        thumbnail_width: variants.thumbnail.width ?? null,
+        thumbnail_height: variants.thumbnail.height ?? null,
+        thumbnail_generated_at: new Date().toISOString(),
+        preview_generated_at: new Date().toISOString(),
         is_original_preserved: true,
         ai_status: "pending",
+        processing_status: "ready",
       })
       .eq("id", mediaAssetId)
       .eq("memory_entry_id", memoryEntryId)
@@ -203,8 +292,16 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({
-      fileId: uploaded.id,
-      webViewLink: uploaded.webViewLink ?? null,
+      originalDriveFileId: uploadedOriginal.id,
+      originalDriveWebUrl: uploadedOriginal.webViewLink ?? null,
+      thumbnailDriveFileId: null,
+      thumbnailDriveWebUrl: variants.thumbnail.url,
+      thumbnailUrl: variants.thumbnail.url,
+      previewUrl: variants.preview.url,
+      width: metadata.width ?? null,
+      height: metadata.height ?? null,
+      thumbnailSize: variants.thumbnail.file_size,
+      previewSize: variants.preview.file_size,
     });
   } catch (error) {
     const message =

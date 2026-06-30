@@ -60,11 +60,20 @@ type MediaRow = {
   provider_web_url?: string | null;
   provider_thumbnail_url?: string | null;
   provider_original_reference?: string | null;
+  original_drive_file_id?: string | null;
+  original_drive_web_url?: string | null;
+  thumbnail_drive_file_id?: string | null;
+  thumbnail_drive_web_url?: string | null;
+  thumbnail_url?: string | null;
+  preview_url?: string | null;
   original_file_size: number | null;
   compressed_file_size: number | null;
+  thumbnail_size?: number | null;
   mime_type: string | null;
   width: number | null;
   height: number | null;
+  thumbnail_width?: number | null;
+  thumbnail_height?: number | null;
   storage_tier: "standard" | "pro_original";
   is_original_preserved: boolean;
   retention_until: string | null;
@@ -120,20 +129,31 @@ function getMessageMemoryKey(message: JourneyChatMessage) {
   return message.memoryEntryId ?? message.sourceId ?? null;
 }
 
-function dedupeMessagesByMemory(messages: JourneyChatMessage[]) {
+function getMessageDedupeKeys(message: JourneyChatMessage) {
+  return [
+    getMessageMemoryKey(message) ? `memory:${getMessageMemoryKey(message)}` : null,
+    message.mediaAssetId ? `asset:${message.mediaAssetId}` : null,
+    message.mediaUrl ? `media-url:${message.mediaUrl}` : null,
+  ].filter((key): key is string => Boolean(key));
+}
+
+function dedupeMessages(messages: JourneyChatMessage[]) {
   const keyedIndexes = new Map<string, number>();
   const deduped: JourneyChatMessage[] = [];
 
   for (const message of messages) {
-    const key = getMessageMemoryKey(message);
-    if (!key) {
+    const keys = getMessageDedupeKeys(message);
+    if (keys.length === 0) {
       deduped.push(message);
       continue;
     }
 
-    const existingIndex = keyedIndexes.get(key);
+    const existingIndex = keys
+      .map((key) => keyedIndexes.get(key))
+      .find((index): index is number => index !== undefined);
     if (existingIndex === undefined) {
-      keyedIndexes.set(key, deduped.length);
+      const index = deduped.length;
+      keys.forEach((key) => keyedIndexes.set(key, index));
       deduped.push(message);
       continue;
     }
@@ -143,6 +163,7 @@ function dedupeMessagesByMemory(messages: JourneyChatMessage[]) {
       existing.sourceType === "timeline_memory" && message.sourceType !== "timeline_memory";
     if (shouldReplace) {
       deduped[existingIndex] = message;
+      keys.forEach((key) => keyedIndexes.set(key, existingIndex));
     }
   }
 
@@ -166,11 +187,20 @@ function mapPhotoAsset(row: MediaRow, displayUrl?: string | null) {
     providerWebUrl: row.provider_web_url ?? null,
     providerThumbnailUrl: row.provider_thumbnail_url ?? null,
     providerOriginalReference: row.provider_original_reference ?? null,
+    originalDriveFileId: row.original_drive_file_id ?? null,
+    originalDriveWebUrl: row.original_drive_web_url ?? null,
+    thumbnailDriveFileId: row.thumbnail_drive_file_id ?? null,
+    thumbnailDriveWebUrl: row.thumbnail_drive_web_url ?? null,
+    thumbnailUrl: row.thumbnail_url ?? null,
+    previewUrl: row.preview_url ?? null,
     originalFileSize: row.original_file_size,
     compressedFileSize: row.compressed_file_size,
+    thumbnailSize: row.thumbnail_size ?? null,
     mimeType: row.mime_type,
     width: row.width,
     height: row.height,
+    thumbnailWidth: row.thumbnail_width ?? null,
+    thumbnailHeight: row.thumbnail_height ?? null,
     storageTier: row.storage_tier,
     isOriginalPreserved: row.is_original_preserved,
     retentionUntil: row.retention_until,
@@ -191,6 +221,16 @@ function mapPhotoAsset(row: MediaRow, displayUrl?: string | null) {
     memory: null,
     displayUrl: displayUrl ?? undefined,
   };
+}
+
+function directImageDisplayUrl(media: MediaRow) {
+  return (
+    media.thumbnail_url ??
+    media.preview_url ??
+    media.provider_thumbnail_url ??
+    media.thumbnail_drive_web_url ??
+    null
+  );
 }
 
 function messageTextFromMemory(memory: MemorySyncRow) {
@@ -255,7 +295,11 @@ async function enrichMessages(messages: JourneyChatMessage[]) {
   const paths = [
     ...new Set(
       messages
-        .map((message) => mediaById.get(message.mediaAssetId ?? "")?.compressed_file_path)
+        .map((message) => {
+          const media = mediaById.get(message.mediaAssetId ?? "");
+          if (media && directImageDisplayUrl(media)) return null;
+          return media?.thumbnail_file_path ?? media?.compressed_file_path;
+        })
         .filter((path): path is string => Boolean(path)),
     ),
   ];
@@ -272,9 +316,16 @@ async function enrichMessages(messages: JourneyChatMessage[]) {
   return messages.map((message) => {
     const profile = message.userId ? profilesByUserId.get(message.userId) : null;
     const media = message.mediaAssetId ? mediaById.get(message.mediaAssetId) : null;
-    const mediaDisplayUrl = media?.compressed_file_path
-      ? signedUrls.get(media.compressed_file_path) ?? null
+    const mediaDisplayPath = media?.thumbnail_file_path ?? media?.compressed_file_path;
+    const legacyMediaDisplayUrl = mediaDisplayPath
+      ? signedUrls.get(mediaDisplayPath) ?? null
       : null;
+    const mediaDisplayUrl =
+      media && media.asset_type === "image"
+        ? directImageDisplayUrl(media) ??
+          legacyMediaDisplayUrl ??
+          `/api/media/assets/${media.id}/thumbnail`
+        : legacyMediaDisplayUrl;
 
     return {
       ...message,
@@ -392,7 +443,7 @@ export async function getJourneyChatMessages(
   const rows = (data ?? []) as ChatMessageRow[];
   const hasMoreBefore = rows.length > limit;
   const selectedRows = rows.slice(0, limit).reverse();
-  const messages = await enrichMessages(dedupeMessagesByMemory(selectedRows.map(mapMessage)));
+  const messages = await enrichMessages(dedupeMessages(selectedRows.map(mapMessage)));
   const lastReadAt = readState?.last_read_at ?? null;
   const firstUnreadMessageId =
     !options?.before && lastReadAt && currentUserId
@@ -453,7 +504,11 @@ async function getJourneyChatReadState(tripId: string, userId: string) {
   return data as { last_read_at: string | null } | null;
 }
 
-export async function sendTextChatMessage(tripId: string, text: string) {
+export async function sendTextChatMessage(
+  tripId: string,
+  text: string,
+  clientUploadId?: string | null,
+) {
   const user = await getCurrentUser();
   if (!user) throw new Error("You must be logged in to send a message.");
   const trimmed = text.trim();
@@ -468,6 +523,7 @@ export async function sendTextChatMessage(tripId: string, text: string) {
       message_type: "text",
       text_content: trimmed,
       source_type: "chat",
+      metadata: clientUploadId ? { clientUploadId } : {},
     })
     .select("*")
     .single();
@@ -542,7 +598,24 @@ export async function sendImageChatMessage(
 
     const { data, error } = await query;
     if (error) throw error;
-    return (await enrichMessages([mapMessage(data as ChatMessageRow)]))[0];
+    const saved = mapMessage(data as ChatMessageRow);
+    try {
+      await supabase
+        .from("journey_chat_messages")
+        .update({
+          deleted_at: new Date().toISOString(),
+          deleted_by: user.id,
+        })
+        .eq("trip_id", tripId)
+        .eq("source_type", "timeline_memory")
+        .neq("id", saved.id)
+        .or(
+          `memory_entry_id.eq.${memory.id},source_id.eq.${memory.id},media_asset_id.eq.${memory.mediaAssetId},media_url.eq.${memory.mediaUrl}`,
+        );
+    } catch {
+      // Best effort cleanup; the saved chat message is still valid.
+    }
+    return (await enrichMessages([saved]))[0];
   } finally {
     compressedImage.previewUrl && URL.revokeObjectURL(compressedImage.previewUrl);
   }

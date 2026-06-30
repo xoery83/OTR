@@ -9,7 +9,7 @@ type MemoryRow = {
   id: string;
   trip_id: string;
   trip_day_id: string | null;
-  parent_memory_id: string | null;
+  parent_memory_id?: string | null;
   itinerary_event_id: string | null;
   itinerary_reservation_id: string | null;
   user_id: string | null;
@@ -62,7 +62,24 @@ export type UpdateMemoryInput = {
   capturedAt?: string;
 };
 
+export type TripMemorySummary = {
+  total: number;
+  photos: number;
+  text: number;
+  contributors: number;
+  latest: MemoryEntry | null;
+};
+
+export type TripMemoryPage = {
+  memories: MemoryEntry[];
+  nextCursor: string | null;
+};
+
 const replyMarkerPrefix = "__otr_reply_parent:";
+const memorySelect =
+  "id, trip_id, trip_day_id, itinerary_event_id, itinerary_reservation_id, user_id, type, content, media_url, location_name, captured_at, created_at";
+export const GOOGLE_DRIVE_PHOTO_STORAGE_REQUIRED_MESSAGE =
+  "为了避免照片占用 OTR 云存储，请先连接 Google Drive。连接后照片会保存到你自己的 Google Drive，并可正常使用 Timeline、Gallery、人脸识别等功能。";
 
 function encodeMemoryContent(content: string, parentMemoryId?: string | null) {
   const trimmed = content.trim();
@@ -113,14 +130,27 @@ function mapMemory(row: MemoryRow): MemoryEntry {
   };
 }
 
-export async function getTripMemories(tripId: string) {
+export async function getTripMemories(
+  tripId: string,
+  options?: { limit?: number; userId?: string },
+) {
   await ensureCreatorMembership(tripId);
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("memory_entries")
-    .select("*")
+    .select(memorySelect)
     .eq("trip_id", tripId)
     .order("captured_at", { ascending: false });
+
+  if (options?.userId) {
+    query = query.eq("user_id", options.userId);
+  }
+
+  if (options?.limit) {
+    query = query.limit(options.limit);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     throw error;
@@ -129,6 +159,105 @@ export async function getTripMemories(tripId: string) {
   return withMemoryEngagement(
     await withContributorProfiles((data ?? []).map(mapMemory)),
   );
+}
+
+export async function getTripMemoriesPage(
+  tripId: string,
+  options?: { limit?: number; beforeCapturedAt?: string | null },
+): Promise<TripMemoryPage> {
+  await ensureCreatorMembership(tripId);
+
+  const limit = Math.max(1, Math.min(options?.limit ?? 60, 100));
+  let query = supabase
+    .from("memory_entries")
+    .select(memorySelect)
+    .eq("trip_id", tripId)
+    .order("captured_at", { ascending: false })
+    .limit(limit + 1);
+
+  if (options?.beforeCapturedAt) {
+    query = query.lt("captured_at", options.beforeCapturedAt);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    throw error;
+  }
+
+  const rows = (data ?? []) as MemoryRow[];
+  const pageRows = rows.slice(0, limit);
+  const memories = await withMemoryEngagement(
+    await withContributorProfiles(pageRows.map(mapMemory)),
+  );
+
+  return {
+    memories,
+    nextCursor:
+      rows.length > limit ? pageRows[pageRows.length - 1]?.captured_at ?? null : null,
+  };
+}
+
+export async function getTripMemorySummary(
+  tripId: string,
+  options?: { userId?: string },
+): Promise<TripMemorySummary> {
+  await ensureCreatorMembership(tripId);
+
+  async function countMemories(type?: MemoryEntry["type"]) {
+    let query = supabase
+      .from("memory_entries")
+      .select("id", { count: "exact", head: true })
+      .eq("trip_id", tripId);
+    if (type) query = query.eq("type", type);
+    if (options?.userId) query = query.eq("user_id", options.userId);
+    return query;
+  }
+
+  let contributorQuery = supabase
+    .from("memory_entries")
+    .select("user_id")
+    .eq("trip_id", tripId)
+    .not("user_id", "is", null);
+  if (options?.userId) contributorQuery = contributorQuery.eq("user_id", options.userId);
+
+  let latestQuery = supabase
+    .from("memory_entries")
+    .select(memorySelect)
+    .eq("trip_id", tripId)
+    .order("captured_at", { ascending: false })
+    .limit(1);
+  if (options?.userId) latestQuery = latestQuery.eq("user_id", options.userId);
+
+  const [totalResult, photoResult, textResult, contributorResult, latestResult] =
+    await Promise.all([
+      countMemories(),
+      countMemories("photo"),
+      countMemories("text"),
+      contributorQuery,
+      latestQuery,
+    ]);
+
+  const firstError =
+    totalResult.error ||
+    photoResult.error ||
+    textResult.error ||
+    contributorResult.error ||
+    latestResult.error;
+  if (firstError) throw firstError;
+
+  const contributorRows = (contributorResult.data ?? []) as { user_id: string | null }[];
+  const latestRows = ((latestResult.data ?? []) as MemoryRow[]).map(mapMemory);
+  const [latestWithProfile] = await withContributorProfiles(latestRows);
+
+  return {
+    total: totalResult.count ?? 0,
+    photos: photoResult.count ?? 0,
+    text: textResult.count ?? 0,
+    contributors: new Set(contributorRows.map((row) => row.user_id).filter(Boolean))
+      .size,
+    latest: latestWithProfile ?? null,
+  };
 }
 
 export async function getTripMemoriesForDate(tripId: string, date: string) {
@@ -140,7 +269,7 @@ export async function getTripMemoriesForDate(tripId: string, date: string) {
 
   const { data, error } = await supabase
     .from("memory_entries")
-    .select("*")
+    .select(memorySelect)
     .eq("trip_id", tripId)
     .gte("captured_at", start.toISOString())
     .lt("captured_at", end.toISOString())
@@ -528,24 +657,27 @@ export async function createPhotoMemory(
     throw new Error("You must be logged in to upload a photo.");
   }
 
-  const now = new Date().toISOString();
-  const capturedAt = new Date(input.capturedAt).toISOString();
-  const timestamp = Date.now();
-  const safeFileName = makeSafeFileName(originalFileName);
-  const compressedFilePath = `${tripId}/${user.id}/compressed/${timestamp}-${safeFileName}`;
+  const { data: connection, error: connectionError } = await supabase
+    .from("journey_storage_connections")
+    .select("id")
+    .eq("trip_id", tripId)
+    .eq("provider", "google_drive")
+    .eq("status", "connected")
+    .maybeSingle();
 
-  const { error: uploadError } = await supabase.storage
-    .from("trip-media")
-    .upload(compressedFilePath, compressedImage.blob, {
-      contentType: "image/jpeg",
-      upsert: false,
-    });
-
-  if (uploadError) {
-    throw new Error(`Storage upload failed: ${uploadError.message}`);
+  if (connectionError) {
+    throw connectionError;
   }
 
+  if (!connection) {
+    throw new Error(GOOGLE_DRIVE_PHOTO_STORAGE_REQUIRED_MESSAGE);
+  }
+
+  const now = new Date().toISOString();
+  const capturedAt = new Date(input.capturedAt).toISOString();
   const memoryId = crypto.randomUUID();
+  const mediaAssetId = crypto.randomUUID();
+  const mediaKey = `drive:${mediaAssetId}`;
   const encodedCaption = encodeMemoryContent(caption, input.parentMemoryId);
   const locationText = input.locationName.trim() || null;
 
@@ -559,7 +691,7 @@ export async function createPhotoMemory(
     itinerary_reservation_id: input.itineraryReservationId || null,
     type: "photo",
     content: encodedCaption || null,
-    media_url: compressedFilePath,
+    media_url: mediaKey,
     location_name: locationText,
     location_text: locationText,
     location_status: locationText ? "pending" : "none",
@@ -585,18 +717,30 @@ export async function createPhotoMemory(
     }
   }
 
-  const mediaAssetId = crypto.randomUUID();
-
   try {
     await createImageMediaAsset({
       id: mediaAssetId,
       tripId,
       userId: user.id,
       memoryEntryId: memoryId,
-      compressedFilePath,
-      compressedFileSize: compressedImage.blob.size,
+      storageProvider: "google_drive",
+      storageBucket: "google-drive",
+      compressedFilePath: null,
+      compressedFileSize: null,
+      thumbnailFilePath: null,
       width: compressedImage.width,
       height: compressedImage.height,
+      thumbnailWidth: compressedImage.thumbnailWidth,
+      thumbnailHeight: compressedImage.thumbnailHeight,
+      thumbnailSize: compressedImage.thumbnailBlob.size,
+      originalFileSize: originalFile?.size ?? compressedImage.blob.size,
+      mimeType: originalFile?.type || "image/jpeg",
+      processingStatus: "processing",
+      takenAt: capturedAt,
+      aiMetadata: {
+        originalFileName,
+        dayId: input.tripDayId ?? null,
+      },
     });
   } catch (assetError) {
     throw new Error(
@@ -606,43 +750,48 @@ export async function createPhotoMemory(
     );
   }
 
-  if (originalFile) {
-    try {
-      const { data } = await supabase.auth.getSession();
-      const accessToken = data.session?.access_token;
+  try {
+    const { data } = await supabase.auth.getSession();
+    const accessToken = data.session?.access_token;
 
-      if (!accessToken) {
-        throw new Error("No active session was found for original upload.");
-      }
-
-      const form = new FormData();
-      form.append("tripId", tripId);
-      form.append("memoryEntryId", memoryId);
-      form.append("mediaAssetId", mediaAssetId);
-      form.append("capturedDate", input.capturedAt.slice(0, 10));
-      form.append("file", originalFile, originalFile.name);
-
-      const response = await fetch("/api/google-drive/upload-photo", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: form,
-      });
-      const payload = (await response.json()) as { error?: string };
-
-      if (!response.ok) {
-        throw new Error(payload.error || "Original upload failed.");
-      }
-    } catch (originalUploadError) {
-      throw new Error(
-        `Compressed photo saved, but original Google Drive upload failed: ${
-          originalUploadError instanceof Error
-            ? originalUploadError.message
-            : "Unknown error"
-        }`,
-      );
+    if (!accessToken) {
+      throw new Error("No active session was found for photo upload.");
     }
+
+    const uploadFile =
+      originalFile ??
+      new File([compressedImage.blob], makeSafeFileName(originalFileName), {
+        type: "image/jpeg",
+      });
+    const form = new FormData();
+    form.append("tripId", tripId);
+    form.append("memoryEntryId", memoryId);
+    form.append("mediaAssetId", mediaAssetId);
+    form.append("capturedDate", input.capturedAt.slice(0, 10));
+    form.append("file", uploadFile, uploadFile.name);
+
+    const response = await fetch("/api/google-drive/upload-photo", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: form,
+    });
+    const payload = (await response.json()) as { error?: string };
+
+    if (!response.ok) {
+      throw new Error(payload.error || "Google Drive photo upload failed.");
+    }
+  } catch (driveUploadError) {
+    await supabase
+      .from("media_assets")
+      .update({ processing_status: "failed" })
+      .eq("id", mediaAssetId);
+    throw new Error(
+      `Google Drive photo upload failed: ${
+        driveUploadError instanceof Error ? driveUploadError.message : "Unknown error"
+      }`,
+    );
   }
 
   await enqueueMediaProcessingJobs({
@@ -661,7 +810,7 @@ export async function createPhotoMemory(
     userId: user.id,
     type: "photo",
     content: caption.trim(),
-    mediaUrl: compressedFilePath,
+    mediaUrl: mediaKey,
     mediaAssetId,
     locationName: input.locationName.trim() || null,
     capturedAt,
@@ -677,27 +826,101 @@ export async function createPhotoMemory(
 }
 
 export async function getSignedMemoryImageUrls(memories: MemoryEntry[]) {
-  const photoPaths = memories
-    .filter((memory) => memory.type === "photo" && memory.mediaUrl)
-    .map((memory) => memory.mediaUrl!);
+  const photoMemories = memories.filter(
+    (memory) => memory.type === "photo" && memory.mediaUrl,
+  );
+  const memoryIds = photoMemories.map((memory) => memory.id).filter(Boolean);
+  const displayPathByMemoryPath = new Map<string, string>();
 
-  if (photoPaths.length === 0) {
+  if (photoMemories.length === 0) {
     return {};
+  }
+
+  if (memoryIds.length > 0) {
+    const { data } = await supabase
+      .from("media_assets")
+      .select(
+        "id, memory_entry_id, compressed_file_path, thumbnail_file_path, thumbnail_url, preview_url, thumbnail_drive_web_url, provider_thumbnail_url",
+      )
+      .in("memory_entry_id", memoryIds);
+
+    ((data ?? []) as {
+      id: string;
+      memory_entry_id: string | null;
+      compressed_file_path: string | null;
+      thumbnail_file_path: string | null;
+      thumbnail_url: string | null;
+      preview_url: string | null;
+      thumbnail_drive_web_url: string | null;
+      provider_thumbnail_url: string | null;
+    }[]).forEach((asset) => {
+      if (!asset.memory_entry_id) return;
+      const memory = photoMemories.find((item) => item.id === asset.memory_entry_id);
+      const memoryPath = memory?.mediaUrl;
+      if (!memoryPath) return;
+
+      displayPathByMemoryPath.set(
+        memoryPath,
+        asset.thumbnail_url ??
+          asset.preview_url ??
+          asset.provider_thumbnail_url ??
+          asset.thumbnail_drive_web_url ??
+          `/api/media/assets/${asset.id}/thumbnail`,
+      );
+
+      const legacyPath = asset.thumbnail_file_path ?? asset.compressed_file_path;
+      if (!displayPathByMemoryPath.has(memoryPath) && legacyPath) {
+        displayPathByMemoryPath.set(memoryPath, legacyPath);
+      }
+    });
+  }
+
+  const pathPairs = photoMemories.flatMap((memory) => {
+    const memoryPath = memory.mediaUrl;
+    if (!memoryPath) return [];
+    return [
+      {
+        memoryPath,
+        displayPath: displayPathByMemoryPath.get(memoryPath) ?? memoryPath,
+      },
+    ];
+  });
+  const directPairs = pathPairs.filter((pair) =>
+    /^(?:https?:\/\/|\/)/.test(pair.displayPath),
+  );
+  const legacyPairs = pathPairs.filter(
+    (pair) => !/^(?:https?:\/\/|\/)/.test(pair.displayPath),
+  );
+  const displayPaths = [...new Set(legacyPairs.map((pair) => pair.displayPath))];
+
+  const directUrls = directPairs.reduce<Record<string, string>>((urls, pair) => {
+    urls[pair.memoryPath] = pair.displayPath;
+    return urls;
+  }, {});
+
+  if (displayPaths.length === 0) {
+    return directUrls;
   }
 
   const { data, error } = await supabase.storage
     .from("trip-media")
-    .createSignedUrls(photoPaths, 60 * 60);
+    .createSignedUrls(displayPaths, 60 * 60);
 
   if (error) {
     throw error;
   }
 
-  return (data ?? {}).reduce<Record<string, string>>((urls, item) => {
+  const signedByDisplayPath = (data ?? []).reduce<Record<string, string>>((urls, item) => {
     if (item.path && item.signedUrl) {
       urls[item.path] = item.signedUrl;
     }
 
     return urls;
   }, {});
+
+  return legacyPairs.reduce<Record<string, string>>((urls, pair) => {
+    const signedUrl = signedByDisplayPath[pair.displayPath];
+    if (signedUrl) urls[pair.memoryPath] = signedUrl;
+    return urls;
+  }, directUrls);
 }

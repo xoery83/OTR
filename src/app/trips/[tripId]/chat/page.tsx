@@ -82,6 +82,58 @@ function isLocalPendingMessage(message: JourneyChatMessage) {
   return getLocalPendingStatus(message) !== null;
 }
 
+function getMessageDedupeKeys(message: JourneyChatMessage) {
+  return [
+    getClientUploadId(message) ? `upload:${getClientUploadId(message)}` : null,
+    message.memoryEntryId ? `memory:${message.memoryEntryId}` : null,
+    message.sourceId ? `memory:${message.sourceId}` : null,
+    message.mediaAssetId ? `asset:${message.mediaAssetId}` : null,
+    message.mediaUrl ? `media-url:${message.mediaUrl}` : null,
+    message.photoAsset?.compressedFilePath
+      ? `media-path:${message.photoAsset.compressedFilePath}`
+      : null,
+  ].filter((key): key is string => Boolean(key));
+}
+
+function shouldPreferMessage(
+  existing: JourneyChatMessage,
+  incoming: JourneyChatMessage,
+) {
+  if (isLocalPendingMessage(existing) && !isLocalPendingMessage(incoming)) return true;
+  if (existing.sourceType === "timeline_memory" && incoming.sourceType !== "timeline_memory") {
+    return true;
+  }
+  return false;
+}
+
+function dedupeChatMessages(messages: JourneyChatMessage[]) {
+  const keyIndexes = new Map<string, number>();
+  const deduped: JourneyChatMessage[] = [];
+
+  for (const message of messages) {
+    const keys = getMessageDedupeKeys(message);
+    const existingIndex = keys
+      .map((key) => keyIndexes.get(key))
+      .find((index): index is number => index !== undefined);
+
+    if (existingIndex === undefined) {
+      const index = deduped.length;
+      deduped.push(message);
+      keys.forEach((key) => keyIndexes.set(key, index));
+      continue;
+    }
+
+    if (shouldPreferMessage(deduped[existingIndex], message)) {
+      deduped[existingIndex] = message;
+      keys.forEach((key) => keyIndexes.set(key, existingIndex));
+    }
+  }
+
+  return deduped.sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
+}
+
 function mergeLoadedMessages(
   current: JourneyChatMessage[],
   loaded: JourneyChatMessage[],
@@ -95,9 +147,7 @@ function mergeLoadedMessages(
     return !clientUploadId || !loadedUploadIds.has(clientUploadId);
   });
 
-  return [...loaded, ...pendingToKeep].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-  );
+  return dedupeChatMessages([...loaded, ...pendingToKeep]);
 }
 
 function isSafariBrowser() {
@@ -248,6 +298,12 @@ function MessageBubble({
             </div>
           ) : null}
 
+          {message.messageType === "text" && pendingStatus ? (
+            <div className="mt-1 text-[11px] font-black text-stone-500">
+              {pendingStatus === "failed" ? "发送失败" : "发送中..."}
+            </div>
+          ) : null}
+
           {mine && !pendingStatus ? (
             <button
               type="button"
@@ -314,6 +370,7 @@ function ChatContent() {
   const [voiceMode, setVoiceMode] = useState(false);
   const [isPrimingMicrophone, setIsPrimingMicrophone] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
+  const [isSwitchingToKeyboard, setIsSwitchingToKeyboard] = useState(false);
   const [isTextFocused, setIsTextFocused] = useState(false);
   const [activeImage, setActiveImage] = useState<JourneyChatMessage | null>(null);
   const [activeImageFaces, setActiveImageFaces] = useState<PhotoFace[]>([]);
@@ -506,12 +563,14 @@ function ChatContent() {
   useEffect(() => {
     document.body.classList.toggle(
       "otr-chat-keyboard-active",
-      isTextFocused || showEmoji,
+      isTextFocused || showEmoji || isSwitchingToKeyboard,
     );
+    document.body.classList.toggle("otr-chat-emoji-active", showEmoji);
     return () => {
       document.body.classList.remove("otr-chat-keyboard-active");
+      document.body.classList.remove("otr-chat-emoji-active");
     };
-  }, [isTextFocused, showEmoji]);
+  }, [isSwitchingToKeyboard, isTextFocused, showEmoji]);
 
   useEffect(() => {
     let cancelled = false;
@@ -571,16 +630,21 @@ function ChatContent() {
   const focusTextInput = useCallback(() => {
     setVoiceMode(false);
     setShowEmoji(false);
-    window.requestAnimationFrame(() => {
+    setIsSwitchingToKeyboard(true);
+    window.setTimeout(() => {
       textareaRef.current?.focus({ preventScroll: true });
-      window.setTimeout(() => textareaRef.current?.focus({ preventScroll: true }), 40);
-    });
+      window.setTimeout(() => {
+        textareaRef.current?.focus({ preventScroll: true });
+        setIsSwitchingToKeyboard(false);
+      }, 80);
+    }, 40);
   }, []);
 
   const closeTextInputArea = useCallback(() => {
     textareaRef.current?.blur();
     setIsTextFocused(false);
     setShowEmoji(false);
+    setIsSwitchingToKeyboard(false);
   }, []);
 
   function toggleEmojiPanel() {
@@ -602,21 +666,76 @@ function ChatContent() {
   const sendText = useCallback(async () => {
     const value = text.trim();
     if (!value || isSending) return;
+    const clientUploadId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const pendingMessage: JourneyChatMessage = {
+      id: `pending-text-${clientUploadId}`,
+      tripId,
+      userId: currentUserId,
+      journeyMemberId: null,
+      messageType: "text",
+      textContent: value,
+      mediaAssetId: null,
+      memoryEntryId: null,
+      mediaUrl: null,
+      voiceDurationMs: null,
+      transcriptText: null,
+      transcriptStatus: null,
+      sourceType: "chat",
+      sourceId: null,
+      deletedAt: null,
+      deletedBy: null,
+      metadata: {
+        pendingStatus: "uploading" satisfies LocalChatPendingStatus,
+        clientUploadId,
+      },
+      createdAt: now,
+      updatedAt: now,
+      senderName: "我",
+      senderAvatarUrl: null,
+      mediaDisplayUrl: null,
+      photoAsset: null,
+    };
+
     setIsSending(true);
     setError(null);
+    setMessages((current) => [...current, pendingMessage]);
+    setText("");
+    scheduleBottomLock();
     try {
-      const message = await sendTextChatMessage(tripId, value);
-      setMessages((current) => [...current, message]);
-      setText("");
-      setShowEmoji(false);
-      scrollToBottom();
+      const message = await sendTextChatMessage(tripId, value, clientUploadId);
+      setMessages((current) => {
+        const withoutSameUpload = current.filter(
+          (item) =>
+            item.id === pendingMessage.id || getClientUploadId(item) !== clientUploadId,
+        );
+        if (!withoutSameUpload.some((item) => item.id === pendingMessage.id)) {
+          return [...withoutSameUpload, message].sort(
+            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+          );
+        }
+        return withoutSameUpload.map((item) =>
+          item.id === pendingMessage.id ? message : item,
+        );
+      });
+      scheduleBottomLock();
       window.dispatchEvent(new CustomEvent("otr:chat-changed"));
     } catch (sendError) {
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === pendingMessage.id
+            ? {
+                ...item,
+                metadata: { ...item.metadata, pendingStatus: "failed" },
+              }
+            : item,
+        ),
+      );
       setError(getErrorMessage(sendError, "发送失败。"));
     } finally {
       setIsSending(false);
     }
-  }, [isSending, scrollToBottom, text, tripId]);
+  }, [currentUserId, isSending, scheduleBottomLock, text, tripId]);
 
   const sendVoice = useCallback(
     async (file: File, durationMs: number | null) => {
@@ -757,13 +876,12 @@ function ChatContent() {
                 getClientUploadId(item) !== pending.clientUploadId,
             );
             if (!withoutSameUpload.some((item) => item.id === pending.message.id)) {
-              return [...withoutSameUpload, message].sort(
-                (a, b) =>
-                  new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-              );
+              return dedupeChatMessages([...withoutSameUpload, message]);
             }
-            return withoutSameUpload.map((item) =>
-              item.id === pending.message.id ? message : item,
+            return dedupeChatMessages(
+              withoutSameUpload.map((item) =>
+                item.id === pending.message.id ? message : item,
+              ),
             );
           });
           window.dispatchEvent(new CustomEvent("otr:chat-changed"));
@@ -985,6 +1103,9 @@ function ChatContent() {
         <div className="mx-auto flex max-w-3xl items-end gap-2">
           <button
             type="button"
+            onPointerDown={(event) => {
+              event.preventDefault();
+            }}
             onClick={() => {
               if (!voiceMode) {
                 closeTextInputArea();
@@ -1027,6 +1148,9 @@ function ChatContent() {
               rows={1}
               placeholder="输入消息..."
               onFocus={() => {
+                setVoiceMode(false);
+                setShowEmoji(false);
+                setIsSwitchingToKeyboard(false);
                 setIsTextFocused(true);
                 window.setTimeout(
                   () => textareaRef.current?.focus({ preventScroll: true }),
@@ -1040,6 +1164,9 @@ function ChatContent() {
 
           <button
             type="button"
+            onPointerDown={(event) => {
+              event.preventDefault();
+            }}
             onClick={toggleEmojiPanel}
             className="my-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-2xl font-black text-emerald-800 shadow-sm transition active:scale-95"
             aria-label="表情"
@@ -1048,6 +1175,9 @@ function ChatContent() {
           </button>
           <button
             type="button"
+            onPointerDown={(event) => {
+              event.preventDefault();
+            }}
             onClick={() => {
               closeTextInputArea();
               setVoiceMode(false);

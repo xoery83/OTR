@@ -1560,9 +1560,12 @@ export function PlannerDayCard({
               groups[asset.memoryEntryId] = {
                 ...asset,
                 memory: memories.find((memory) => memory.id === asset.memoryEntryId) ?? null,
-                displayUrl: asset.compressedFilePath
-                  ? imageUrlByMemoryPath[asset.compressedFilePath]
-                  : undefined,
+                displayUrl:
+                  asset.thumbnailDriveWebUrl ??
+                  asset.providerThumbnailUrl ??
+                  (asset.compressedFilePath
+                    ? imageUrlByMemoryPath[asset.compressedFilePath]
+                    : undefined),
               };
             }
             return groups;
@@ -2377,7 +2380,7 @@ export function PlannerDayCard({
             attachment.fileName,
             content,
             memoryInput,
-            preserveOriginalPhotos ? attachment.file : null,
+            attachment.file,
           )
         : await createTextMemory(tripId, content, memoryInput);
 

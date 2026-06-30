@@ -3,11 +3,16 @@ export type CompressedImage = {
   width: number;
   height: number;
   previewUrl: string;
+  thumbnailBlob: Blob;
+  thumbnailWidth: number;
+  thumbnailHeight: number;
 };
 
 const maxOriginalBytes = 20 * 1024 * 1024;
 const maxDimension = 1920;
+const thumbnailMaxDimension = 480;
 const jpegQuality = 0.85;
+const thumbnailJpegQuality = 0.72;
 
 function loadImage(file: File) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
@@ -28,19 +33,46 @@ function loadImage(file: File) {
   });
 }
 
-function getScaledDimensions(width: number, height: number) {
+function getScaledDimensions(width: number, height: number, maxSide = maxDimension) {
   const longestSide = Math.max(width, height);
 
-  if (longestSide <= maxDimension) {
+  if (longestSide <= maxSide) {
     return { width, height };
   }
 
-  const scale = maxDimension / longestSide;
+  const scale = maxSide / longestSide;
 
   return {
     width: Math.round(width * scale),
     height: Math.round(height * scale),
   };
+}
+
+async function renderImageBlob(
+  image: HTMLImageElement,
+  dimensions: { width: number; height: number },
+  quality: number,
+) {
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    throw new Error("Your browser could not prepare the image.");
+  }
+
+  canvas.width = dimensions.width;
+  canvas.height = dimensions.height;
+  context.drawImage(image, 0, 0, dimensions.width, dimensions.height);
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob(resolve, "image/jpeg", quality);
+  });
+
+  if (!blob) {
+    throw new Error("Your browser could not compress this image.");
+  }
+
+  return blob;
 }
 
 export async function compressImageFile(file: File): Promise<CompressedImage> {
@@ -54,30 +86,24 @@ export async function compressImageFile(file: File): Promise<CompressedImage> {
 
   const image = await loadImage(file);
   const dimensions = getScaledDimensions(image.naturalWidth, image.naturalHeight);
-  const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d");
-
-  if (!context) {
-    throw new Error("Your browser could not prepare the image.");
-  }
-
-  canvas.width = dimensions.width;
-  canvas.height = dimensions.height;
-  context.drawImage(image, 0, 0, dimensions.width, dimensions.height);
-
-  const blob = await new Promise<Blob | null>((resolve) => {
-    canvas.toBlob(resolve, "image/jpeg", jpegQuality);
-  });
-
-  if (!blob) {
-    throw new Error("Your browser could not compress this image.");
-  }
+  const thumbnailDimensions = getScaledDimensions(
+    image.naturalWidth,
+    image.naturalHeight,
+    thumbnailMaxDimension,
+  );
+  const [blob, thumbnailBlob] = await Promise.all([
+    renderImageBlob(image, dimensions, jpegQuality),
+    renderImageBlob(image, thumbnailDimensions, thumbnailJpegQuality),
+  ]);
 
   return {
     blob,
     width: dimensions.width,
     height: dimensions.height,
     previewUrl: URL.createObjectURL(blob),
+    thumbnailBlob,
+    thumbnailWidth: thumbnailDimensions.width,
+    thumbnailHeight: thumbnailDimensions.height,
   };
 }
 

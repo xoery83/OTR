@@ -26,11 +26,20 @@ type MediaAssetRow = {
   provider_web_url?: string | null;
   provider_thumbnail_url?: string | null;
   provider_original_reference?: string | null;
+  original_drive_file_id?: string | null;
+  original_drive_web_url?: string | null;
+  thumbnail_drive_file_id?: string | null;
+  thumbnail_drive_web_url?: string | null;
+  thumbnail_url?: string | null;
+  preview_url?: string | null;
   original_file_size: number | null;
   compressed_file_size: number | null;
+  thumbnail_size?: number | null;
   mime_type: string | null;
   width: number | null;
   height: number | null;
+  thumbnail_width?: number | null;
+  thumbnail_height?: number | null;
   storage_tier: MediaAsset["storageTier"];
   is_original_preserved: boolean;
   retention_until: string | null;
@@ -115,11 +124,20 @@ function mapMediaAsset(row: MediaAssetRow): MediaAsset {
     providerWebUrl: row.provider_web_url ?? null,
     providerThumbnailUrl: row.provider_thumbnail_url ?? null,
     providerOriginalReference: row.provider_original_reference ?? null,
+    originalDriveFileId: row.original_drive_file_id ?? null,
+    originalDriveWebUrl: row.original_drive_web_url ?? null,
+    thumbnailDriveFileId: row.thumbnail_drive_file_id ?? null,
+    thumbnailDriveWebUrl: row.thumbnail_drive_web_url ?? null,
+    thumbnailUrl: row.thumbnail_url ?? null,
+    previewUrl: row.preview_url ?? null,
     originalFileSize: row.original_file_size,
     compressedFileSize: row.compressed_file_size,
+    thumbnailSize: row.thumbnail_size ?? null,
     mimeType: row.mime_type,
     width: row.width,
     height: row.height,
+    thumbnailWidth: row.thumbnail_width ?? null,
+    thumbnailHeight: row.thumbnail_height ?? null,
     storageTier: row.storage_tier,
     isOriginalPreserved: row.is_original_preserved,
     retentionUntil: row.retention_until,
@@ -138,6 +156,16 @@ function mapMediaAsset(row: MediaAssetRow): MediaAsset {
     indexedAt: row.indexed_at ?? null,
     createdAt: row.created_at,
   };
+}
+
+function publicImageUrlForAi(asset: MediaAssetRow, requestUrl: string) {
+  return (
+    asset.preview_url ??
+    asset.thumbnail_url ??
+    asset.provider_thumbnail_url ??
+    asset.thumbnail_drive_web_url ??
+    new URL(`/api/media/assets/${asset.id}/preview`, requestUrl).toString()
+  );
 }
 
 function getAiServerConfig() {
@@ -330,9 +358,6 @@ export async function POST(request: Request) {
     }
 
     const asset = assetRow as MediaAssetRow;
-    if (!asset.compressed_file_path) {
-      return jsonError("Photo does not have a compressed display file.", 409);
-    }
 
     await supabase
       .from("media_assets")
@@ -340,19 +365,13 @@ export async function POST(request: Request) {
       .eq("id", assetId)
       .eq("trip_id", tripId);
 
-    const { data: signedData, error: signedError } = await supabase.storage
-      .from("trip-media")
-      .createSignedUrl(asset.compressed_file_path, 10 * 60);
-
-    if (signedError || !signedData?.signedUrl) {
-      throw signedError || new Error("Could not create image URL.");
-    }
+    const imageUrl = publicImageUrlForAi(asset, request.url);
 
     let result: PhotoIndexResult;
     try {
       result = await callImageIndexService({
         asset,
-        imageUrl: signedData.signedUrl,
+        imageUrl,
         authorization: request.headers.get("authorization") ?? "",
         locale,
       });
@@ -386,7 +405,7 @@ export async function POST(request: Request) {
       result = await indexWithVisionFallback({
         supabase,
         asset,
-        imageUrl: signedData.signedUrl,
+        imageUrl,
         locale,
       });
     }

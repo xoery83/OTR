@@ -6,16 +6,19 @@ import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
 import { TripCard } from "@/components/TripCard";
 import { compareTripsByStartDateAsc, getJourneyStatus } from "@/lib/journeys/status";
-import { getJourneyParticipantCount, getMemoryStats } from "@/lib/journeys/stats";
+import { getJourneyParticipantCount } from "@/lib/journeys/stats";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
-import { getTripMemories } from "@/lib/supabase/memories";
+import {
+  getTripMemorySummary,
+  type TripMemorySummary,
+} from "@/lib/supabase/memories";
 import { getPlannerV2, type PlannerV2Data } from "@/lib/supabase/planner-v2";
 import { getTripsForCurrentUser } from "@/lib/supabase/trips";
-import type { ItineraryEvent, ItineraryReservation, MemoryEntry, Trip } from "@/types";
+import type { ItineraryEvent, ItineraryReservation, Trip } from "@/types";
 
 type JourneyItem = {
   trip: Trip;
-  memories: MemoryEntry[];
+  memorySummary: TripMemorySummary;
   memberCount: number;
   planner: PlannerV2Data;
 };
@@ -91,14 +94,14 @@ function TripsContent() {
         const trips = await getTripsForCurrentUser();
         const loaded = await Promise.all(
           trips.map(async (trip) => {
-            const [memories, members, planner] = await Promise.all([
-              getTripMemories(trip.id),
+            const [memorySummary, members, planner] = await Promise.all([
+              getTripMemorySummary(trip.id),
               getJourneyMembers(trip.id),
-              getPlannerV2(trip).catch(() => ({ days: [] })),
+              getPlannerV2(trip, { includeMemories: false }).catch(() => ({ days: [] })),
             ]);
             return {
               trip,
-              memories,
+              memorySummary,
               memberCount: getJourneyParticipantCount(members),
               planner,
             };
@@ -241,13 +244,12 @@ function TripsContent() {
           <div className="grid gap-5 sm:grid-cols-2">
             {group.map((item) => {
               const status = getJourneyStatus(item.trip);
-              const stats = getMemoryStats(item.memories);
               return (
                 <TripCard
                   key={item.trip.id}
                   trip={item.trip}
-                  memoryCount={stats.total}
-                  photoCount={stats.photos}
+                  memoryCount={item.memorySummary.total}
+                  photoCount={item.memorySummary.photos}
                   memberCount={item.memberCount}
                   status={status}
                   actionLabel={

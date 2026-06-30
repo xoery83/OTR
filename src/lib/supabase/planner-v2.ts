@@ -272,13 +272,17 @@ function sortByTime<T>(
   });
 }
 
-export async function getPlannerV2(trip: Trip): Promise<PlannerV2Data> {
+export async function getPlannerV2(
+  trip: Trip,
+  options?: { includeMemories?: boolean },
+): Promise<PlannerV2Data> {
+  const includeMemories = options?.includeMemories ?? true;
   const [tripDays, rawReservations, rawActivities, memories, ratingSummaries] =
     await Promise.all([
     getTripDays(trip.id),
     getItineraryReservations(trip.id),
     getItineraryEvents(trip.id),
-    getTripMemories(trip.id),
+    includeMemories ? getTripMemories(trip.id) : Promise.resolve([]),
     getItineraryRatingSummaries(trip.id),
   ]);
   const reservations = rawReservations.map((reservation) => ({

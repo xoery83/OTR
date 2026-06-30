@@ -65,7 +65,9 @@ function AdminLocalizationContent({ user }: { user: User }) {
   const queuedLocaleJobs = useMemo(
     () =>
       summary.jobs.filter(
-        (job) => job.job_type === "generate_locale_bundle" && job.status === "queued",
+        (job) =>
+          job.job_type === "generate_locale_bundle" &&
+          (job.status === "queued" || job.status === "failed"),
       ).length,
     [summary.jobs],
   );

@@ -499,6 +499,19 @@ function SettingsContent() {
           </span>
         }
       >
+        <div className="mb-5 rounded-2xl border border-stone-200 bg-white p-4">
+          <p className="text-xs font-bold uppercase tracking-[0.16em] text-stone-500">
+            Google Drive{" "}
+            {trip?.photoStorageStatus === "connected" ? "Connected" : "Not Connected"}
+          </p>
+          <p className="mt-2 text-base font-bold text-stone-950">
+            Current image storage: Google Drive
+          </p>
+          <p className="mt-1 text-sm leading-6 text-stone-600">
+            Your photos are stored in your own Google Drive. OTR only stores metadata.
+          </p>
+        </div>
+
         <div className="grid gap-3">
           {storageProviders.map((provider) => {
             const selected = storageProvider === provider.value;

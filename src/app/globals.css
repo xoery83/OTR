@@ -363,6 +363,17 @@ input[type="date"] {
     padding-bottom: calc(14rem + env(safe-area-inset-bottom, 0px)) !important;
   }
 
+  [data-mobile-bottom-nav],
+  [data-mobile-bottom-nav] * {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+
+  [data-mobile-bottom-nav] a {
+    touch-action: none;
+  }
+
   body.otr-mobile-search-active [data-mobile-app-header],
   body.otr-mobile-search-active [data-mobile-bottom-nav],
   body.otr-chat-keyboard-active [data-mobile-bottom-nav],
@@ -441,5 +452,9 @@ input[type="date"] {
 
   body.otr-chat-keyboard-active .otr-chat-message-list {
     padding-bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  body.otr-chat-emoji-active .otr-chat-message-list {
+    padding-bottom: calc(27rem + env(safe-area-inset-bottom, 0px)) !important;
   }
 }

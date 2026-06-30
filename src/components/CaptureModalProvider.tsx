@@ -1478,7 +1478,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         .join("\n")}`;
     }
 
-    const planner = await getPlannerV2(selectedTrip);
+    const planner = await getPlannerV2(selectedTrip, { includeMemories: false });
     const day = planner.days.find((item) => item.day.dayDate === date);
 
     if (resolution.intentType === "query_lodging") {

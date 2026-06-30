@@ -18,9 +18,10 @@ import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { compressImageFile, type CompressedImage } from "@/lib/images";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import {
+  getMediaAssetsByMemoryIds,
   getPhotoFacesForAssets,
-  getTripPhotoAssets,
   repairCurrentUserOrphanPhotoMemories,
+  requestDriveThumbnailRepairForAssets,
   requestFaceConfirmation,
   requestVoiceTranscription,
 } from "@/lib/supabase/media-assets";
@@ -29,7 +30,7 @@ import {
   createTextMemory,
   deleteMemoryEntry,
   getSignedMemoryImageUrls,
-  getTripMemories,
+  getTripMemoriesPage,
   type MemoryEngagement,
   updateMemoryEntry,
 } from "@/lib/supabase/memories";
@@ -93,6 +94,31 @@ function writeTimelineSession(tripId: string, state: TimelineSessionState) {
   );
 }
 
+async function getLegacyAssetSignedUrls(
+  assets: { thumbnailFilePath: string | null; compressedFilePath: string | null }[],
+) {
+  const paths = [
+    ...new Set(
+      assets
+        .map((asset) => asset.thumbnailFilePath ?? asset.compressedFilePath)
+        .filter((path): path is string => Boolean(path)),
+    ),
+  ];
+
+  if (paths.length === 0) return {};
+
+  const { data, error } = await supabase.storage
+    .from("trip-media")
+    .createSignedUrls(paths, 60 * 60);
+
+  if (error) throw error;
+
+  return (data ?? []).reduce<Record<string, string>>((urls, item) => {
+    if (item.path && item.signedUrl) urls[item.path] = item.signedUrl;
+    return urls;
+  }, {});
+}
+
 function parseTimelineView(value: string | null): TimelineView {
   if (
     value === "timeline" ||
@@ -136,6 +162,7 @@ type LinkedPlannerItem = {
 
 const INITIAL_TIMELINE_GROUP_COUNT = 4;
 const TIMELINE_GROUP_BATCH_SIZE = 3;
+const TIMELINE_MEMORY_PAGE_SIZE = 60;
 
 function getLocalDateKey(value: string) {
   const date = new Date(value);
@@ -549,14 +576,17 @@ function looksLikeExpenseReply(value: string) {
 
 function ReplyBubble({
   reply,
+  tripId,
   onEngagementChange,
   onOpenPhoto,
 }: {
   reply: TimelineItem;
+  tripId: string;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
   onOpenPhoto?: (item: TimelineItem) => void;
 }) {
   const { t } = useI18n();
+  const requestRepair = useDriveThumbnailRepair(tripId);
 
   return (
     <div className="border-t border-stone-100 pt-3 first:border-t-0 first:pt-0">
@@ -579,11 +609,12 @@ function ReplyBubble({
               className="mb-2 block overflow-hidden rounded-xl text-left"
               aria-label={t("planner.memory.openImage")}
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
+              <FallbackPhotoImage
                 src={reply.photo.displayUrl}
+                fallbackSrc={reply.photo.displayFallbackUrl}
                 alt={reply.memory.content || "Reply photo"}
                 className="max-h-56 cursor-zoom-in object-cover"
+                onPrimaryError={() => requestRepair(reply.photo)}
               />
             </button>
           ) : null}
@@ -640,6 +671,7 @@ function CompactMemoryCard({
   const [isTranscribingReply, setIsTranscribingReply] = useState(false);
   const [isWorking, setIsWorking] = useState(false);
   const [cardError, setCardError] = useState<string | null>(null);
+  const requestRepair = useDriveThumbnailRepair(tripId);
 
   const replyRecorder = useVoiceRecorder({
     onRecordingComplete: async (file) => {
@@ -684,8 +716,8 @@ function CompactMemoryCard({
       );
     } finally {
       setIsPreparingImage(false);
-    }
   }
+}
 
   async function maybeCreateReplyExpense(text: string, image: typeof replyImage) {
     if (!looksLikeExpenseReply(text) && !image) return;
@@ -824,11 +856,12 @@ function CompactMemoryCard({
           className="block w-full overflow-hidden text-left"
           aria-label={t("planner.memory.openImage")}
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={item.photo!.displayUrl}
+          <FallbackPhotoImage
+            src={item.photo!.displayUrl!}
+            fallbackSrc={item.photo!.displayFallbackUrl}
             alt={item.memory.content || t("timeline.photo.alt")}
             className="h-auto w-full cursor-zoom-in object-cover transition duration-200 hover:scale-[1.01]"
+            onPrimaryError={() => requestRepair(item.photo)}
           />
         </button>
       ) : (
@@ -964,6 +997,7 @@ function CompactMemoryCard({
               <ReplyBubble
                 key={reply.id}
                 reply={reply}
+                tripId={tripId}
                 onEngagementChange={onEngagementChange}
                 onOpenPhoto={onOpenPhoto}
               />
@@ -1094,6 +1128,7 @@ function TimelinePhotoLightbox({
   } | null>(null);
   const [confirmingFaceId, setConfirmingFaceId] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const requestRepair = useDriveThumbnailRepair(tripId);
 
   useEffect(() => {
     setSelectedPersonName(null);
@@ -1226,11 +1261,12 @@ function TimelinePhotoLightbox({
             className="otr-photo-viewer-frame relative mx-auto grid min-h-0 max-h-full max-w-full place-items-center overflow-hidden rounded-3xl bg-black"
             style={getPhotoViewerFrameStyle(item.photo)}
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={item.photo.displayUrl}
+            <FallbackPhotoImage
+              src={item.photo.displayPreviewUrl ?? item.photo.displayUrl}
+              fallbackSrc={item.photo.displayUrl ?? item.photo.displayFallbackUrl}
               alt={item.memory.content || t("timeline.photo.alt")}
               className="h-full w-full object-contain"
+              onPrimaryError={() => requestRepair(item.photo)}
             />
             {item.faces.map((face) => {
               const boxStyle = getFaceBoxStyle(face, item.photo!);
@@ -1741,6 +1777,7 @@ function AlbumView({
   } | null>(null);
   const [confirmingFaceId, setConfirmingFaceId] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const requestRepair = useDriveThumbnailRepair(tripId);
   const photoItems = items
     .filter((item) => item.memory.type === "photo" && item.photo?.displayUrl)
     .sort(
@@ -1905,11 +1942,12 @@ function AlbumView({
             }}
             className="group relative aspect-square overflow-hidden bg-stone-100 text-left"
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={item.photo!.displayUrl}
+            <FallbackPhotoImage
+              src={item.photo!.displayUrl!}
+              fallbackSrc={item.photo!.displayFallbackUrl}
               alt={item.memory.content || t("timeline.photo.alt")}
               className="h-full w-full object-cover"
+              onPrimaryError={() => requestRepair(item.photo)}
             />
             <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-stone-950/80 via-stone-950/20 to-transparent p-2 text-white opacity-0 transition group-hover:opacity-100">
               <p className="line-clamp-2 text-xs font-bold">
@@ -1983,11 +2021,14 @@ function AlbumView({
                 className="otr-photo-viewer-frame relative mx-auto grid min-h-0 max-h-full max-w-full place-items-center overflow-hidden rounded-3xl bg-black"
                 style={getPhotoViewerFrameStyle(activeItem.photo)}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={activeItem.photo.displayUrl}
+                <FallbackPhotoImage
+                  src={activeItem.photo.displayPreviewUrl ?? activeItem.photo.displayUrl}
+                  fallbackSrc={
+                    activeItem.photo.displayUrl ?? activeItem.photo.displayFallbackUrl
+                  }
                   alt={activeItem.memory.content || t("timeline.photo.alt")}
                   className="h-full w-full object-contain"
+                  onPrimaryError={() => requestRepair(activeItem.photo)}
                 />
                 {activeItem.faces.map((face) => {
                       const boxStyle = getFaceBoxStyle(face, activeItem.photo!);
@@ -2196,6 +2237,68 @@ function getPhotoViewerFrameStyle(photo: PhotoAssetWithMemory): CSSProperties {
   } as CSSProperties;
 }
 
+function FallbackPhotoImage({
+  src,
+  fallbackSrc,
+  alt,
+  className,
+  onPrimaryError,
+}: {
+  src: string;
+  fallbackSrc?: string;
+  alt: string;
+  className?: string;
+  onPrimaryError?: () => void;
+}) {
+  const [currentSrc, setCurrentSrc] = useState(src);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setCurrentSrc(src);
+    setFailed(false);
+  }, [src, fallbackSrc]);
+
+  if (failed) {
+    return (
+      <div className="grid h-full w-full place-items-center bg-stone-100 text-sm font-semibold text-stone-400">
+        No preview
+      </div>
+    );
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={currentSrc}
+      alt={alt}
+      loading="lazy"
+      className={className}
+      onError={() => {
+        if (fallbackSrc && currentSrc !== fallbackSrc) {
+          onPrimaryError?.();
+          setCurrentSrc(fallbackSrc);
+          return;
+        }
+        setFailed(true);
+      }}
+    />
+  );
+}
+
+function useDriveThumbnailRepair(tripId: string) {
+  const repairRequestedAssetIdsRef = useRef<Set<string>>(new Set());
+
+  return useCallback(
+    (photo?: PhotoAssetWithMemory | null) => {
+      if (!photo?.thumbnailDriveFileId) return;
+      if (repairRequestedAssetIdsRef.current.has(photo.id)) return;
+      repairRequestedAssetIdsRef.current.add(photo.id);
+      void requestDriveThumbnailRepairForAssets([photo.id], tripId);
+    },
+    [tripId],
+  );
+}
+
 function PhotoGalleryView({
   photos,
   facesByAssetId,
@@ -2221,6 +2324,7 @@ function PhotoGalleryView({
   } | null>(null);
   const [confirmingFaceId, setConfirmingFaceId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const requestRepair = useDriveThumbnailRepair(tripId);
 
   async function indexPhoto(photo: PhotoAssetWithMemory) {
     setActivePhotoId(photo.id);
@@ -2390,11 +2494,12 @@ function PhotoGalleryView({
                 }}
               >
                 {photo.displayUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
+                  <FallbackPhotoImage
                     src={photo.displayUrl}
+                    fallbackSrc={photo.displayFallbackUrl}
                     alt={photo.memory?.content || t("timeline.photo.alt")}
                     className="h-full w-full object-cover"
+                    onPrimaryError={() => requestRepair(photo)}
                   />
                 ) : (
                   <div className="grid h-full place-items-center text-sm font-semibold text-stone-400">
@@ -2763,26 +2868,54 @@ function TimelineContent({ user }: { user: User }) {
   );
   const [isMobileSearchActive, setIsMobileSearchActive] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMoreMemories, setIsLoadingMoreMemories] = useState(false);
+  const [nextMemoryCursor, setNextMemoryCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activePhotoItemId, setActivePhotoItemId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const scrollRestoreTimerRef = useRef<number | null>(null);
 
+  const loadMemoryPage = useCallback(
+    async (beforeCapturedAt?: string | null) => {
+      const memoryPage = await getTripMemoriesPage(tripId, {
+        limit: TIMELINE_MEMORY_PAGE_SIZE,
+        beforeCapturedAt,
+      });
+      const memoryIds = memoryPage.memories.map((memory) => memory.id);
+      const assetData = await getMediaAssetsByMemoryIds(memoryIds);
+      const [signedUrls, legacyAssetUrls, faceData] = await Promise.all([
+        getSignedMemoryImageUrls(memoryPage.memories),
+        getLegacyAssetSignedUrls(assetData),
+        getPhotoFacesForAssets(assetData.map((asset) => asset.id)),
+      ]);
+      const memoryById = new Map(
+        memoryPage.memories.map((memory) => [memory.id, memory]),
+      );
+      const photoAssetsForPage: PhotoAssetWithMemory[] = assetData.map((asset) => {
+        const legacyPath = asset.thumbnailFilePath ?? asset.compressedFilePath;
+        const legacyUrl = legacyPath ? legacyAssetUrls[legacyPath] : undefined;
+        return {
+          ...asset,
+          memory: memoryById.get(asset.memoryEntryId) ?? null,
+          displayUrl: asset.thumbnailUrl ?? `/api/media/assets/${asset.id}/thumbnail`,
+          displayPreviewUrl: asset.previewUrl ?? `/api/media/assets/${asset.id}/preview`,
+          displayFallbackUrl: legacyUrl,
+        };
+      });
+      return { memoryPage, assetData: photoAssetsForPage, signedUrls, faceData };
+    },
+    [tripId],
+  );
+
   const refreshMemorySnapshot = useCallback(async () => {
     await repairCurrentUserOrphanPhotoMemories(tripId).catch(() => 0);
-    const [memoryData, assetData] = await Promise.all([
-      getTripMemories(tripId),
-      getTripPhotoAssets(tripId),
-    ]);
-    const [signedUrls, faceData] = await Promise.all([
-      getSignedMemoryImageUrls(memoryData),
-      getPhotoFacesForAssets(assetData.map((asset) => asset.id)),
-    ]);
-    setMemories(memoryData);
+    const { memoryPage, assetData, signedUrls, faceData } = await loadMemoryPage();
+    setMemories(memoryPage.memories);
     setPhotoAssets(assetData);
     setFacesByAssetId(faceData);
     setImageUrls(signedUrls);
-  }, [tripId]);
+    setNextMemoryCursor(memoryPage.nextCursor);
+  }, [loadMemoryPage, tripId]);
 
   useEffect(() => {
     if (!targetAssetId) return;
@@ -2817,25 +2950,23 @@ function TimelineContent({ user }: { user: User }) {
     async function loadTimeline() {
       try {
         await repairCurrentUserOrphanPhotoMemories(tripId).catch(() => 0);
-        const [tripData, memoryData, assetData, memberData] = await Promise.all([
+        const [tripData, memorySnapshot, memberData] = await Promise.all([
           getTrip(tripId),
-          getTripMemories(tripId),
-          getTripPhotoAssets(tripId),
+          loadMemoryPage(),
           getJourneyMembers(tripId),
         ]);
-        const [signedUrls, faceData, loadedPlannerData] = await Promise.all([
-          getSignedMemoryImageUrls(memoryData),
-          getPhotoFacesForAssets(assetData.map((asset) => asset.id)),
-          getPlannerV2(tripData),
+        const [loadedPlannerData] = await Promise.all([
+          getPlannerV2(tripData, { includeMemories: false }),
         ]);
 
         if (isMounted) {
-          setMemories(memoryData);
-          setPhotoAssets(assetData);
+          setMemories(memorySnapshot.memoryPage.memories);
+          setPhotoAssets(memorySnapshot.assetData);
           setPlannerData(loadedPlannerData);
-          setFacesByAssetId(faceData);
+          setFacesByAssetId(memorySnapshot.faceData);
           setMembers(memberData);
-          setImageUrls(signedUrls);
+          setImageUrls(memorySnapshot.signedUrls);
+          setNextMemoryCursor(memorySnapshot.memoryPage.nextCursor);
         }
       } catch (timelineError) {
         if (isMounted) {
@@ -2857,7 +2988,7 @@ function TimelineContent({ user }: { user: User }) {
     return () => {
       isMounted = false;
     };
-  }, [refreshMemorySnapshot, t, tripId]);
+  }, [loadMemoryPage, t, tripId]);
 
   useEffect(() => {
     let refreshTimer: number | null = null;
@@ -3186,6 +3317,38 @@ function TimelineContent({ user }: { user: User }) {
     );
   }
 
+  async function loadMoreMemories() {
+    if (!nextMemoryCursor || isLoadingMoreMemories) return;
+
+    setIsLoadingMoreMemories(true);
+    setError(null);
+    try {
+      const { memoryPage, assetData, signedUrls, faceData } =
+        await loadMemoryPage(nextMemoryCursor);
+      setMemories((current) => {
+        const existingIds = new Set(current.map((memory) => memory.id));
+        return [
+          ...current,
+          ...memoryPage.memories.filter((memory) => !existingIds.has(memory.id)),
+        ];
+      });
+      setPhotoAssets((current) => {
+        const existingIds = new Set(current.map((asset) => asset.id));
+        return [
+          ...current,
+          ...assetData.filter((asset) => !existingIds.has(asset.id)),
+        ];
+      });
+      setFacesByAssetId((current) => ({ ...current, ...faceData }));
+      setImageUrls((current) => ({ ...current, ...signedUrls }));
+      setNextMemoryCursor(memoryPage.nextCursor);
+    } catch (loadMoreError) {
+      setError(getErrorMessage(loadMoreError, t("timeline.error.load")));
+    } finally {
+      setIsLoadingMoreMemories(false);
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="rounded-2xl border border-stone-200 bg-white p-5 text-sm font-medium text-stone-600 shadow-sm">
@@ -3386,6 +3549,19 @@ function TimelineContent({ user }: { user: User }) {
           targetAssetId={targetAssetId}
           onFaceConfirmed={handleFaceConfirmed}
         />
+      ) : null}
+
+      {!error && nextMemoryCursor ? (
+        <div className="flex justify-center py-4">
+          <button
+            type="button"
+            onClick={loadMoreMemories}
+            disabled={isLoadingMoreMemories}
+            className="rounded-full bg-white px-5 py-3 text-sm font-black text-emerald-800 shadow-sm ring-1 ring-emerald-100 disabled:opacity-50"
+          >
+            {isLoadingMoreMemories ? "Loading..." : "Load older memories"}
+          </button>
+        </div>
       ) : null}
 
       <TimelinePhotoLightbox

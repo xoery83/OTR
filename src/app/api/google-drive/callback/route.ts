@@ -4,6 +4,7 @@ import { encryptGoogleToken } from "@/lib/server/google-token";
 import {
   createGoogleDriveDayFolders,
   createGoogleDriveJourneyFolders,
+  ensureGoogleDriveMediaFolders,
 } from "@/lib/storage/google-drive";
 import { getGoogleClientConfig, verifyGoogleDriveState } from "../oauth";
 
@@ -40,6 +41,12 @@ type StorageConnectionRow = {
     journeyFolderName?: string;
     journeyFolderUrl?: string | null;
     dayFolders?: DayFolder[];
+    mediaFolders?: {
+      originals?: { folderId: string; name: string };
+      thumbnails?: { folderId: string; name: string };
+      ai?: { folderId: string; name: string };
+      outsideJourneyDates?: { folderId: string; name: string };
+    };
   } | null;
 };
 
@@ -129,6 +136,13 @@ async function getOrCreateDriveFolders(input: {
             startDate: input.trip.start_date,
             endDate: input.trip.end_date,
           });
+    const mediaFolders =
+      metadata.mediaFolders && metadata.mediaFolders.originals?.folderId
+        ? metadata.mediaFolders
+        : await ensureGoogleDriveMediaFolders({
+            accessToken: input.accessToken,
+            journeyFolderId: existing.journey_folder_id,
+          });
 
     return {
       rootFolderId: existing.provider_root_folder_id,
@@ -137,6 +151,7 @@ async function getOrCreateDriveFolders(input: {
       journeyFolderName: metadata.journeyFolderName ?? input.trip.name,
       journeyFolderUrl: metadata.journeyFolderUrl ?? null,
       dayFolders,
+      mediaFolders,
     };
   }
 
@@ -154,6 +169,7 @@ async function getOrCreateDriveFolders(input: {
     journeyFolderName: folders.journeyFolder.name,
     journeyFolderUrl: folders.journeyFolder.webViewLink ?? null,
     dayFolders: folders.dayFolders,
+    mediaFolders: folders.mediaFolders,
   };
 }
 
@@ -241,6 +257,7 @@ export async function GET(request: Request) {
             journeyFolderName: folders.journeyFolderName,
             journeyFolderUrl: folders.journeyFolderUrl,
             dayFolders: folders.dayFolders,
+            mediaFolders: folders.mediaFolders,
           },
         },
         { onConflict: "trip_id,provider" },
