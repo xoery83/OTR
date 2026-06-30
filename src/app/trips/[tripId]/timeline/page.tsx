@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { flushSync } from "react-dom";
 import type { User } from "@supabase/supabase-js";
 import type { CSSProperties, PointerEvent } from "react";
@@ -51,6 +51,12 @@ type TimelineSessionState = {
   selectedMemberIds?: string[];
   scrollY?: number;
   scrollByView?: Partial<Record<TimelineView, number>>;
+};
+
+type AlbumDeepLink = {
+  assetId: string;
+  reviewFaces: boolean;
+  returnTo: string | null;
 };
 
 function getTimelineSessionKey(tripId: string) {
@@ -1606,6 +1612,8 @@ function AlbumView({
   initialAssetId,
   autoOpenFaceAssignment,
   returnTo,
+  onInitialAssetConsumed,
+  onInitialAssetClosed,
   onFaceConfirmed,
   onEngagementChange,
 }: {
@@ -1615,6 +1623,8 @@ function AlbumView({
   initialAssetId?: string | null;
   autoOpenFaceAssignment?: boolean;
   returnTo?: string | null;
+  onInitialAssetConsumed?: () => void;
+  onInitialAssetClosed?: () => void;
   onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
@@ -1637,6 +1647,7 @@ function AlbumView({
   const activeItem = photoItems.find((item) => item.id === activeItemId) ?? null;
   const openedInitialAssetIdRef = useRef<string | null>(null);
   const returnToRef = useRef(returnTo);
+  const initialViewerOpenRef = useRef(false);
 
   useEffect(() => {
     returnToRef.current = returnTo;
@@ -1650,6 +1661,8 @@ function AlbumView({
     if (!targetItem?.photo) return;
 
     openedInitialAssetIdRef.current = initialAssetId;
+    returnToRef.current = returnTo;
+    initialViewerOpenRef.current = true;
     setActiveItemId(targetItem.id);
     setSelectedPersonName(null);
     setConfirmError(null);
@@ -1669,11 +1682,29 @@ function AlbumView({
     } else {
       setSelectedFace(null);
     }
-  }, [autoOpenFaceAssignment, initialAssetId, photoItems]);
+    onInitialAssetConsumed?.();
+  }, [
+    autoOpenFaceAssignment,
+    initialAssetId,
+    onInitialAssetConsumed,
+    photoItems,
+    returnTo,
+  ]);
 
   function closeViewer() {
-    if (initialAssetId && returnToRef.current) {
-      window.location.assign(returnToRef.current);
+    const returnPath = returnToRef.current;
+    const shouldCloseInitialViewer = initialViewerOpenRef.current;
+
+    returnToRef.current = null;
+    openedInitialAssetIdRef.current = null;
+    initialViewerOpenRef.current = false;
+
+    if (shouldCloseInitialViewer) {
+      onInitialAssetClosed?.();
+    }
+
+    if (returnPath) {
+      window.location.assign(returnPath);
       return;
     }
 
@@ -2557,6 +2588,8 @@ function PhotoGalleryView({
 
 function TimelineContent({ user }: { user: User }) {
   const params = useParams<{ tripId: string }>();
+  const pathname = usePathname();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const { t } = useI18n();
   const tripId = params.tripId;
@@ -2567,6 +2600,15 @@ function TimelineContent({ user }: { user: User }) {
   const shouldReviewFaces = searchParams.get("review") === "faces";
   const returnTo = normalizeReturnPath(searchParams.get("returnTo"));
   const initialSession = readTimelineSession(tripId);
+  const [albumDeepLink, setAlbumDeepLink] = useState<AlbumDeepLink | null>(() =>
+    targetAssetId
+      ? {
+          assetId: targetAssetId,
+          reviewFaces: shouldReviewFaces,
+          returnTo,
+        }
+      : null,
+  );
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [photoAssets, setPhotoAssets] = useState<PhotoAssetWithMemory[]>([]);
   const [plannerData, setPlannerData] = useState<PlannerV2Data | null>(null);
@@ -2576,7 +2618,7 @@ function TimelineContent({ user }: { user: User }) {
   const [members, setMembers] = useState<JourneyMember[]>([]);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const [view, setView] = useState<TimelineView>(
-    targetAssetId ? "album" : requestedView ? initialView : "album",
+    albumDeepLink?.assetId ? "album" : requestedView ? initialView : "album",
   );
   const [query, setQuery] = useState(initialSession?.query ?? "");
   const mineOnly = false;
@@ -2605,6 +2647,33 @@ function TimelineContent({ user }: { user: User }) {
     setFacesByAssetId(faceData);
     setImageUrls(signedUrls);
   }, [tripId]);
+
+  useEffect(() => {
+    if (!targetAssetId) return;
+    setAlbumDeepLink({
+      assetId: targetAssetId,
+      reviewFaces: shouldReviewFaces,
+      returnTo,
+    });
+    setView("album");
+  }, [returnTo, shouldReviewFaces, targetAssetId]);
+
+  const clearAlbumDeepLinkParams = useCallback(() => {
+    const nextParams = new URLSearchParams(searchParams.toString());
+    let changed = false;
+
+    for (const key of ["asset", "review", "returnTo"]) {
+      if (nextParams.has(key)) {
+        nextParams.delete(key);
+        changed = true;
+      }
+    }
+
+    if (!changed) return;
+
+    const query = nextParams.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }, [pathname, router, searchParams]);
 
   useEffect(() => {
     let isMounted = true;
@@ -2731,6 +2800,7 @@ function TimelineContent({ user }: { user: User }) {
 
   useEffect(() => {
     if (targetAssetId) return;
+    if (view === "timeline") return;
     if (scrollRestoreTimerRef.current !== null) {
       window.clearTimeout(scrollRestoreTimerRef.current);
     }
@@ -2906,6 +2976,7 @@ function TimelineContent({ user }: { user: User }) {
   }, [isMobileSearchActive, view]);
 
   function closeMobileSearch() {
+    setQuery("");
     setIsMobileSearchActive(false);
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
@@ -3157,12 +3228,14 @@ function TimelineContent({ user }: { user: User }) {
 
       {view === "album" ? (
         <AlbumView
-          items={targetAssetId ? timelineItems : filteredItems}
+          items={albumDeepLink?.assetId ? timelineItems : filteredItems}
           members={members}
           tripId={tripId}
-          initialAssetId={targetAssetId}
-          autoOpenFaceAssignment={shouldReviewFaces}
-          returnTo={returnTo}
+          initialAssetId={albumDeepLink?.assetId ?? null}
+          autoOpenFaceAssignment={albumDeepLink?.reviewFaces ?? false}
+          returnTo={albumDeepLink?.returnTo ?? null}
+          onInitialAssetConsumed={clearAlbumDeepLinkParams}
+          onInitialAssetClosed={() => setAlbumDeepLink(null)}
           onFaceConfirmed={handleFaceConfirmed}
           onEngagementChange={handleMemoryEngagementChange}
         />

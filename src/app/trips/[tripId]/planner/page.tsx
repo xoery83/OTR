@@ -1,8 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type PointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { flushSync } from "react-dom";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
 import { PlannerDayCard } from "@/components/PlannerDayCard";
@@ -181,11 +189,16 @@ function PlannerContent() {
     string | null
   >(null);
   const [plannerSearchQuery, setPlannerSearchQuery] = useState("");
+  const [isMobilePlannerSearchActive, setIsMobilePlannerSearchActive] =
+    useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const plannerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const dateStripRef = useRef<HTMLDivElement | null>(null);
   const selectedDayCardRef = useRef<HTMLElement | null>(null);
   const pendingDayScrollResetRef = useRef(false);
+  const suppressPlannerNavRestoreUntilRef = useRef(0);
+  const keepPlannerImmersiveDuringResetRef = useRef(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -308,17 +321,25 @@ function PlannerContent() {
       : `/trips/${tripId}/map`;
 
   function scrollSelectedDayToTop() {
+    const keepImmersive = keepPlannerImmersiveDuringResetRef.current;
+    if (keepImmersive) {
+      suppressPlannerNavRestoreUntilRef.current = Date.now() + 700;
+      document.body.classList.add("otr-planner-immersive");
+    }
+
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         const target = selectedDayCardRef.current;
         if (!target) return;
 
-        const dateStripBottom =
-          dateStripRef.current?.closest("section")?.getBoundingClientRect().bottom ??
-          0;
+        const dateStripSection = dateStripRef.current?.closest("section");
+        const dateStripRect = dateStripSection?.getBoundingClientRect();
+        const topOffset = keepImmersive
+          ? (dateStripRect?.height ?? 0)
+          : Math.max(0, dateStripRect?.bottom ?? 0);
         const targetTop = target.getBoundingClientRect().top + window.scrollY;
         window.scrollTo({
-          top: Math.max(0, targetTop - dateStripBottom - 12),
+          top: Math.max(0, targetTop - topOffset - 12),
           behavior: "instant",
         });
       });
@@ -327,7 +348,14 @@ function PlannerContent() {
 
   function chooseDay(dayId: string, options?: { resetScroll?: boolean }) {
     if (options?.resetScroll) {
+      const keepImmersive =
+        document.body.classList.contains("otr-planner-immersive");
       pendingDayScrollResetRef.current = true;
+      keepPlannerImmersiveDuringResetRef.current = keepImmersive;
+      if (keepImmersive) {
+        suppressPlannerNavRestoreUntilRef.current = Date.now() + 700;
+        document.body.classList.add("otr-planner-immersive");
+      }
     }
     setSelectedDayId(dayId);
     const day = planner.days.find((plannerDay) => plannerDay.day.id === dayId);
@@ -341,9 +369,54 @@ function PlannerContent() {
     }
   }
 
+  useEffect(() => {
+    if (!isMobilePlannerSearchActive) return;
+
+    document.body.classList.add("otr-mobile-search-active");
+    document.body.classList.remove("otr-planner-immersive");
+
+    return () => {
+      document.body.classList.remove("otr-mobile-search-active");
+    };
+  }, [isMobilePlannerSearchActive]);
+
+  function isMobileViewport() {
+    return window.matchMedia("(max-width: 767px)").matches;
+  }
+
+  function openMobilePlannerSearchFromPointer(
+    event: PointerEvent<HTMLInputElement>,
+  ) {
+    if (!isMobileViewport() || isMobilePlannerSearchActive) return;
+    event.preventDefault();
+    flushSync(() => setIsMobilePlannerSearchActive(true));
+    plannerSearchInputRef.current?.focus({ preventScroll: true });
+  }
+
+  function openMobilePlannerSearchFromFocus() {
+    if (isMobileViewport()) {
+      setIsMobilePlannerSearchActive(true);
+    }
+  }
+
+  function closeMobilePlannerSearch() {
+    setPlannerSearchQuery("");
+    setIsMobilePlannerSearchActive(false);
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+
   function jumpToSearchResult(result: PlannerSearchResult) {
     setManualFocusedPlannerItemId(result.itemId);
     chooseDay(result.dayId);
+    if (isMobilePlannerSearchActive) {
+      setPlannerSearchQuery("");
+      setIsMobilePlannerSearchActive(false);
+    }
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     window.requestAnimationFrame(() => {
       selectedDayCardRef.current?.scrollIntoView({
         behavior: "smooth",
@@ -398,6 +471,9 @@ function PlannerContent() {
 
   useEffect(() => {
     document.body.classList.remove("otr-planner-immersive");
+    if (isMobilePlannerSearchActive) {
+      return;
+    }
 
     let previousY = window.scrollY;
     let isImmersive = false;
@@ -419,6 +495,15 @@ function PlannerContent() {
       const currentY = window.scrollY;
       const delta = currentY - previousY;
       if (Math.abs(delta) < 3) return;
+
+      if (
+        keepPlannerImmersiveDuringResetRef.current &&
+        Date.now() < suppressPlannerNavRestoreUntilRef.current
+      ) {
+        setImmersive(true);
+        previousY = currentY;
+        return;
+      }
 
       if (currentY < 80) {
         setImmersive(false);
@@ -447,7 +532,7 @@ function PlannerContent() {
       window.removeEventListener("resize", handleScroll);
       document.body.classList.remove("otr-planner-immersive");
     };
-  }, []);
+  }, [isMobilePlannerSearchActive]);
 
   if (isLoading) {
     return (
@@ -458,9 +543,23 @@ function PlannerContent() {
   }
 
   return (
-    <div className="space-y-4">
-      <section className="rounded-3xl border border-stone-200 bg-white px-4 py-3 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
+    <div
+      className={
+        isMobilePlannerSearchActive ? "space-y-0 md:space-y-4" : "space-y-4"
+      }
+    >
+      <section
+        className={
+          isMobilePlannerSearchActive
+            ? "contents md:block md:rounded-3xl md:border md:border-stone-200 md:bg-white md:px-4 md:py-3 md:shadow-sm"
+            : "rounded-3xl border border-stone-200 bg-white px-4 py-3 shadow-sm"
+        }
+      >
+        <div
+          className={`flex items-center justify-between gap-3 ${
+            isMobilePlannerSearchActive ? "hidden md:flex" : ""
+          }`}
+        >
           <div className="flex min-w-0 items-center gap-2">
             <div className="flex max-w-48 items-center -space-x-2 overflow-hidden sm:max-w-64">
               {activeMembers.slice(0, 6).map((member) => (
@@ -521,27 +620,62 @@ function PlannerContent() {
             </button>
           </div>
         </div>
-        <div className="mt-3 flex items-center gap-2 rounded-2xl bg-stone-50 p-2">
+        <div
+          className={`flex items-center gap-2 ${
+            isMobilePlannerSearchActive
+              ? "fixed inset-x-0 top-0 z-[2147482600] border-b border-stone-200 bg-white p-3 shadow-lg md:static md:mt-3 md:rounded-2xl md:border-0 md:bg-stone-50 md:p-2 md:shadow-none"
+              : "mt-3 rounded-2xl bg-stone-50 p-2"
+          }`}
+        >
           <input
+            ref={plannerSearchInputRef}
+            type="search"
+            enterKeyHint="search"
+            inputMode="search"
+            autoComplete="off"
             value={plannerSearchQuery}
             onChange={(event) => setPlannerSearchQuery(event.target.value)}
+            onPointerDown={openMobilePlannerSearchFromPointer}
+            onFocus={openMobilePlannerSearchFromFocus}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                event.currentTarget.blur();
+              }
+            }}
             placeholder={t("planner.search.placeholder")}
-            className="min-h-10 flex-1 rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-950 outline-none placeholder:text-stone-400 focus:border-emerald-300"
+            className="min-h-11 min-w-0 flex-1 rounded-xl border border-stone-200 bg-white px-3 py-2 text-base font-semibold text-stone-950 outline-none placeholder:text-stone-400 focus:border-emerald-300 md:min-h-10 md:text-sm"
           />
           {trimmedPlannerSearchQuery ? (
             <button
               type="button"
               onClick={() => setPlannerSearchQuery("")}
-              className="rounded-full bg-white px-3 py-2 text-xs font-bold text-stone-600 shadow-sm"
+              className="shrink-0 rounded-full bg-white px-3 py-2 text-xs font-bold text-stone-600 shadow-sm"
             >
               {t("planner.search.clear")}
             </button>
           ) : null}
+          <button
+            type="button"
+            onClick={closeMobilePlannerSearch}
+            className={`shrink-0 rounded-full px-3 py-2 text-sm font-black text-emerald-800 md:hidden ${
+              isMobilePlannerSearchActive ? "inline-flex" : "hidden"
+            }`}
+          >
+            {t("common.cancel")}
+          </button>
         </div>
       </section>
 
-      {trimmedPlannerSearchQuery ? (
-        <section className="rounded-3xl border border-stone-200 bg-white p-3 shadow-sm">
+      {isMobilePlannerSearchActive ? <div className="h-[4.5rem] md:hidden" /> : null}
+
+      {trimmedPlannerSearchQuery || isMobilePlannerSearchActive ? (
+        <section
+          className={`border-stone-200 bg-white shadow-sm ${
+            isMobilePlannerSearchActive
+              ? "rounded-none border-0 p-3 md:rounded-3xl md:border"
+              : "rounded-3xl border p-3"
+          }`}
+        >
           <div className="flex items-center justify-between gap-3 px-1">
             <div>
               <h2 className="text-sm font-black text-stone-950">
@@ -559,7 +693,13 @@ function PlannerContent() {
               {t("planner.search.empty")}
             </div>
           ) : (
-            <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
+            <div
+              className={`mt-3 space-y-2 overflow-y-auto pr-1 ${
+                isMobilePlannerSearchActive
+                  ? "max-h-[calc(100dvh-9rem)] md:max-h-80"
+                  : "max-h-80"
+              }`}
+            >
               {plannerSearchResults.map((result) => (
                 <button
                   key={result.id}
@@ -586,7 +726,7 @@ function PlannerContent() {
                         </p>
                       ) : null}
                     </div>
-                  <span className="shrink-0 rounded-full bg-stone-100 px-2 py-1 text-[11px] font-bold text-stone-600">
+                    <span className="shrink-0 rounded-full bg-stone-100 px-2 py-1 text-[11px] font-bold text-stone-600">
                       {result.typeLabel}
                     </span>
                   </div>
@@ -600,7 +740,7 @@ function PlannerContent() {
         </section>
       ) : null}
 
-      {planner.days.length > 0 ? (
+      {planner.days.length > 0 && !isMobilePlannerSearchActive ? (
         <section className="otr-planner-date-strip sticky top-16 z-10 border-y border-stone-200 bg-[#f7f3ea]/95 py-1.5 backdrop-blur md:top-0">
           <div ref={dateStripRef} className="flex gap-2 overflow-x-auto">
             {planner.days.map((plannerDay) => {
@@ -649,39 +789,41 @@ function PlannerContent() {
         </section>
       ) : null}
 
-      {error ? (
+      {error && !isMobilePlannerSearchActive ? (
         <p className="rounded-2xl bg-red-50 p-4 text-sm font-medium text-red-700">
           {error}
         </p>
       ) : null}
 
-      {selectedDay ? (
-        <section ref={selectedDayCardRef}>
-          <PlannerDayCard
-            tripId={tripId}
-            plannerDay={selectedDay}
-            journeyMembers={activeMembers}
-            ledgerEntries={ledgerEntries}
-            ledgerBaseCurrency={ledgerBaseCurrency}
-            journeyName={trip?.name ?? ""}
-            journeyDestination={trip?.destination ?? ""}
-            previousPlannerDay={previousSelectedDay}
-            preserveOriginalPhotos={trip?.photoStorageStatus === "connected"}
-            onLedgerEntryCreated={async () => {
-              const data = await getLedgerData(tripId);
-              setLedgerEntries(data.entries);
-              setLedgerBaseCurrency(data.ledger.baseCurrency);
-            }}
-            onPlannerChanged={refreshPlanner}
-            mapHref={selectedDayMapHref}
-            focusedItemId={focusedPlannerItemId}
-          />
-        </section>
-      ) : (
-        <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-5 text-sm text-stone-600">
-          {t("planner.empty.days")}
-        </div>
-      )}
+      {!isMobilePlannerSearchActive ? (
+        selectedDay ? (
+          <section ref={selectedDayCardRef}>
+            <PlannerDayCard
+              tripId={tripId}
+              plannerDay={selectedDay}
+              journeyMembers={activeMembers}
+              ledgerEntries={ledgerEntries}
+              ledgerBaseCurrency={ledgerBaseCurrency}
+              journeyName={trip?.name ?? ""}
+              journeyDestination={trip?.destination ?? ""}
+              previousPlannerDay={previousSelectedDay}
+              preserveOriginalPhotos={trip?.photoStorageStatus === "connected"}
+              onLedgerEntryCreated={async () => {
+                const data = await getLedgerData(tripId);
+                setLedgerEntries(data.entries);
+                setLedgerBaseCurrency(data.ledger.baseCurrency);
+              }}
+              onPlannerChanged={refreshPlanner}
+              mapHref={selectedDayMapHref}
+              focusedItemId={focusedPlannerItemId}
+            />
+          </section>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-5 text-sm text-stone-600">
+            {t("planner.empty.days")}
+          </div>
+        )
+      ) : null}
     </div>
   );
 }

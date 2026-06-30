@@ -1388,6 +1388,7 @@ function LedgerContent() {
   }
 
   function closeMobileSearch() {
+    updateExpenseSearchQuery("");
     setIsMobileSearchActive(false);
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();

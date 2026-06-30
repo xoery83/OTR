@@ -555,6 +555,7 @@ function ProfileContent({ user }: { user: User }) {
   }
 
   function closeLedgerSearch() {
+    setLedgerSearchQuery("");
     setIsLedgerSearchActive(false);
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
