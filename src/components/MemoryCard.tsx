@@ -2,6 +2,7 @@ import type { MemoryEntry } from "@/types";
 import { formatTime } from "@/lib/format";
 import type { MemoryEngagement } from "@/lib/supabase/memories";
 import { MemoryEngagementActions } from "./MemoryEngagementActions";
+import { TranslatedText } from "./TranslatedText";
 
 const typeLabels: Record<MemoryEntry["type"], string> = {
   text: "Text note",
@@ -68,7 +69,14 @@ export function MemoryCard({
           </div>
         </div>
         {memory.content ? (
-          <p className="text-sm leading-6 text-stone-700">{memory.content}</p>
+          <TranslatedText
+            className="text-sm leading-6 text-stone-700"
+            protectedEntities={[memory.locationName, contributor]}
+            sourceField="content"
+            sourceId={memory.id}
+            sourceType="memory"
+            text={memory.content}
+          />
         ) : memory.type === "photo" ? (
           <p className="text-sm leading-6 text-stone-500">Photo memory</p>
         ) : null}

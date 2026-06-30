@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import type { PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
@@ -162,8 +163,10 @@ function Icon({ name }: { name: MobileNavIcon }) {
   }
 }
 
-function navItemClass(active: boolean, compact = false) {
-  return `flex h-14 w-full min-w-[74px] flex-col items-center justify-center gap-1 rounded-2xl px-2 text-center text-[11px] font-black transition ${
+function navItemClass(active: boolean, compact = false, exploring = false) {
+  return `flex h-14 w-full min-w-[74px] flex-col items-center justify-center gap-1 rounded-2xl px-2 text-center text-[11px] font-black transform-gpu transition duration-150 ${
+    exploring ? "scale-110 -translate-y-1" : "active:scale-95"
+  } ${
     compact
       ? active
         ? "bg-white/90 text-emerald-800 shadow-sm backdrop-blur"
@@ -194,12 +197,17 @@ function CaptureIcon() {
 
 export function BottomNav() {
   const pathname = usePathname();
+  const router = useRouter();
   const { t } = useI18n();
   const { openCapture } = useCaptureModal();
   const activeTripId = getActiveTripId(pathname);
   const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
   const isChatPage = Boolean(pathname.match(/^\/trips\/[^/]+\/chat$/));
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
+  const [exploringHref, setExploringHref] = useState<string | null>(null);
+  const pointerNavHrefRef = useRef<string | null>(null);
+  const pointerNavIdRef = useRef<number | null>(null);
+  const suppressNextNavClickRef = useRef(false);
   const globalItems: MobileNavItem[] = [
     { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
     { labelKey: "nav.discover", href: "/discover", icon: "discover" },
@@ -210,6 +218,68 @@ export function BottomNav() {
   function isActive(href: string) {
     if (href === "/trips") return pathname === "/trips" || pathname === "/trips/new";
     return pathname === href || pathname.startsWith(`${href}/`);
+  }
+
+  function findNavHrefAtPoint(clientX: number, clientY: number) {
+    const element = document.elementFromPoint(clientX, clientY);
+    const target = element?.closest("[data-bottom-nav-href]");
+    return target instanceof HTMLElement ? target.dataset.bottomNavHref ?? null : null;
+  }
+
+  function vibrateNavTick() {
+    if (typeof navigator === "undefined" || !("vibrate" in navigator)) return;
+    navigator.vibrate(8);
+  }
+
+  function beginNavExploration(
+    event: ReactPointerEvent<HTMLAnchorElement>,
+    href: string,
+  ) {
+    if (event.pointerType === "mouse") return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointerNavIdRef.current = event.pointerId;
+    pointerNavHrefRef.current = href;
+    setExploringHref(href);
+    vibrateNavTick();
+  }
+
+  function updateNavExploration(event: ReactPointerEvent<HTMLAnchorElement>) {
+    if (pointerNavIdRef.current !== event.pointerId) return;
+    event.preventDefault();
+    const nextHref = findNavHrefAtPoint(event.clientX, event.clientY);
+    if (!nextHref || nextHref === pointerNavHrefRef.current) return;
+    pointerNavHrefRef.current = nextHref;
+    setExploringHref(nextHref);
+    vibrateNavTick();
+  }
+
+  function finishNavExploration(event: ReactPointerEvent<HTMLAnchorElement>) {
+    if (pointerNavIdRef.current !== event.pointerId) return;
+    event.preventDefault();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const targetHref =
+      findNavHrefAtPoint(event.clientX, event.clientY) ?? pointerNavHrefRef.current;
+    pointerNavIdRef.current = null;
+    pointerNavHrefRef.current = null;
+    suppressNextNavClickRef.current = true;
+    setExploringHref(null);
+    if (targetHref && targetHref !== pathname) {
+      router.push(targetHref);
+    }
+  }
+
+  function cancelNavExploration(event: ReactPointerEvent<HTMLAnchorElement>) {
+    if (pointerNavIdRef.current !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    pointerNavIdRef.current = null;
+    pointerNavHrefRef.current = null;
+    suppressNextNavClickRef.current = true;
+    setExploringHref(null);
   }
 
   function captureOptions() {
@@ -250,23 +320,49 @@ export function BottomNav() {
                 : "flex w-max min-w-full items-center justify-center gap-2"
             }
           >
-            {items.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`${navItemClass(isActive(item.href), isMapPage)} relative`}
-                aria-label={t(item.labelKey)}
-              >
-                <Icon name={item.icon} />
-                {item.icon === "chat" && hasUnreadChat && !isChatPage ? (
+            {items.map((item) => {
+              const isExploring = exploringHref === item.href;
+              const active = exploringHref ? isExploring : isActive(item.href);
+
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  data-bottom-nav-href={item.href}
+                  onPointerDown={(event) => beginNavExploration(event, item.href)}
+                  onPointerMove={updateNavExploration}
+                  onPointerUp={finishNavExploration}
+                  onPointerCancel={cancelNavExploration}
+                  onClick={(event) => {
+                    if (
+                      suppressNextNavClickRef.current ||
+                      pointerNavIdRef.current !== null ||
+                      exploringHref
+                    ) {
+                      event.preventDefault();
+                      suppressNextNavClickRef.current = false;
+                    }
+                  }}
+                  className={`${navItemClass(active, isMapPage, isExploring)} relative`}
+                  aria-label={t(item.labelKey)}
+                >
                   <span
-                    aria-label={t("chat.unread")}
-                    className="absolute right-4 top-2 h-2.5 w-2.5 rounded-full bg-red-500 shadow-sm ring-2 ring-white"
-                  />
-                ) : null}
-                <span className="leading-none">{t(item.labelKey)}</span>
-              </Link>
-            ))}
+                    className={`transition-transform duration-150 ${
+                      isExploring ? "scale-125" : ""
+                    }`}
+                  >
+                    <Icon name={item.icon} />
+                  </span>
+                  {item.icon === "chat" && hasUnreadChat && !isChatPage ? (
+                    <span
+                      aria-label={t("chat.unread")}
+                      className="absolute right-4 top-2 h-2.5 w-2.5 rounded-full bg-red-500 shadow-sm ring-2 ring-white"
+                    />
+                  ) : null}
+                  <span className="leading-none">{t(item.labelKey)}</span>
+                </Link>
+              );
+            })}
           </div>
         </div>
       </nav>

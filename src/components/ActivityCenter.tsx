@@ -19,12 +19,14 @@ import {
   requestFaceDetection,
   requestPhotoIndexing,
 } from "@/lib/supabase/media-assets";
+import type { PhotoFace } from "@/types";
 import {
   listRuntimePhotoUploadBatches,
   retryFailedPhotoUploadBatch,
 } from "@/lib/uploads/photo-upload-manager";
 
 const FAILED_WARNING_AUTO_HIDE_MS = 18000;
+const FACE_AUTO_REVIEW_CONFIDENCE_THRESHOLD = 0.7;
 
 function payloadString(job: BackgroundJob, key: string) {
   const value = job.payload[key];
@@ -75,6 +77,55 @@ function withReturnPath(href: string) {
   if (!returnPath) return href;
   const separator = href.includes("?") ? "&" : "?";
   return `${href}${separator}returnTo=${encodeURIComponent(returnPath)}`;
+}
+
+function numericBoundingBoxValue(face: PhotoFace, key: string) {
+  const value = face.boundingBox[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function faceArea(face: PhotoFace) {
+  const width = numericBoundingBoxValue(face, "width");
+  const height = numericBoundingBoxValue(face, "height");
+  return Math.max(0, width) * Math.max(0, height);
+}
+
+function isAutoRecognizedFace(face: PhotoFace) {
+  const hasKnownPerson =
+    Boolean(face.journeyMemberId || face.recognizedName) &&
+    (face.recognitionStatus === "confirmed" ||
+      face.recognitionStatus === "recognized");
+  const confidence = face.confidence ?? 1;
+
+  return hasKnownPerson && confidence >= FACE_AUTO_REVIEW_CONFIDENCE_THRESHOLD;
+}
+
+function getFaceReviewStats(faces: PhotoFace[]) {
+  if (faces.length === 0) {
+    return {
+      reviewRequired: false,
+      reviewCount: 0,
+      autoRecognizedCount: 0,
+      reviewedFaceCount: 0,
+      ignoredSmallFaceCount: 0,
+    };
+  }
+
+  const reviewedFaces =
+    faces.length > 3
+      ? [...faces].sort((left, right) => faceArea(right) - faceArea(left)).slice(0, 3)
+      : faces;
+  const reviewCount = reviewedFaces.filter(
+    (face) => !isAutoRecognizedFace(face),
+  ).length;
+
+  return {
+    reviewRequired: reviewCount > 0,
+    reviewCount,
+    autoRecognizedCount: faces.filter(isAutoRecognizedFace).length,
+    reviewedFaceCount: reviewedFaces.length,
+    ignoredSmallFaceCount: Math.max(0, faces.length - reviewedFaces.length),
+  };
 }
 
 type Translate = (
@@ -161,17 +212,25 @@ async function runJob(job: BackgroundJob, t: Translate, locale: Locale) {
           : t("activity.job.faceRecognition"),
     });
     const faces = await requestFaceDetection(mediaAssetId, tripId);
-    const unknownCount = faces.filter(
-      (face) => face.recognitionStatus !== "confirmed",
-    ).length;
+    const reviewStats = getFaceReviewStats(faces);
     await updateBackgroundJob(job.id, {
-      status: unknownCount > 0 ? "waiting_for_user" : "completed",
+      status: reviewStats.reviewRequired ? "waiting_for_user" : "completed",
       progress: 100,
       currentStep:
-        unknownCount > 0
-          ? t("activity.job.unknownFaces", { count: unknownCount })
+        reviewStats.reviewRequired
+          ? t("activity.job.unknownFaces", { count: reviewStats.reviewCount })
           : t("activity.job.facesProcessed"),
-      result: { mediaAssetId, faceCount: faces.length, unknownCount },
+      result: {
+        mediaAssetId,
+        faceCount: faces.length,
+        unknownCount: reviewStats.reviewCount,
+        reviewCount: reviewStats.reviewCount,
+        reviewRequired: reviewStats.reviewRequired,
+        autoRecognizedCount: reviewStats.autoRecognizedCount,
+        reviewedFaceCount: reviewStats.reviewedFaceCount,
+        ignoredSmallFaceCount: reviewStats.ignoredSmallFaceCount,
+        autoReviewConfidenceThreshold: FACE_AUTO_REVIEW_CONFIDENCE_THRESHOLD,
+      },
     });
     return;
   }

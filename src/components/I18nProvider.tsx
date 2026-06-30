@@ -10,10 +10,14 @@ import {
 } from "react";
 import {
   type Locale,
+  type PartialTranslationDictionary,
   type TranslationKey,
   defaultLocale,
+  formatTranslation,
+  getDictionary,
+  isLocale,
+  normalizeLanguageCode,
   normalizeLocale,
-  translate,
 } from "@/lib/i18n/dictionaries";
 import { supabase } from "@/lib/supabase/client";
 
@@ -21,9 +25,17 @@ export const LOCALE_STORAGE_KEY = "otr:locale";
 export const LOCALE_PREFERENCE_CHANGED_EVENT = "otr:locale-preference-changed";
 
 type I18nContextValue = {
+  contentLanguage: string;
   locale: Locale;
+  localePreference: string;
   setLocale: (locale: Locale) => void;
   t: (key: TranslationKey, values?: Record<string, string | number>) => string;
+};
+
+type LocaleBundlePayload = {
+  languageCode?: string;
+  translations?: PartialTranslationDictionary;
+  fallback?: boolean;
 };
 
 const I18nContext = createContext<I18nContextValue | null>(null);
@@ -43,18 +55,28 @@ function getStoredPreference() {
   return window.localStorage.getItem(LOCALE_STORAGE_KEY) || "auto";
 }
 
-function getInitialLocale() {
-  if (typeof window === "undefined") return defaultLocale;
+function resolveBundleLanguage(preference: string | null | undefined) {
+  const rawPreference =
+    !preference || preference === "auto"
+      ? typeof window === "undefined"
+        ? defaultLocale
+        : window.navigator.language
+      : preference;
 
-  return resolveLocalePreference(getStoredPreference());
+  return normalizeLanguageCode(rawPreference);
 }
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(defaultLocale);
+  const [localePreference, setLocalePreference] = useState("auto");
+  const [dynamicTranslations, setDynamicTranslations] =
+    useState<PartialTranslationDictionary | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setLocaleState(getInitialLocale());
+      const preference = getStoredPreference();
+      setLocalePreference(preference);
+      setLocaleState(resolveLocalePreference(preference));
     }, 0);
 
     return () => window.clearTimeout(timer);
@@ -64,6 +86,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     function handleLocalePreferenceChanged(event: Event) {
       const customEvent = event as CustomEvent<{ language?: string }>;
       const preference = customEvent.detail?.language ?? getStoredPreference();
+      setLocalePreference(preference);
       setLocaleState(resolveLocalePreference(preference));
     }
 
@@ -81,11 +104,58 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    document.documentElement.lang = locale;
-  }, [locale]);
+    const documentLanguage =
+      localePreference === "auto"
+        ? locale
+        : normalizeLanguageCode(localePreference);
+    document.documentElement.lang = documentLanguage;
+  }, [locale, localePreference]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const bundleLanguage = resolveBundleLanguage(localePreference);
+
+    if (isLocale(bundleLanguage)) {
+      setDynamicTranslations(null);
+      return;
+    }
+
+    async function loadBundle() {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const headers: HeadersInit = data.session?.access_token
+          ? { Authorization: `Bearer ${data.session.access_token}` }
+          : {};
+        const response = await fetch(
+          `/api/i18n/${encodeURIComponent(bundleLanguage)}`,
+          { headers },
+        );
+        const payload = (await response.json()) as LocaleBundlePayload;
+
+        if (!isMounted) return;
+
+        if (!response.ok || payload.fallback || !payload.translations) {
+          setDynamicTranslations(null);
+          return;
+        }
+
+        setDynamicTranslations(payload.translations);
+      } catch {
+        if (isMounted) setDynamicTranslations(null);
+      }
+    }
+
+    void loadBundle();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [localePreference]);
 
   const setLocale = useCallback((nextLocale: Locale) => {
     setLocaleState(nextLocale);
+    setLocalePreference(nextLocale);
+    setDynamicTranslations(null);
     window.localStorage.setItem(LOCALE_STORAGE_KEY, nextLocale);
     window.dispatchEvent(
       new CustomEvent(LOCALE_PREFERENCE_CHANGED_EVENT, {
@@ -105,19 +175,30 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
       .catch(() => null);
   }, []);
 
+  const dictionary = useMemo(
+    () => getDictionary(locale, dynamicTranslations),
+    [dynamicTranslations, locale],
+  );
+  const contentLanguage = useMemo(
+    () => resolveBundleLanguage(localePreference),
+    [localePreference],
+  );
+
   const t = useCallback(
     (key: TranslationKey, values?: Record<string, string | number>) =>
-      translate(locale, key, values),
-    [locale],
+      formatTranslation(dictionary[key] ?? key, values),
+    [dictionary],
   );
 
   const value = useMemo(
     () => ({
+      contentLanguage,
       locale,
+      localePreference,
       setLocale,
       t,
     }),
-    [locale, setLocale, t],
+    [contentLanguage, locale, localePreference, setLocale, t],
   );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;

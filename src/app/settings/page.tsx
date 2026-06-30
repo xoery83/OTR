@@ -32,7 +32,6 @@ const languageOptions = [
   { value: "auto", label: "Auto" },
   { value: "en", label: "English" },
   { value: "zh-CN", label: "简体中文" },
-  { value: "zh-TW", label: "繁體中文" },
   { value: "fr", label: "Français" },
   { value: "de", label: "Deutsch" },
   { value: "es", label: "Español" },
@@ -334,6 +333,13 @@ function SettingsContent({ user }: { user: User }) {
               刷新
             </button>
           </div>
+
+          <Link
+            href="/settings/admin/localization"
+            className="mt-4 block rounded-2xl border border-sky-100 bg-sky-50 p-4 text-sm font-semibold text-sky-900 transition hover:border-sky-200 hover:bg-sky-100"
+          >
+            多语言管理：语言包预热、队列处理、机器翻译审核
+          </Link>
 
           {isLoadingRoles ? (
             <p className="mt-4 rounded-2xl bg-stone-50 p-4 text-sm font-semibold text-stone-500">

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import {
+  type CSSProperties,
   type MouseEvent,
   type PointerEvent,
   type TouchEvent,
@@ -193,6 +194,9 @@ function PlannerContent() {
   const [plannerSearchQuery, setPlannerSearchQuery] = useState("");
   const [isMobilePlannerSearchActive, setIsMobilePlannerSearchActive] =
     useState(false);
+  const [plannerSwipeOffset, setPlannerSwipeOffset] = useState(0);
+  const [isPlannerSwipeDragging, setIsPlannerSwipeDragging] = useState(false);
+  const [isPlannerSwipeSettling, setIsPlannerSwipeSettling] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const plannerSearchInputRef = useRef<HTMLInputElement | null>(null);
@@ -205,6 +209,7 @@ function PlannerContent() {
     x: number;
     y: number;
     time: number;
+    locked: "horizontal" | "vertical" | null;
   } | null>(null);
   const suppressNextPlannerClickRef = useRef(false);
 
@@ -327,6 +332,17 @@ function PlannerContent() {
     selectedDay && selectedDay.day.dayDate !== "unscheduled"
       ? `/trips/${tripId}/map?date=${selectedDay.day.dayDate}`
       : `/trips/${tripId}/map`;
+  const plannerSwipePreviewDay =
+    plannerSwipeOffset > 0
+      ? planner.days[selectedIndex - 1] ?? null
+      : plannerSwipeOffset < 0
+        ? planner.days[selectedIndex + 1] ?? null
+        : null;
+  const plannerSwipeStyle: CSSProperties = {
+    transform: `translate3d(${plannerSwipeOffset}px, 0, 0)`,
+    transition: isPlannerSwipeDragging ? "none" : "transform 180ms ease",
+    touchAction: "pan-y",
+  };
 
   function scrollSelectedDayToTop() {
     const keepImmersive = keepPlannerImmersiveDuringResetRef.current;
@@ -398,13 +414,56 @@ function PlannerContent() {
       x: touch.clientX,
       y: touch.clientY,
       time: Date.now(),
+      locked: null,
     };
+    setIsPlannerSwipeDragging(false);
+    setIsPlannerSwipeSettling(false);
+    setPlannerSwipeOffset(0);
+  }
+
+  function handlePlannerSwipeMove(event: TouchEvent<HTMLElement>) {
+    const start = plannerSwipeStartRef.current;
+    if (!start || event.touches.length !== 1 || isPlannerSwipeSettling) return;
+
+    const touch = event.touches[0];
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+
+    if (!start.locked) {
+      if (Math.abs(deltaY) > 12 && Math.abs(deltaY) > Math.abs(deltaX) * 1.2) {
+        start.locked = "vertical";
+      } else if (
+        Math.abs(deltaX) > 12 &&
+        Math.abs(deltaX) > Math.abs(deltaY) * 1.2
+      ) {
+        start.locked = "horizontal";
+        setIsPlannerSwipeDragging(true);
+      }
+    }
+
+    if (start.locked !== "horizontal") return;
+
+    const hasTarget =
+      deltaX < 0
+        ? selectedIndex < planner.days.length - 1
+        : selectedIndex > 0;
+    const viewportWidth = window.innerWidth || 1;
+    const limitedOffset = Math.max(
+      -viewportWidth * 0.92,
+      Math.min(viewportWidth * 0.92, hasTarget ? deltaX : deltaX * 0.24),
+    );
+    event.preventDefault();
+    setPlannerSwipeOffset(limitedOffset);
   }
 
   function handlePlannerSwipeEnd(event: TouchEvent<HTMLElement>) {
     const start = plannerSwipeStartRef.current;
     plannerSwipeStartRef.current = null;
-    if (!start || event.changedTouches.length !== 1) return;
+    setIsPlannerSwipeDragging(false);
+    if (!start || event.changedTouches.length !== 1) {
+      setPlannerSwipeOffset(0);
+      return;
+    }
 
     const touch = event.changedTouches[0];
     const deltaX = touch.clientX - start.x;
@@ -415,14 +474,33 @@ function PlannerContent() {
       Math.abs(deltaX) > Math.abs(deltaY) * 1.35 &&
       elapsed <= 900;
 
-    if (!isHorizontalSwipe) return;
+    if (!isHorizontalSwipe || start.locked === "vertical") {
+      setPlannerSwipeOffset(0);
+      return;
+    }
 
     const nextIndex = deltaX < 0 ? selectedIndex + 1 : selectedIndex - 1;
     const nextDay = planner.days[nextIndex];
-    if (!nextDay) return;
+    if (!nextDay) {
+      setPlannerSwipeOffset(0);
+      return;
+    }
 
     suppressNextPlannerClickRef.current = true;
-    chooseDay(nextDay.day.id, { resetScroll: true });
+    setIsPlannerSwipeSettling(true);
+    setPlannerSwipeOffset((deltaX < 0 ? -1 : 1) * window.innerWidth);
+    window.setTimeout(() => {
+      chooseDay(nextDay.day.id, { resetScroll: true });
+      setPlannerSwipeOffset(0);
+      setIsPlannerSwipeSettling(false);
+    }, 180);
+  }
+
+  function handlePlannerSwipeCancel() {
+    plannerSwipeStartRef.current = null;
+    setIsPlannerSwipeDragging(false);
+    setIsPlannerSwipeSettling(false);
+    setPlannerSwipeOffset(0);
   }
 
   function handlePlannerClickCapture(event: MouseEvent<HTMLElement>) {
@@ -862,29 +940,52 @@ function PlannerContent() {
         selectedDay ? (
           <section
             ref={selectedDayCardRef}
+            className="relative overflow-hidden md:overflow-visible"
             onClickCapture={handlePlannerClickCapture}
             onTouchStart={handlePlannerSwipeStart}
+            onTouchMove={handlePlannerSwipeMove}
             onTouchEnd={handlePlannerSwipeEnd}
+            onTouchCancel={handlePlannerSwipeCancel}
           >
-            <PlannerDayCard
-              tripId={tripId}
-              plannerDay={selectedDay}
-              journeyMembers={activeMembers}
-              ledgerEntries={ledgerEntries}
-              ledgerBaseCurrency={ledgerBaseCurrency}
-              journeyName={trip?.name ?? ""}
-              journeyDestination={trip?.destination ?? ""}
-              previousPlannerDay={previousSelectedDay}
-              preserveOriginalPhotos={trip?.photoStorageStatus === "connected"}
-              onLedgerEntryCreated={async () => {
-                const data = await getLedgerData(tripId);
-                setLedgerEntries(data.entries);
-                setLedgerBaseCurrency(data.ledger.baseCurrency);
-              }}
-              onPlannerChanged={refreshPlanner}
-              mapHref={selectedDayMapHref}
-              focusedItemId={focusedPlannerItemId}
-            />
+            {plannerSwipePreviewDay ? (
+              <div
+                aria-hidden="true"
+                className={`pointer-events-none absolute top-8 z-0 rounded-2xl bg-emerald-700/10 px-4 py-3 text-sm font-black text-emerald-900 ${
+                  plannerSwipeOffset > 0 ? "left-4" : "right-4 text-right"
+                }`}
+              >
+                <p>
+                  {plannerSwipePreviewDay.dayTag ??
+                    t("planner.day.short", {
+                      number: plannerSwipePreviewDay.dayNumber,
+                    })}
+                </p>
+                <p className="mt-0.5 text-xs font-bold text-emerald-700">
+                  {compactDate(plannerSwipePreviewDay.day.dayDate, locale)}
+                </p>
+              </div>
+            ) : null}
+            <div className="relative z-10" style={plannerSwipeStyle}>
+              <PlannerDayCard
+                tripId={tripId}
+                plannerDay={selectedDay}
+                journeyMembers={activeMembers}
+                ledgerEntries={ledgerEntries}
+                ledgerBaseCurrency={ledgerBaseCurrency}
+                journeyName={trip?.name ?? ""}
+                journeyDestination={trip?.destination ?? ""}
+                previousPlannerDay={previousSelectedDay}
+                preserveOriginalPhotos={trip?.photoStorageStatus === "connected"}
+                onLedgerEntryCreated={async () => {
+                  const data = await getLedgerData(tripId);
+                  setLedgerEntries(data.entries);
+                  setLedgerBaseCurrency(data.ledger.baseCurrency);
+                }}
+                onPlannerChanged={refreshPlanner}
+                mapHref={selectedDayMapHref}
+                focusedItemId={focusedPlannerItemId}
+              />
+            </div>
           </section>
         ) : (
           <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-5 text-sm text-stone-600">

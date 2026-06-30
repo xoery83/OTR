@@ -1,5 +1,6 @@
 import type { ItineraryEvent } from "@/types";
 import { formatJourneyTime } from "@/lib/format";
+import { TranslatedText } from "./TranslatedText";
 
 export function ActivityCard({ activity }: { activity: ItineraryEvent }) {
   const participantNames = activity.participants
@@ -36,9 +37,14 @@ export function ActivityCard({ activity }: { activity: ItineraryEvent }) {
       </div>
 
       {activity.description ? (
-        <p className="mt-3 line-clamp-2 text-xs leading-5 text-stone-600">
-          {activity.description}
-        </p>
+        <TranslatedText
+          className="mt-3 line-clamp-2 text-xs leading-5 text-stone-600"
+          protectedEntities={[activity.title, activity.locationName]}
+          sourceField="description"
+          sourceId={activity.id}
+          sourceType="plan_item"
+          text={activity.description}
+        />
       ) : null}
 
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold">

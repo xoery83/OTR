@@ -17,6 +17,7 @@ import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { CurrencyCombobox } from "@/components/CurrencyCombobox";
 import { useI18n } from "@/components/I18nProvider";
 import { MemoryEngagementActions } from "@/components/MemoryEngagementActions";
+import { TranslatedText } from "@/components/TranslatedText";
 import { enqueueMediaProcessingJobs } from "@/lib/background-jobs/client";
 import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
 import { allocatedLedgerAmountForDay } from "@/lib/ledger/date-allocation";
@@ -3876,9 +3877,14 @@ export function PlannerDayCard({
                           </span>
                         )}
                         {item.note ? (
-                          <p className="mt-2 line-clamp-2 text-xs text-stone-500">
-                            {item.note}
-                          </p>
+                          <TranslatedText
+                            className="mt-2 line-clamp-2 text-xs text-stone-500"
+                            protectedEntities={[item.location, item.title]}
+                            sourceField="note"
+                            sourceId={item.id}
+                            sourceType="plan_item"
+                            text={item.note}
+                          />
                         ) : null}
                       </div>
                       <div className="flex shrink-0 items-center gap-2">

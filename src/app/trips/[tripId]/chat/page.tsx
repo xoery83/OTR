@@ -24,16 +24,32 @@ import type { JourneyChatMessage, PhotoFace, Trip } from "@/types";
 const commonEmojis = [
   "😀",
   "😂",
+  "🤣",
   "🥰",
   "😍",
   "😎",
+  "🤔",
   "😭",
+  "😴",
+  "😅",
+  "😡",
+  "😜",
   "🙏",
   "👍",
+  "👌",
   "👏",
   "🎉",
   "🔥",
   "❤️",
+  "✌️",
+  "😷",
+  "😮",
+  "🙄",
+  "😬",
+  "😢",
+  "🙂",
+  "😇",
+  "🤐",
   "☕",
   "🍜",
   "🍻",
@@ -47,6 +63,8 @@ const commonEmojis = [
   "⭐",
   "📷",
 ];
+
+const emojiTabs = ["⌕", "☺", "♡", "✌", "😎", "🐰"];
 
 type LocalChatPendingStatus = "uploading" | "failed";
 
@@ -275,6 +293,7 @@ function ChatContent() {
   const listRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const recordingStartedAtRef = useRef<number | null>(null);
   const hasPrimedSafariMicrophoneRef = useRef(false);
   const hasMarkedReadRef = useRef(false);
@@ -295,6 +314,7 @@ function ChatContent() {
   const [voiceMode, setVoiceMode] = useState(false);
   const [isPrimingMicrophone, setIsPrimingMicrophone] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
+  const [isTextFocused, setIsTextFocused] = useState(false);
   const [activeImage, setActiveImage] = useState<JourneyChatMessage | null>(null);
   const [activeImageFaces, setActiveImageFaces] = useState<PhotoFace[]>([]);
 
@@ -484,10 +504,14 @@ function ChatContent() {
   }, [isLoading, messages.length, scheduleBottomLock]);
 
   useEffect(() => {
+    document.body.classList.toggle(
+      "otr-chat-keyboard-active",
+      isTextFocused || showEmoji,
+    );
     return () => {
       document.body.classList.remove("otr-chat-keyboard-active");
     };
-  }, []);
+  }, [isTextFocused, showEmoji]);
 
   useEffect(() => {
     let cancelled = false;
@@ -543,6 +567,37 @@ function ChatContent() {
     },
     onError: (recordingError) => setError(recordingError.message),
   });
+
+  const focusTextInput = useCallback(() => {
+    setVoiceMode(false);
+    setShowEmoji(false);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus({ preventScroll: true });
+      window.setTimeout(() => textareaRef.current?.focus({ preventScroll: true }), 40);
+    });
+  }, []);
+
+  const closeTextInputArea = useCallback(() => {
+    textareaRef.current?.blur();
+    setIsTextFocused(false);
+    setShowEmoji(false);
+  }, []);
+
+  function toggleEmojiPanel() {
+    if (showEmoji) {
+      focusTextInput();
+      return;
+    }
+    setVoiceMode(false);
+    textareaRef.current?.blur();
+    setIsTextFocused(false);
+    setShowEmoji(true);
+    scheduleBottomLock();
+  }
+
+  function removeLastEmojiCharacter() {
+    setText((current) => Array.from(current).slice(0, -1).join(""));
+  }
 
   const sendText = useCallback(async () => {
     const value = text.trim();
@@ -926,27 +981,17 @@ function ChatContent() {
         </div>
       ) : null}
 
-      <div className="otr-chat-input-bar fixed inset-x-0 bottom-[82px] z-30 border-t border-white/40 bg-[#e4f4ef]/95 px-3 py-2 shadow-[0_-12px_30px_rgba(0,0,0,0.08)] backdrop-blur md:static md:shrink-0">
-        {showEmoji ? (
-          <div className="mx-auto mb-2 grid max-w-3xl grid-cols-8 gap-1 rounded-2xl bg-white p-2 shadow-sm">
-            {commonEmojis.map((emoji) => (
-              <button
-                key={emoji}
-                type="button"
-                onClick={() => setText((current) => `${current}${emoji}`)}
-                className="h-9 rounded-xl text-xl hover:bg-stone-100"
-              >
-                {emoji}
-              </button>
-            ))}
-          </div>
-        ) : null}
-
+      <div className="otr-chat-input-bar fixed inset-x-0 bottom-[82px] z-30 border-t border-white/40 bg-[#e4f4ef]/95 shadow-[0_-12px_30px_rgba(0,0,0,0.08)] backdrop-blur md:static md:shrink-0">
         <div className="mx-auto flex max-w-3xl items-end gap-2">
           <button
             type="button"
-            onClick={() => setVoiceMode((current) => !current)}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-2xl font-black text-emerald-800 shadow-sm transition active:scale-95"
+            onClick={() => {
+              if (!voiceMode) {
+                closeTextInputArea();
+              }
+              setVoiceMode((current) => !current);
+            }}
+            className="ml-3 my-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-2xl font-black text-emerald-800 shadow-sm transition active:scale-95"
             aria-label="切换语音"
           >
             {voiceMode ? "⌨" : "◉"}
@@ -959,40 +1004,56 @@ function ChatContent() {
               onPointerUp={stopHoldToTalk}
               onPointerCancel={stopHoldToTalk}
               disabled={isSending || isPrimingMicrophone}
-              className="h-11 flex-1 rounded-2xl bg-white text-base font-black text-stone-900 shadow-sm active:bg-emerald-50"
+              className="my-2 h-11 flex-1 rounded-2xl bg-white text-base font-black text-stone-900 shadow-sm active:bg-emerald-50"
             >
               {isPrimingMicrophone ? "正在开启麦克风..." : "按住 说话"}
             </button>
           ) : (
             <textarea
+              ref={textareaRef}
               value={text}
               onChange={(event) => setText(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing
+                ) {
                   event.preventDefault();
                   void sendText();
                 }
               }}
+              enterKeyHint="send"
               rows={1}
               placeholder="输入消息..."
-              onFocus={() => document.body.classList.add("otr-chat-keyboard-active")}
-              onBlur={() => document.body.classList.remove("otr-chat-keyboard-active")}
-              className="max-h-28 min-h-11 flex-1 resize-none rounded-xl border border-white bg-white px-3 py-2 text-base font-semibold leading-7 text-stone-950 shadow-sm outline-none focus:border-emerald-400"
+              onFocus={() => {
+                setIsTextFocused(true);
+                window.setTimeout(
+                  () => textareaRef.current?.focus({ preventScroll: true }),
+                  50,
+                );
+              }}
+              onBlur={() => setIsTextFocused(false)}
+              className="my-2 max-h-28 min-h-11 flex-1 resize-none rounded-xl border border-white bg-white px-3 py-2 text-base font-semibold leading-7 text-stone-950 shadow-sm outline-none focus:border-emerald-400"
             />
           )}
 
           <button
             type="button"
-            onClick={() => setShowEmoji((current) => !current)}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-2xl font-black text-emerald-800 shadow-sm transition active:scale-95"
+            onClick={toggleEmojiPanel}
+            className="my-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-2xl font-black text-emerald-800 shadow-sm transition active:scale-95"
             aria-label="表情"
           >
-            ☺
+            {showEmoji ? "⌨" : "☺"}
           </button>
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-3xl font-black text-emerald-800 shadow-sm transition active:scale-95"
+            onClick={() => {
+              closeTextInputArea();
+              setVoiceMode(false);
+              fileInputRef.current?.click();
+            }}
+            className="my-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-3xl font-black text-emerald-800 shadow-sm transition active:scale-95"
             aria-label={uploadingImageCount > 0 ? "图片上传中" : "添加图片"}
           >
             +
@@ -1001,7 +1062,7 @@ function ChatContent() {
             type="button"
             onClick={() => void sendText()}
             disabled={!text.trim() || isSending || voiceMode}
-            className="h-11 rounded-xl bg-emerald-700 px-3 text-sm font-black text-white disabled:bg-stone-300 sm:px-4"
+            className="mr-3 my-2 hidden h-11 rounded-xl bg-emerald-700 px-3 text-sm font-black text-white disabled:bg-stone-300 md:block"
           >
             发送
           </button>
@@ -1014,6 +1075,75 @@ function ChatContent() {
             onChange={(event) => void sendImages(event.target.files)}
           />
         </div>
+
+        {showEmoji ? (
+          <div className="border-t border-emerald-900/5 bg-[#dcefeb] px-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] pt-3 md:hidden">
+            <div className="mx-auto max-w-3xl">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                {emojiTabs.map((tab, index) => (
+                  <button
+                    key={`${tab}-${index}`}
+                    type="button"
+                    className={`flex h-12 w-12 items-center justify-center rounded-2xl text-3xl font-black ${
+                      index === 1 ? "bg-white shadow-sm" : "text-stone-700"
+                    }`}
+                    aria-label={`表情分类 ${index + 1}`}
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+              <div className="h-[260px] overflow-y-auto">
+                <div className="mb-3 text-lg font-semibold text-stone-500">最近使用</div>
+                <div className="grid grid-cols-8 gap-x-3 gap-y-4">
+                  {commonEmojis.map((emoji, index) => (
+                    <button
+                      key={`${emoji}-${index}`}
+                      type="button"
+                      onClick={() => setText((current) => `${current}${emoji}`)}
+                      className="text-4xl leading-none"
+                      aria-label={`输入表情 ${emoji}`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-5 text-lg font-semibold text-stone-500">所有表情</div>
+                <div className="mt-3 grid grid-cols-8 gap-x-3 gap-y-4 pb-20">
+                  {[...commonEmojis, ...commonEmojis.slice(0, 16)].map((emoji, index) => (
+                    <button
+                      key={`all-${emoji}-${index}`}
+                      type="button"
+                      onClick={() => setText((current) => `${current}${emoji}`)}
+                      className="text-4xl leading-none"
+                      aria-label={`输入表情 ${emoji}`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="pointer-events-none absolute bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] right-4 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={removeLastEmojiCharacter}
+                  className="pointer-events-auto h-14 rounded-2xl bg-white/80 px-7 text-2xl font-black text-stone-700 shadow-sm"
+                  aria-label="删除表情"
+                >
+                  ⌫
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void sendText()}
+                  disabled={!text.trim() || isSending}
+                  className="pointer-events-auto h-14 rounded-2xl bg-emerald-600 px-7 text-xl font-black text-white shadow-sm disabled:bg-stone-300"
+                >
+                  发送
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <ImageViewer

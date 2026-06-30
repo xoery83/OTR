@@ -1,7 +1,6 @@
 export const supportedAppLanguageCodes = [
   "en",
   "zh-CN",
-  "zh-TW",
   "fr",
   "de",
   "es",
@@ -22,7 +21,7 @@ export function normalizeAppLanguageCode(value: string | null | undefined) {
   if (lower === "zh" || lower === "zh-cn" || lower === "zh-hans") {
     return "zh-CN";
   }
-  if (lower === "zh-tw" || lower === "zh-hant") return "zh-TW";
+  if (lower === "zh-tw" || lower === "zh-hant") return "zh-CN";
 
   const base = lower.split("-")[0];
   const supported = supportedAppLanguageCodes.find(
@@ -37,7 +36,7 @@ export function toLibreTranslateLanguageCode(
 ) {
   const normalized = normalizeAppLanguageCode(languageCode);
 
-  if (normalized === "zh-CN" || normalized === "zh-TW") return "zh-Hans";
+  if (normalized === "zh-CN") return "zh-Hans";
 
   return normalized;
 }

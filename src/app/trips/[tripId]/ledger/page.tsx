@@ -12,11 +12,13 @@ import { useParams, useSearchParams } from "next/navigation";
 import { flushSync } from "react-dom";
 import { AuthGate } from "@/components/AuthGate";
 import { CurrencyCombobox } from "@/components/CurrencyCombobox";
+import { TranslatedText } from "@/components/TranslatedText";
 import { useI18n } from "@/components/I18nProvider";
 import { inferCurrencyFromText, normalizeCurrencyCode } from "@/lib/currencies";
 import { getErrorMessage } from "@/lib/errors";
 import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
 import { getLedgerAllocationDates } from "@/lib/ledger/date-allocation";
+import { getCurrentUser } from "@/lib/supabase/auth";
 import {
   createLedgerEntry,
   deleteLedgerEntry,
@@ -112,6 +114,13 @@ type MemberLedgerReport = {
   settlementBalance: number;
   entryCount: number;
   categories: Record<LedgerCategory, number>;
+  categoryDetails: Record<LedgerCategory, MemberCategoryLedgerDetail[]>;
+};
+
+type MemberCategoryLedgerDetail = {
+  entry: LedgerEntry;
+  shareAmount: number;
+  participantCount: number;
 };
 
 type DailyLedgerEntry = {
@@ -372,6 +381,10 @@ function buildMemberReports(
         (totals, category) => ({ ...totals, [category]: 0 }),
         {} as Record<LedgerCategory, number>,
       ),
+      categoryDetails: categories.reduce(
+        (details, category) => ({ ...details, [category]: [] }),
+        {} as Record<LedgerCategory, MemberCategoryLedgerDetail[]>,
+      ),
     });
   });
 
@@ -382,12 +395,18 @@ function buildMemberReports(
         : entry.payerMemberId
           ? [{ memberId: entry.payerMemberId, computedShareBaseAmount: entry.baseAmount }]
           : [];
+    const participantCount = Math.max(participants.length, 1);
 
     participants.forEach((participant) => {
       const report = reports.get(participant.memberId);
       if (!report) return;
       const share = participant.computedShareBaseAmount ?? 0;
       report.categories[entry.category] += share;
+      report.categoryDetails[entry.category].push({
+        entry,
+        shareAmount: share,
+        participantCount,
+      });
       report.entryCount += 1;
     });
   });
@@ -829,10 +848,15 @@ function PersonReportCard({
   currency: string;
 }) {
   const { locale, t } = useI18n();
-  const topCategories = Object.entries(report.categories)
+  const categoryItems = Object.entries(report.categories)
     .filter(([, amount]) => amount > 0)
-    .sort((first, second) => second[1] - first[1])
-    .slice(0, 4) as [LedgerCategory, number][];
+    .sort((first, second) => second[1] - first[1]) as [LedgerCategory, number][];
+  const splitPeopleLabel = locale === "zh-CN" ? "分摊人数" : "Split";
+  const payerLabel = locale === "zh-CN" ? "付款人" : "Paid by";
+  const totalLabel = locale === "zh-CN" ? "总费用" : "Total";
+  const shareLabel = locale === "zh-CN" ? "分摊额" : "Share";
+  const noPayerLabel = locale === "zh-CN" ? "未记录" : "Not recorded";
+  const peopleSuffix = locale === "zh-CN" ? "人" : " people";
 
   return (
     <article className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
@@ -896,24 +920,89 @@ function PersonReportCard({
         </div>
       </div>
 
-      {topCategories.length > 0 ? (
+      {categoryItems.length > 0 ? (
         <div className="mt-4 space-y-2">
           <p className="text-xs font-bold uppercase tracking-[0.12em] text-stone-500">
             {t("ledger.categoryMix")}
           </p>
-          {topCategories.map(([category, amount]) => (
-            <div
-              key={category}
-              className="flex items-center justify-between gap-3 rounded-2xl bg-[#fff8ec] px-3 py-2 text-sm"
-            >
-              <span className="font-semibold text-stone-700">
-                {t(categoryLabelKeys[category])}
-              </span>
-              <span className="font-bold text-stone-950">
-                {money(amount, currency, locale)}
-              </span>
-            </div>
-          ))}
+          {categoryItems.map(([category, amount]) => {
+            const details = report.categoryDetails[category]
+              .filter((item) => item.shareAmount > 0)
+              .sort((left, right) => {
+                const dateOrder = left.entry.expenseDate.localeCompare(
+                  right.entry.expenseDate,
+                );
+                if (dateOrder) return dateOrder;
+                return left.entry.title.localeCompare(right.entry.title);
+              });
+
+            return (
+              <details
+                key={category}
+                className="group rounded-2xl bg-[#fff8ec] px-3 py-2 text-sm open:bg-[#fffaf1]"
+              >
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                  <span className="font-semibold text-stone-700">
+                    {t(categoryLabelKeys[category])}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-2 font-bold text-stone-950">
+                    {money(amount, currency, locale)}
+                    <span className="text-xs text-stone-400 group-open:hidden">+</span>
+                    <span className="hidden text-xs text-stone-400 group-open:inline">-</span>
+                  </span>
+                </summary>
+                <div className="mt-3 space-y-2">
+                  {details.map(({ entry, shareAmount, participantCount }) => (
+                    <div
+                      key={`${category}-${entry.id}`}
+                      className="rounded-xl bg-white/85 px-3 py-2 shadow-sm"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-bold text-stone-500">
+                            {dateLabel(entry.expenseDate, locale)}
+                          </p>
+                          <p className="mt-0.5 line-clamp-2 font-black text-stone-950">
+                            {entry.title}
+                          </p>
+                        </div>
+                        <p className="shrink-0 text-right text-sm font-black text-emerald-900">
+                          {money(shareAmount, currency, locale)}
+                        </p>
+                      </div>
+                      <div className="mt-2 grid gap-1 text-xs text-stone-500 sm:grid-cols-2">
+                        <p>
+                          {payerLabel}:{" "}
+                          <span className="font-semibold text-stone-700">
+                            {entry.payer?.displayName ?? noPayerLabel}
+                          </span>
+                        </p>
+                        <p>
+                          {totalLabel}:{" "}
+                          <span className="font-semibold text-stone-700">
+                            {money(entry.baseAmount, currency, locale)}
+                          </span>
+                        </p>
+                        <p>
+                          {splitPeopleLabel}:{" "}
+                          <span className="font-semibold text-stone-700">
+                            {participantCount}
+                            {peopleSuffix}
+                          </span>
+                        </p>
+                        <p>
+                          {shareLabel}:{" "}
+                          <span className="font-semibold text-stone-700">
+                            {money(shareAmount, currency, locale)}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            );
+          })}
         </div>
       ) : null}
     </article>
@@ -1128,9 +1217,20 @@ function DailyLedgerAnalysis({
                   </p>
                 ) : null}
                 {entry.description ? (
-                  <p className="mt-2 text-sm leading-6 text-stone-600">
-                    {entry.description}
-                  </p>
+                  <TranslatedText
+                    className="mt-2 text-sm leading-6 text-stone-600"
+                    protectedEntities={[
+                      entry.title,
+                      entry.addressText,
+                      entry.originalCurrency,
+                      entry.baseCurrency,
+                      entry.payer?.displayName,
+                    ]}
+                    sourceField="description"
+                    sourceId={entry.id}
+                    sourceType="expense"
+                    text={entry.description}
+                  />
                 ) : null}
                 {entry.participants.length > 0 ? (
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -1224,28 +1324,35 @@ function LedgerContent() {
   const [auditWarnings, setAuditWarnings] = useState<LedgerAuditWarning[] | null>(
     null,
   );
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [currencyError, setCurrencyError] = useState<string | null>(null);
   const [isLoadingRate, setIsLoadingRate] = useState(false);
 
   async function loadLedgerSnapshot() {
-    const [tripData, data] = await Promise.all([
+    const [tripData, data, user] = await Promise.all([
       getTrip(tripId),
       getLedgerData(tripId),
+      getCurrentUser().catch(() => null),
     ]);
-    return { tripData, data };
+    return { tripData, data, userId: user?.id ?? null };
   }
 
   function applyLedgerSnapshot({
     tripData,
     data,
+    userId,
   }: {
     tripData: Trip;
     data: LedgerData;
+    userId?: string | null;
   }) {
     setTrip(tripData);
     setLedgerData(data);
+    if (userId !== undefined) {
+      setCurrentUserId(userId);
+    }
     setForm(
       initialForm(
         data.ledger.baseCurrency,
@@ -1345,6 +1452,10 @@ function LedgerContent() {
     () => (ledgerData ? activeMembers(ledgerData.members) : []),
     [ledgerData],
   );
+  const currentMemberId = useMemo(
+    () => members.find((member) => member.userId === currentUserId)?.id ?? null,
+    [currentUserId, members],
+  );
   const totalPreview =
     form?.originalAmount && form?.exchangeRate
       ? Number(form.originalAmount || 0) * Number(form.exchangeRate || 1)
@@ -1353,15 +1464,18 @@ function LedgerContent() {
     form?.accountingMode === "shared" &&
     form.participantMemberIds.length === 0;
   const memberReports = useMemo(
-    () =>
-      ledgerData
-        ? buildMemberReports(
-            ledgerData.entries,
-            ledgerData.summary.balances,
-            members,
-          )
-        : [],
-    [ledgerData, members],
+    () => {
+      const reports = ledgerData
+        ? buildMemberReports(ledgerData.entries, ledgerData.summary.balances, members)
+        : [];
+      if (!currentMemberId) return reports;
+      return [...reports].sort((left, right) => {
+        if (left.member.id === currentMemberId) return -1;
+        if (right.member.id === currentMemberId) return 1;
+        return 0;
+      });
+    },
+    [currentMemberId, ledgerData, members],
   );
   const dailyReports = useMemo(
     () => buildDailyLedgerReports(ledgerData?.entries ?? [], locale),
@@ -2373,9 +2487,20 @@ function LedgerContent() {
                               : ""}
                           </p>
                           {entry.description ? (
-                            <p className="mt-2 text-sm leading-6 text-stone-600">
-                              {entry.description}
-                            </p>
+                            <TranslatedText
+                              className="mt-2 text-sm leading-6 text-stone-600"
+                              protectedEntities={[
+                                entry.title,
+                                entry.addressText,
+                                entry.originalCurrency,
+                                entry.baseCurrency,
+                                entry.payer?.displayName,
+                              ]}
+                              sourceField="description"
+                              sourceId={entry.id}
+                              sourceType="expense"
+                              text={entry.description}
+                            />
                           ) : null}
                           {entry.participants.length > 0 ? (
                             <div className="mt-3 flex flex-wrap gap-2">

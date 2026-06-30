@@ -40,6 +40,12 @@ export function normalizeLanguageCode(value: string | null | undefined) {
 
   const [language, region] = value.trim().replace("_", "-").split("-");
   if (!language) return defaultLocale;
+  if (
+    language.toLowerCase() === "zh" &&
+    (region?.toLowerCase() === "tw" || region?.toLowerCase() === "hant")
+  ) {
+    return "zh-CN";
+  }
   if (!region) return language.toLowerCase();
 
   return `${language.toLowerCase()}-${region.toUpperCase()}`;
