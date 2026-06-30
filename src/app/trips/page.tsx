@@ -1,27 +1,25 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import {
+  type PointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { flushSync } from "react-dom";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
 import { TripCard } from "@/components/TripCard";
-import { compareTripsByStartDateAsc, getJourneyStatus } from "@/lib/journeys/status";
-import { getJourneyParticipantCount } from "@/lib/journeys/stats";
-import { getJourneyMembers } from "@/lib/supabase/journey-members";
+import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
 import {
-  getTripMemorySummary,
-  type TripMemorySummary,
-} from "@/lib/supabase/memories";
-import { getPlannerV2, type PlannerV2Data } from "@/lib/supabase/planner-v2";
-import { getTripsForCurrentUser } from "@/lib/supabase/trips";
-import type { ItineraryEvent, ItineraryReservation, Trip } from "@/types";
-
-type JourneyItem = {
-  trip: Trip;
-  memorySummary: TripMemorySummary;
-  memberCount: number;
-  planner: PlannerV2Data;
-};
+  journeyResourceKey,
+  loadJourneyListResource,
+  type JourneyListItem,
+} from "@/lib/journey-resources";
+import { compareTripsByStartDateAsc, getJourneyStatus } from "@/lib/journeys/status";
+import type { ItineraryEvent, ItineraryReservation } from "@/types";
 
 type SearchResult = {
   id: string;
@@ -33,6 +31,19 @@ type SearchResult = {
   searchableText: string;
 };
 
+function uniqueSearchResults(results: SearchResult[]) {
+  const seenIds = new Set<string>();
+  const uniqueResults: SearchResult[] = [];
+
+  for (const result of results) {
+    if (seenIds.has(result.id)) continue;
+    seenIds.add(result.id);
+    uniqueResults.push(result);
+  }
+
+  return uniqueResults;
+}
+
 function normalizeSearchText(value: unknown) {
   return String(value ?? "").trim().toLocaleLowerCase();
 }
@@ -43,6 +54,23 @@ function dateLabel(value: string, locale: string) {
     month: "short",
     day: "numeric",
   }).format(new Date(`${value}T00:00:00`));
+}
+
+function dateKeyFromDateTime(value: string | null | undefined) {
+  if (!value) return null;
+  return value.slice(0, 10);
+}
+
+function dateRangeLabel(
+  startValue: string | null | undefined,
+  endValue: string | null | undefined,
+  fallbackDate: string,
+  locale: string,
+) {
+  const startDate = dateKeyFromDateTime(startValue) ?? fallbackDate;
+  const endDate = dateKeyFromDateTime(endValue) ?? startDate;
+  if (startDate === endDate) return dateLabel(startDate, locale);
+  return `${dateLabel(startDate, locale)} - ${dateLabel(endDate, locale)}`;
 }
 
 function timeLabel(value: string | null | undefined, locale: string) {
@@ -81,57 +109,35 @@ function reservationSearchText(reservation: ItineraryReservation) {
 
 function TripsContent() {
   const { locale, t } = useI18n();
-  const [items, setItems] = useState<JourneyItem[]>([]);
+  const [items, setItems] = useState<JourneyListItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
+  const [isMobileSearchActive, setIsMobileSearchActive] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const tripsResource = useJourneyCachedResource({
+    cacheKey: journeyResourceKey.trips(),
+    loader: loadJourneyListResource,
+    ttl: 2 * 60_000,
+    staleTime: 30_000,
+    keepPreviousData: true,
+    backgroundRefresh: true,
+  });
+
   useEffect(() => {
-    let isMounted = true;
+    if (!tripsResource.data) return;
+    setItems(tripsResource.data);
+    setError(null);
+  }, [tripsResource.data]);
 
-    async function loadTrips() {
-      try {
-        const trips = await getTripsForCurrentUser();
-        const loaded = await Promise.all(
-          trips.map(async (trip) => {
-            const [memorySummary, members, planner] = await Promise.all([
-              getTripMemorySummary(trip.id),
-              getJourneyMembers(trip.id),
-              getPlannerV2(trip, { includeMemories: false }).catch(() => ({ days: [] })),
-            ]);
-            return {
-              trip,
-              memorySummary,
-              memberCount: getJourneyParticipantCount(members),
-              planner,
-            };
-          }),
-        );
-
-        if (isMounted) {
-          setItems(loaded);
-        }
-      } catch (tripsError) {
-        if (isMounted) {
-          setError(
-            tripsError instanceof Error
-              ? tripsError.message
-              : t("trips.error.load"),
-          );
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    loadTrips();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [t]);
+  useEffect(() => {
+    if (!tripsResource.error || tripsResource.data) return;
+    setError(
+      tripsResource.error instanceof Error
+        ? tripsResource.error.message
+        : t("trips.error.load"),
+    );
+  }, [tripsResource.data, tripsResource.error, t]);
 
   const groups = useMemo(
     () => ({
@@ -152,7 +158,7 @@ function TripsContent() {
     const query = normalizeSearchText(trimmedSearchQuery);
     if (!query) return [];
 
-    return items
+    const results = items
       .flatMap((item) => {
         const journeyResult: SearchResult = {
           id: `journey-${item.trip.id}`,
@@ -179,18 +185,25 @@ function TripsContent() {
             .map((activity) => {
               const time = timeLabel(activity.plannedStart, locale);
               const itemId = `activity-${activity.id}`;
+              const range = dateRangeLabel(
+                activity.plannedStart,
+                activity.plannedEnd,
+                plannerDay.day.dayDate,
+                locale,
+              );
               return {
                 id: `activity-${item.trip.id}-${activity.id}`,
                 kind: "itinerary",
                 title: activity.title,
                 subtitle: activity.locationName || activity.description || item.trip.name,
-                meta: `${item.trip.name} · ${dayTag} · ${dayDateLabel} · ${time}`,
+                meta: `${item.trip.name} · ${range} · ${time}`,
                 href: `/trips/${item.trip.id}/planner?date=${plannerDay.day.dayDate}&item=${itemId}`,
                 searchableText: [
                   item.trip.name,
                   item.trip.destination,
                   dayTag,
                   dayDateLabel,
+                  range,
                   time,
                   eventSearchText(activity),
                 ].join(" "),
@@ -201,6 +214,12 @@ function TripsContent() {
             .map((reservation) => {
               const time = timeLabel(reservation.startsAt, locale);
               const itemId = `reservation-${reservation.id}`;
+              const range = dateRangeLabel(
+                reservation.startsAt,
+                reservation.endsAt,
+                plannerDay.day.dayDate,
+                locale,
+              );
               return {
                 id: `reservation-${item.trip.id}-${reservation.id}`,
                 kind: "itinerary",
@@ -210,13 +229,14 @@ function TripsContent() {
                   reservation.provider ||
                   reservation.sourceText ||
                   item.trip.name,
-                meta: `${item.trip.name} · ${dayTag} · ${dayDateLabel} · ${time}`,
+                meta: `${item.trip.name} · ${range} · ${time}`,
                 href: `/trips/${item.trip.id}/planner?date=${plannerDay.day.dayDate}&item=${itemId}`,
                 searchableText: [
                   item.trip.name,
                   item.trip.destination,
                   dayTag,
                   dayDateLabel,
+                  range,
                   time,
                   reservationSearchText(reservation),
                 ].join(" "),
@@ -228,11 +248,47 @@ function TripsContent() {
 
         return [journeyResult, ...itineraryResults];
       })
-      .filter((result) => normalizeSearchText(result.searchableText).includes(query))
-      .slice(0, 60);
+      .filter((result) => normalizeSearchText(result.searchableText).includes(query));
+
+    return uniqueSearchResults(results).slice(0, 60);
   }, [items, locale, t, trimmedSearchQuery]);
 
-  function renderGroup(label: string, group: JourneyItem[]) {
+  useEffect(() => {
+    if (!isMobileSearchActive) return;
+
+    document.body.classList.add("otr-mobile-search-active");
+
+    return () => {
+      document.body.classList.remove("otr-mobile-search-active");
+    };
+  }, [isMobileSearchActive]);
+
+  function isMobileViewport() {
+    return window.matchMedia("(max-width: 767px)").matches;
+  }
+
+  function openMobileSearchFromPointer(event: PointerEvent<HTMLInputElement>) {
+    if (!isMobileViewport() || isMobileSearchActive) return;
+    event.preventDefault();
+    flushSync(() => setIsMobileSearchActive(true));
+    searchInputRef.current?.focus({ preventScroll: true });
+  }
+
+  function openMobileSearchFromFocus() {
+    if (isMobileViewport()) {
+      setIsMobileSearchActive(true);
+    }
+  }
+
+  function closeMobileSearch() {
+    setSearchQuery("");
+    setIsMobileSearchActive(false);
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+
+  function renderGroup(label: string, group: JourneyListItem[]) {
     return (
       <section className="space-y-4">
         <h2 className="text-2xl font-semibold text-stone-950">{label}</h2>
@@ -276,8 +332,12 @@ function TripsContent() {
   }
 
   return (
-    <div className="space-y-8">
-      <section className="flex items-start justify-between gap-4">
+    <div className={isMobileSearchActive ? "space-y-0 md:space-y-8" : "space-y-8"}>
+      <section
+        className={`flex items-start justify-between gap-4 ${
+          isMobileSearchActive ? "hidden md:flex" : ""
+        }`}
+      >
         <div>
           <p className="text-sm font-semibold text-emerald-700">{t("trips.eyebrow")}</p>
           <h1 className="mt-1 text-3xl font-semibold text-stone-950">
@@ -295,29 +355,74 @@ function TripsContent() {
         </Link>
       </section>
 
-      <section className="rounded-3xl border border-stone-200 bg-white p-3 shadow-sm">
-        <div className="flex items-center gap-2">
+      <section
+        className={
+          isMobileSearchActive
+            ? "contents md:block md:rounded-3xl md:border md:border-stone-200 md:bg-white md:p-3 md:shadow-sm"
+            : "rounded-3xl border border-stone-200 bg-white p-3 shadow-sm"
+        }
+      >
+        <div
+          className={`flex items-center gap-2 ${
+            isMobileSearchActive
+              ? "fixed inset-x-0 top-0 z-[2147482600] border-b border-stone-200 bg-white p-3 shadow-lg md:static md:rounded-2xl md:border-0 md:bg-stone-50 md:p-2 md:shadow-none"
+              : "rounded-2xl bg-stone-50 p-2"
+          }`}
+        >
           <input
+            ref={searchInputRef}
+            type="search"
+            enterKeyHint="search"
+            inputMode="search"
+            autoComplete="off"
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
+            onPointerDown={openMobileSearchFromPointer}
+            onFocus={openMobileSearchFromFocus}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                event.currentTarget.blur();
+              }
+            }}
             placeholder={t("trips.search.placeholder")}
-            className="min-h-11 flex-1 rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-2 text-sm font-semibold text-stone-950 outline-none placeholder:text-stone-400 focus:border-emerald-300"
+            className="min-h-11 min-w-0 flex-1 rounded-xl border border-stone-200 bg-white px-3 py-2 text-base font-semibold text-stone-950 outline-none placeholder:text-stone-400 focus:border-emerald-300 md:text-sm"
           />
           {trimmedSearchQuery ? (
             <button
               type="button"
               onClick={() => setSearchQuery("")}
-              className="rounded-full bg-stone-100 px-4 py-2 text-xs font-bold text-stone-600"
+              className="shrink-0 rounded-full bg-white px-3 py-2 text-xs font-bold text-stone-600 shadow-sm"
             >
               {t("trips.search.clear")}
             </button>
           ) : null}
+          <button
+            type="button"
+            onClick={closeMobileSearch}
+            className={`shrink-0 rounded-full px-3 py-2 text-sm font-black text-emerald-800 md:hidden ${
+              isMobileSearchActive ? "inline-flex" : "hidden"
+            }`}
+          >
+            {t("common.cancel")}
+          </button>
         </div>
       </section>
 
-      {isLoading ? (
-        <div className="rounded-2xl border border-stone-200 bg-white p-5 text-sm font-medium text-stone-600 shadow-sm">
-          {t("trips.loading")}
+      {isMobileSearchActive ? <div className="h-[4.5rem] md:hidden" /> : null}
+
+      {!tripsResource.data && tripsResource.isLoading ? (
+        <div className="space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+          <div className="h-5 w-32 animate-pulse rounded bg-stone-200" />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="h-40 animate-pulse rounded-3xl bg-stone-100" />
+            <div className="h-40 animate-pulse rounded-3xl bg-stone-100" />
+          </div>
+        </div>
+      ) : null}
+
+      {tripsResource.error && tripsResource.data ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs font-bold text-amber-800">
+          {t("trips.error.load")}
         </div>
       ) : null}
 
@@ -327,7 +432,7 @@ function TripsContent() {
         </div>
       ) : null}
 
-      {!isLoading && !error && items.length === 0 ? (
+      {tripsResource.data && !error && items.length === 0 && !isMobileSearchActive ? (
         <section className="rounded-2xl border border-dashed border-stone-300 bg-white p-6 text-center shadow-sm">
           <h2 className="text-xl font-semibold text-stone-950">
             {t("trips.empty.title")}
@@ -344,25 +449,39 @@ function TripsContent() {
         </section>
       ) : null}
 
-      {!isLoading && !error && trimmedSearchQuery ? (
-        <section className="space-y-3">
-          <div>
-            <h2 className="text-xl font-semibold text-stone-950">
+      {tripsResource.data &&
+      !error &&
+      (trimmedSearchQuery || isMobileSearchActive) ? (
+        <section
+          className={`border-stone-200 bg-white shadow-sm ${
+            isMobileSearchActive
+              ? "rounded-none border-0 p-3 md:rounded-3xl md:border"
+              : "space-y-3 rounded-3xl border p-3"
+          }`}
+        >
+          <div className="px-1">
+            <h2 className="text-sm font-black text-stone-950 md:text-xl md:font-semibold">
               {t("trips.search.resultsTitle")}
             </h2>
-            <p className="mt-1 text-sm text-stone-500">
+            <p className="mt-0.5 text-xs text-stone-500 md:mt-1 md:text-sm">
               {t("trips.search.resultCount", { count: searchResults.length })}
             </p>
           </div>
           {searchResults.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-5 text-sm text-stone-600">
+            <div className="mt-3 rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
               {t("trips.search.empty")}
             </div>
           ) : (
-            <div className="space-y-2">
-              {searchResults.map((result) => (
+            <div
+              className={`mt-3 space-y-2 overflow-y-auto pr-1 ${
+                isMobileSearchActive
+                  ? "max-h-[calc(100dvh-9rem)] md:max-h-none"
+                  : ""
+              }`}
+            >
+              {searchResults.map((result, index) => (
                 <Link
-                  key={result.id}
+                  key={`${result.id}-${index}`}
                   href={result.href}
                   className="block rounded-3xl border border-stone-200 bg-white p-4 shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50/40"
                 >
@@ -391,7 +510,7 @@ function TripsContent() {
         </section>
       ) : null}
 
-      {!isLoading && !error && !trimmedSearchQuery ? (
+      {tripsResource.data && !error && !trimmedSearchQuery && !isMobileSearchActive ? (
         <>
           {renderGroup(t("trips.group.active"), groups.active)}
           {renderGroup(t("trips.group.upcoming"), groups.upcoming)}

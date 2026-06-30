@@ -3,8 +3,14 @@
 import { useParams } from "next/navigation";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
+import { useI18n } from "@/components/I18nProvider";
+import { TranslatedText } from "@/components/TranslatedText";
 import { getErrorMessage } from "@/lib/errors";
-import { getCurrentUser } from "@/lib/supabase/auth";
+import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
+import {
+  journeyResourceKey,
+  loadJourneyPeopleResource,
+} from "@/lib/journey-resources";
 import {
   claimJourneyMember,
   createJourneyMember,
@@ -12,20 +18,7 @@ import {
   removeJourneyMember,
   updateJourneyMember,
 } from "@/lib/supabase/journey-members";
-import { getTrip } from "@/lib/supabase/trips";
 import type { JourneyMember, JourneyMemberRole, Trip } from "@/types";
-
-const roleLabels: Record<JourneyMemberRole, string> = {
-  owner: "Owner",
-  group_member: "成员",
-  guest: "访客",
-};
-
-const statusLabels: Record<JourneyMember["status"], string> = {
-  linked: "已关联",
-  invite_pending: "待登录",
-  unlinked: "未关联",
-};
 
 function initials(name: string) {
   return name
@@ -42,14 +35,15 @@ function statusClass(status: JourneyMember["status"]) {
   return "bg-stone-100 text-stone-600";
 }
 
-function roleHelp(role: JourneyMemberRole) {
-  if (role === "owner") return "可以管理成员和旅程权限。";
-  if (role === "guest") return "可以查看和评论，但不能添加主要内容。";
-  return "可以编辑行程、添加记录和费用。";
+function roleHelp(role: JourneyMemberRole, t: ReturnType<typeof useI18n>["t"]) {
+  if (role === "owner") return t("people.role.ownerHelp");
+  if (role === "guest") return t("people.role.guestHelp");
+  return t("people.role.memberHelp");
 }
 
 function MembersPageContent() {
   const { tripId } = useParams<{ tripId: string }>();
+  const { t } = useI18n();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [members, setMembers] = useState<JourneyMember[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
@@ -65,33 +59,26 @@ function MembersPageContent() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const peopleResource = useJourneyCachedResource({
+    cacheKey: journeyResourceKey.people(tripId),
+    loader: () => loadJourneyPeopleResource(tripId),
+    ttl: 2 * 60_000,
+    staleTime: 30_000,
+    keepPreviousData: true,
+    backgroundRefresh: true,
+  });
+
   useEffect(() => {
-    let isMounted = true;
+    if (!peopleResource.data) return;
+    setTrip(peopleResource.data.tripData);
+    setMembers(peopleResource.data.memberData);
+    setCurrentUserId(peopleResource.data.currentUserId);
+  }, [peopleResource.data]);
 
-    async function loadMembers() {
-      try {
-        const [tripData, memberData, user] = await Promise.all([
-          getTrip(tripId),
-          getJourneyMembers(tripId),
-          getCurrentUser(),
-        ]);
-        if (isMounted) {
-          setTrip(tripData);
-          setMembers(memberData);
-          setCurrentUserId(user?.id ?? null);
-        }
-      } catch (membersError) {
-        if (isMounted) {
-          setError(getErrorMessage(membersError, "无法加载成员。"));
-        }
-      }
-    }
-
-    loadMembers();
-    return () => {
-      isMounted = false;
-    };
-  }, [tripId]);
+  useEffect(() => {
+    if (!peopleResource.error || peopleResource.data) return;
+    setError(getErrorMessage(peopleResource.error, t("people.error.load")));
+  }, [peopleResource.data, peopleResource.error, t]);
 
   const currentMember = useMemo(
     () => members.find((member) => member.userId === currentUserId),
@@ -100,6 +87,16 @@ function MembersPageContent() {
   const canManagePeople =
     currentMember?.role === "owner" || trip?.createdBy === currentUserId;
   const unlinkedMembers = members.filter((member) => !member.userId);
+  const roleLabels: Record<JourneyMemberRole, string> = {
+    owner: t("people.role.owner"),
+    group_member: t("people.role.member"),
+    guest: t("people.role.guest"),
+  };
+  const statusLabels: Record<JourneyMember["status"], string> = {
+    linked: t("people.status.linked"),
+    invite_pending: t("people.status.invitePending"),
+    unlinked: t("people.status.unlinked"),
+  };
 
   async function addMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -119,9 +116,9 @@ function MembersPageContent() {
       setInviteEmail("");
       setMemberNotes("");
       setRole("group_member");
-      setNotice("成员已添加。");
+      setNotice(t("people.notice.added"));
     } catch (addError) {
-      setError(getErrorMessage(addError, "无法添加成员。"));
+      setError(getErrorMessage(addError, t("people.error.add")));
     } finally {
       setIsAdding(false);
     }
@@ -140,7 +137,7 @@ function MembersPageContent() {
         current.map((item) => (item.id === updated.id ? updated : item)),
       );
     } catch (roleError) {
-      setError(getErrorMessage(roleError, "无法更新角色。"));
+      setError(getErrorMessage(roleError, t("people.error.updateRole")));
     } finally {
       setWorkingMemberId(null);
     }
@@ -166,9 +163,9 @@ function MembersPageContent() {
       setMembers((current) =>
         current.map((item) => (item.id === updated.id ? updated : item)),
       );
-      setNotice("成员信息已保存。");
+      setNotice(t("people.notice.saved"));
     } catch (saveError) {
-      setError(getErrorMessage(saveError, "无法保存成员信息。"));
+      setError(getErrorMessage(saveError, t("people.error.save")));
     } finally {
       setWorkingMemberId(null);
     }
@@ -181,17 +178,17 @@ function MembersPageContent() {
     try {
       const result = await removeJourneyMember(member.id);
       if (result.status !== "removed") {
-        setError(`无法移除成员：${result.status.replaceAll("_", " ")}。`);
+        setError(t("people.error.removeStatus", { status: result.status.replaceAll("_", " ") }));
         return;
       }
       setMembers((current) => current.filter((item) => item.id !== member.id));
       setNotice(
         member.userId
-          ? "成员已移除，旅程访问权限已撤销。"
-          : "未关联成员已移除。",
+          ? t("people.notice.removedLinked")
+          : t("people.notice.removedUnlinked"),
       );
     } catch (removeError) {
-      setError(getErrorMessage(removeError, "无法移除成员。"));
+      setError(getErrorMessage(removeError, t("people.error.remove")));
     } finally {
       setWorkingMemberId(null);
     }
@@ -204,14 +201,14 @@ function MembersPageContent() {
     try {
       const result = await claimJourneyMember(member.id);
       if (result.status !== "claimed") {
-        setNotice(`关联结果：${result.status.replaceAll("_", " ")}。`);
+        setNotice(t("people.notice.claimResult", { status: result.status.replaceAll("_", " ") }));
         return;
       }
       const refreshed = await getJourneyMembers(tripId);
       setMembers(refreshed);
-      setNotice(`你已关联为 ${member.displayName}。`);
+      setNotice(t("people.notice.claimed", { name: member.displayName }));
     } catch (claimError) {
-      setError(getErrorMessage(claimError, "无法关联这个成员身份。"));
+      setError(getErrorMessage(claimError, t("people.error.claim")));
     } finally {
       setWorkingMemberId(null);
     }
@@ -222,14 +219,24 @@ function MembersPageContent() {
       <section className="flex items-start justify-between gap-4">
         <div>
           <p className="text-sm font-semibold text-emerald-700">
-            {trip?.name || "Journey"}
+            {trip?.name ? (
+              <TranslatedText
+                as="span"
+                showToggle={false}
+                sourceField="name"
+                sourceId={trip.id}
+                sourceType="trip"
+                text={trip.name}
+              />
+            ) : (
+              t("common.journey")
+            )}
           </p>
           <h1 className="mt-1 text-3xl font-semibold text-stone-950">
-            成员
+            {t("people.title")}
           </h1>
           <p className="mt-3 max-w-2xl text-base leading-7 text-stone-600">
-            管理这个 Journey 的同行成员、邮箱授权、角色和昵称 / 别名。
-            Owner 填入成员邮箱后，成员使用同一个邮箱登录 OTR 就会看到这个旅程。
+            {t("people.description")}
           </p>
         </div>
       </section>
@@ -252,10 +259,10 @@ function MembersPageContent() {
         >
           <div>
             <h2 className="text-lg font-semibold text-stone-950">
-              添加成员
+              {t("people.add.title")}
             </h2>
             <p className="mt-1 text-sm text-stone-500">
-              填写成员姓名和邮箱即可授权访问。邮箱可以之后再补；补上后，成员用该邮箱登录就能看到这个 Journey。
+              {t("people.add.description")}
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-[1fr_160px]">
@@ -273,16 +280,16 @@ function MembersPageContent() {
               }
               className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-sm"
             >
-              <option value="group_member">成员</option>
-              <option value="guest">访客</option>
-              <option value="owner">Owner</option>
+              <option value="group_member">{roleLabels.group_member}</option>
+              <option value="guest">{roleLabels.guest}</option>
+              <option value="owner">{roleLabels.owner}</option>
             </select>
           </div>
           <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
             <input
               value={inviteEmail}
               onChange={(event) => setInviteEmail(event.target.value)}
-              placeholder="成员登录邮箱，可后补"
+              placeholder={t("people.placeholder.emailOptional")}
               type="email"
               className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-sm"
             />
@@ -291,21 +298,21 @@ function MembersPageContent() {
               disabled={isAdding || !displayName.trim()}
               className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:bg-stone-300"
             >
-              {isAdding ? "正在添加..." : "添加"}
+              {isAdding ? t("common.adding") : t("common.add")}
             </button>
           </div>
           <label className="block space-y-1">
             <span className="text-xs font-bold text-stone-700">
-              昵称 / 别名
+              {t("people.alias")}
             </span>
             <input
               value={memberNotes}
               onChange={(event) => setMemberNotes(event.target.value)}
-              placeholder="Bao 小宝 B，可用空格、逗号、/ 或 ; 分隔"
+              placeholder={t("people.placeholder.alias")}
               className="w-full rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-sm"
             />
             <span className="block text-[11px] leading-5 text-stone-500">
-              用于帮助 OTR 在记录、行程、语音和支出中识别这个人。
+              {t("people.aliasHelp")}
             </span>
           </label>
         </form>
@@ -314,11 +321,10 @@ function MembersPageContent() {
       {!currentMember && unlinkedMembers.length > 0 ? (
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-4">
           <h2 className="font-semibold text-amber-950">
-            关联你的旅程身份
+            {t("people.claim.title")}
           </h2>
           <p className="mt-1 text-sm leading-6 text-amber-900">
-            如果 owner 已经先添加了你的名字，但还没有填邮箱，你可以在这里手动关联。
-            更推荐让 owner 补上你的登录邮箱，之后系统会自动识别。
+            {t("people.claim.description")}
           </p>
         </section>
       ) : null}
@@ -364,7 +370,7 @@ function MembersPageContent() {
                       {member.displayName}
                     </h2>
                     <p className="mt-1 text-xs leading-5 text-stone-500">
-                      {roleHelp(member.role)}
+                      {roleHelp(member.role, t)}
                     </p>
                   </div>
                 </div>
@@ -388,12 +394,12 @@ function MembersPageContent() {
                 ) : null}
                 {member.notes ? (
                   <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-800">
-                    AKA {member.notes}
+                    {t("people.aka", { notes: member.notes })}
                   </span>
                 ) : null}
                 {!member.userId ? (
                   <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-500">
-                    未关联
+                    {t("people.status.unlinked")}
                   </span>
                 ) : null}
               </div>
@@ -422,7 +428,7 @@ function MembersPageContent() {
                   />
                   <label className="space-y-1">
                     <span className="text-xs font-bold text-stone-600">
-                      昵称 / 别名
+                      {t("people.alias")}
                     </span>
                     <input
                       value={editDrafts[member.id]?.notes ?? member.notes ?? ""}
@@ -441,7 +447,7 @@ function MembersPageContent() {
                           },
                         }))
                       }
-                      placeholder="Bao 小宝 B，可用空格、逗号、/ 或 ; 分隔"
+                      placeholder={t("people.placeholder.alias")}
                       className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
                     />
                   </label>
@@ -465,7 +471,7 @@ function MembersPageContent() {
                           },
                         }))
                       }
-                      placeholder="成员登录邮箱"
+                      placeholder={t("people.placeholder.email")}
                       type="email"
                       className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
                     />
@@ -478,9 +484,9 @@ function MembersPageContent() {
                     }
                     className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
                   >
-                    <option value="owner">Owner</option>
-                    <option value="group_member">成员</option>
-                    <option value="guest">访客</option>
+                    <option value="owner">{roleLabels.owner}</option>
+                    <option value="group_member">{roleLabels.group_member}</option>
+                    <option value="guest">{roleLabels.guest}</option>
                   </select>
                   <div className="flex flex-wrap gap-2">
                     <button
@@ -489,7 +495,7 @@ function MembersPageContent() {
                       onClick={() => saveMemberDetails(member)}
                       className="rounded-full bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 disabled:opacity-60"
                     >
-                      保存
+                      {t("common.save")}
                     </button>
                     <button
                       type="button"
@@ -497,7 +503,7 @@ function MembersPageContent() {
                       onClick={() => removeMember(member)}
                       className="rounded-full bg-red-50 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50"
                     >
-                      {member.userId ? "移除权限" : "移除"}
+                      {member.userId ? t("people.removeAccess") : t("common.remove")}
                     </button>
                   </div>
                 </div>
@@ -510,7 +516,7 @@ function MembersPageContent() {
                   onClick={() => claimMember(member)}
                   className="mt-4 w-full rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:bg-stone-300"
                 >
-                  {isWorking ? "正在关联..." : "关联这个身份"}
+                  {isWorking ? t("people.claim.working") : t("people.claim.action")}
                 </button>
               ) : null}
             </article>

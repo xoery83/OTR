@@ -23,11 +23,14 @@ import {
 } from "@/lib/day-view-storage";
 import { getErrorMessage } from "@/lib/errors";
 import { formatJourneyTime } from "@/lib/format";
+import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
 import { getActiveJourneyMembers } from "@/lib/journeys/stats";
-import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import { getLedgerData } from "@/lib/supabase/ledger";
-import { getPlannerV2, type PlannerV2Data } from "@/lib/supabase/planner-v2";
-import { getTrip } from "@/lib/supabase/trips";
+import {
+  journeyResourceKey,
+  loadJourneyPlannerResource,
+} from "@/lib/journey-resources";
+import type { PlannerV2Data } from "@/lib/supabase/planner-v2";
 import type {
   ItineraryEvent,
   ItineraryReservation,
@@ -35,24 +38,6 @@ import type {
   LedgerEntry,
   Trip,
 } from "@/types";
-
-async function loadPlannerData(tripId: string) {
-  const [tripData, members] = await Promise.all([
-    getTrip(tripId),
-    getJourneyMembers(tripId),
-  ]);
-  const [plannerData, ledgerData] = await Promise.all([
-    getPlannerV2(tripData),
-    getLedgerData(tripId).catch(() => null),
-  ]);
-  return {
-    tripData,
-    plannerData,
-    members,
-    ledgerEntries: ledgerData?.entries ?? [],
-    ledgerBaseCurrency: ledgerData?.ledger.baseCurrency ?? "NZD",
-  };
-}
 
 function compactDate(value: string, locale: string) {
   if (value === "unscheduled") return locale === "zh-CN" ? "任意" : "Any";
@@ -197,7 +182,6 @@ function PlannerContent() {
   const [plannerSwipeOffset, setPlannerSwipeOffset] = useState(0);
   const [isPlannerSwipeDragging, setIsPlannerSwipeDragging] = useState(false);
   const [isPlannerSwipeSettling, setIsPlannerSwipeSettling] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const plannerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const dateStripRef = useRef<HTMLDivElement | null>(null);
@@ -213,44 +197,40 @@ function PlannerContent() {
   } | null>(null);
   const suppressNextPlannerClickRef = useRef(false);
 
-  useEffect(() => {
-    let isMounted = true;
-    async function loadPlanner() {
-      try {
-        const {
-          tripData,
-          plannerData,
-          members: memberData,
-          ledgerEntries: entryData,
-          ledgerBaseCurrency: baseCurrency,
-        } =
-          await loadPlannerData(tripId);
-        if (isMounted) {
-          setTrip(tripData);
-          setPlanner(plannerData);
-          setMembers(memberData);
-          setLedgerEntries(entryData);
-          setLedgerBaseCurrency(baseCurrency);
-          setSelectedDayId(
-            getQueryDayId(requestedDate, plannerData.days) ??
-              getStoredDayId(tripId, plannerData.days) ??
-              getDefaultDayId(plannerData.days),
-          );
-        }
-      } catch (plannerError) {
-        if (isMounted) {
-          setError(getErrorMessage(plannerError, t("planner.error.load")));
-        }
-      } finally {
-        if (isMounted) setIsLoading(false);
-      }
-    }
+  const plannerResource = useJourneyCachedResource({
+    cacheKey: journeyResourceKey.planner(tripId),
+    loader: () => loadJourneyPlannerResource(tripId),
+    ttl: 3 * 60_000,
+    staleTime: 20_000,
+    keepPreviousData: true,
+    backgroundRefresh: true,
+  });
 
-    loadPlanner();
-    return () => {
-      isMounted = false;
-    };
-  }, [requestedDate, tripId, t]);
+  useEffect(() => {
+    const data = plannerResource.data;
+    if (!data) return;
+    setTrip(data.tripData);
+    setPlanner(data.plannerData);
+    setMembers(data.members);
+    setLedgerEntries(data.ledgerEntries);
+    setLedgerBaseCurrency(data.ledgerBaseCurrency);
+    setSelectedDayId((current) => {
+      if (current && data.plannerData.days.some((day) => day.day.id === current)) {
+        return current;
+      }
+      return (
+        getQueryDayId(requestedDate, data.plannerData.days) ??
+        getStoredDayId(tripId, data.plannerData.days) ??
+        getDefaultDayId(data.plannerData.days)
+      );
+    });
+    setError(null);
+  }, [plannerResource.data, requestedDate, tripId]);
+
+  useEffect(() => {
+    if (!plannerResource.error || plannerResource.data) return;
+    setError(getErrorMessage(plannerResource.error, t("planner.error.load")));
+  }, [plannerResource.data, plannerResource.error, t]);
 
   const selectedIndex = useMemo(() => {
     const index = planner.days.findIndex((day) => day.day.id === selectedDayId);
@@ -614,19 +594,8 @@ function PlannerContent() {
   }
 
   const refreshPlanner = useCallback(async () => {
-    const {
-      tripData,
-      plannerData,
-      members: memberData,
-      ledgerEntries: entryData,
-      ledgerBaseCurrency: baseCurrency,
-    } = await loadPlannerData(tripId);
-    setTrip(tripData);
-    setPlanner(plannerData);
-    setMembers(memberData);
-    setLedgerEntries(entryData);
-    setLedgerBaseCurrency(baseCurrency);
-  }, [tripId]);
+    await plannerResource.refresh(true);
+  }, [plannerResource]);
 
   useEffect(() => {
     function refreshAfterCapture() {
@@ -722,10 +691,12 @@ function PlannerContent() {
     };
   }, [isMobilePlannerSearchActive]);
 
-  if (isLoading) {
+  if (!plannerResource.data && plannerResource.isLoading) {
     return (
-      <div className="rounded-2xl bg-white p-5">
-        {t("planner.loading")}
+      <div className="space-y-3 rounded-2xl bg-white p-5">
+        <div className="h-4 w-28 animate-pulse rounded bg-stone-200" />
+        <div className="h-10 animate-pulse rounded-2xl bg-stone-100" />
+        <div className="h-28 animate-pulse rounded-2xl bg-stone-100" />
       </div>
     );
   }
@@ -743,6 +714,11 @@ function PlannerContent() {
             : "rounded-3xl border border-stone-200 bg-white px-4 py-3 shadow-sm"
         }
       >
+        {plannerResource.error && plannerResource.data ? (
+          <div className="mb-3 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+            {t("planner.error.load")}
+          </div>
+        ) : null}
         <div
           className={`flex items-center justify-between gap-3 ${
             isMobilePlannerSearchActive ? "hidden md:flex" : ""

@@ -4,8 +4,11 @@ import {
   i18nBaseVersion,
   i18nDefaultNamespace,
 } from "@/lib/i18n/bundles";
-import { generateLocaleBundleBatch } from "@/lib/i18n/generate-locale-bundle";
 import { normalizeLanguageCode } from "@/lib/i18n/dictionaries";
+import {
+  generateMenuLanguagePack,
+  validateCompleteLanguagePack,
+} from "@/lib/i18n/menu-language-pack";
 import {
   getServiceSupabase,
   isAuthorizedI18nWorker,
@@ -21,6 +24,7 @@ type BackgroundJobRow = {
 };
 
 type LocaleBundleRow = {
+  id?: string;
   translations_json: Record<string, string> | null;
   status: "machine" | "reviewed";
 };
@@ -29,31 +33,17 @@ function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
 }
 
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function payloadString(payload: Record<string, unknown> | null, key: string) {
   const value = payload?.[key];
   return typeof value === "string" ? value : null;
 }
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function isTransientTranslationError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /slowdown|rate|limit|too many|network|fetch failed|econnreset|etimedout|enotfound|eai_again|socket|tls|timeout/i.test(
-    message,
-  );
-}
-
-function retryStep(error: unknown) {
-  const message = errorMessage(error);
-  return /slowdown|rate|limit|too many/i.test(message)
-    ? "Rate limited; retry queued"
-    : "Translation service unavailable; retry queued";
-}
-
-function secondsFromNow(seconds: number) {
-  return new Date(Date.now() + seconds * 1000).toISOString();
+function payloadBoolean(payload: Record<string, unknown> | null, key: string) {
+  return payload?.[key] === true;
 }
 
 async function markJob(
@@ -69,6 +59,46 @@ async function markJob(
   if (error) throw error;
 }
 
+async function processingLocaleJobCount(
+  supabase: ReturnType<typeof getServiceSupabase>,
+) {
+  const { count, error } = await supabase
+    .from("background_jobs")
+    .select("id", { count: "exact", head: true })
+    .eq("job_type", "generate_locale_bundle")
+    .eq("status", "processing");
+
+  if (error) throw error;
+  return count ?? 0;
+}
+
+async function completeStaleLanguageJobs(
+  supabase: ReturnType<typeof getServiceSupabase>,
+  languageCode: string,
+  currentJobId: string,
+  skipped: "draft" | "published",
+) {
+  const { error } = await supabase
+    .from("background_jobs")
+    .update({
+      status: "completed",
+      progress: 100,
+      current_step:
+        skipped === "published"
+          ? "Published language pack already exists"
+          : "Draft language pack already exists",
+      result: { languageCode, skipped },
+      error_message: null,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("job_type", "generate_locale_bundle")
+    .eq("payload->>language_code", languageCode)
+    .in("status", ["queued", "failed"])
+    .neq("id", currentJobId);
+
+  if (error) throw error;
+}
+
 async function processJob(
   supabase: ReturnType<typeof getServiceSupabase>,
   job: BackgroundJobRow,
@@ -77,19 +107,20 @@ async function processJob(
   const languageCode = normalizeLanguageCode(rawLanguageCode);
   const namespace = payloadString(job.payload, "namespace") ?? i18nDefaultNamespace;
   const baseVersion = payloadString(job.payload, "base_version") ?? i18nBaseVersion;
+  const fullRegenerate = payloadBoolean(job.payload, "full_regenerate");
 
   if (!rawLanguageCode) {
-    throw new Error("Locale generation job is missing language_code.");
+    throw new Error("Language pack job is missing language_code.");
   }
 
   if (namespace !== i18nDefaultNamespace || baseVersion !== i18nBaseVersion) {
-    throw new Error("Locale generation job has an unsupported namespace or version.");
+    throw new Error("Language pack job has an unsupported namespace or version.");
   }
 
   await markJob(supabase, job.id, {
     status: "processing",
     progress: Math.max(1, Math.min(99, job.progress || 5)),
-    current_step: `Generating ${languageCode}`,
+    current_step: `Generating ${languageCode} language pack with LLM`,
     started_at: new Date().toISOString(),
     attempts: job.attempts + 1,
     error_message: null,
@@ -99,7 +130,7 @@ async function processJob(
     await markJob(supabase, job.id, {
       status: "completed",
       progress: 100,
-      current_step: "Built-in language bundle already exists",
+      current_step: "Built-in language pack already exists",
       result: { languageCode, skipped: "builtin" },
       completed_at: new Date().toISOString(),
     });
@@ -108,7 +139,7 @@ async function processJob(
 
   const { data: existingBundle, error: bundleError } = await supabase
     .from("i18n_locale_bundles")
-    .select("translations_json, status")
+    .select("id, translations_json, status")
     .eq("language_code", languageCode)
     .eq("namespace", namespace)
     .eq("base_version", baseVersion)
@@ -117,20 +148,43 @@ async function processJob(
   if (bundleError) throw bundleError;
 
   const existing = existingBundle as LocaleBundleRow | null;
-  if (existing?.status === "reviewed") {
-    await markJob(supabase, job.id, {
-      status: "completed",
-      progress: 100,
-      current_step: "Reviewed language bundle already exists",
-      result: { languageCode, skipped: "reviewed" },
-      completed_at: new Date().toISOString(),
-    });
-    return { jobId: job.id, languageCode, skipped: "reviewed" };
+  if (existing && !fullRegenerate) {
+    const validation = validateCompleteLanguagePack(
+      existing.translations_json ?? {},
+    );
+    if (
+      validation.missingKeys.length === 0 &&
+      validation.extraKeys.length === 0 &&
+      validation.placeholderErrors.length === 0
+    ) {
+      const skipped = existing.status === "reviewed" ? "published" : "draft";
+      await markJob(supabase, job.id, {
+        status: "completed",
+        progress: 100,
+        current_step:
+          existing.status === "reviewed"
+            ? "Published language pack already exists"
+            : "Draft language pack already exists",
+        result: { languageCode, skipped },
+        error_message: null,
+        completed_at: new Date().toISOString(),
+      });
+      await completeStaleLanguageJobs(supabase, languageCode, job.id, skipped);
+      return { jobId: job.id, languageCode, skipped };
+    }
   }
 
-  const generated = await generateLocaleBundleBatch({
+  await markJob(supabase, job.id, {
+    progress: 20,
+    current_step: fullRegenerate
+      ? "Regenerating all keys with LLM"
+      : "Generating missing keys with LLM",
+  });
+
+  const generated = await generateMenuLanguagePack({
     targetLanguage: languageCode,
     existingTranslations: existing?.translations_json ?? null,
+    fullRegenerate,
   });
 
   const { error: upsertError } = await supabase
@@ -140,10 +194,18 @@ async function processJob(
         language_code: languageCode,
         namespace,
         base_version: baseVersion,
-        translations_json: generated.translations,
+        translations_json: generated.content,
         status: "machine",
-        engine: process.env.TRANSLATION_PROVIDER || "libretranslate",
-        created_by: "auto",
+        engine: generated.provider,
+        created_by: "admin",
+        generated_by: "llm",
+        provider: generated.provider,
+        model: generated.model,
+        prompt_version: generated.promptVersion,
+        missing_keys_count: generated.missingKeysCount,
+        token_estimate: generated.tokenEstimate,
+        cost_estimate_usd: null,
+        error_message: null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "language_code,namespace,base_version" },
@@ -151,48 +213,18 @@ async function processJob(
 
   if (upsertError) throw upsertError;
 
-  if (!generated.complete) {
-    const progress = Math.max(
-      1,
-      Math.min(
-        99,
-        Math.round((generated.translatedKeyCount / generated.totalKeyCount) * 100),
-      ),
-    );
-
-    await markJob(supabase, job.id, {
-      status: "queued",
-      progress,
-      current_step: `Generated ${generated.translatedKeyCount}/${generated.totalKeyCount} keys`,
-      result: {
-        languageCode,
-        translatedKeyCount: generated.translatedKeyCount,
-        translatedThisBatch: generated.translatedThisBatch,
-        remainingKeyCount: generated.remainingKeyCount,
-        totalKeyCount: generated.totalKeyCount,
-      },
-      available_at: secondsFromNow(15),
-    });
-
-    return {
-      jobId: job.id,
-      languageCode,
-      status: "queued",
-      translatedKeyCount: generated.translatedKeyCount,
-      translatedThisBatch: generated.translatedThisBatch,
-      remainingKeyCount: generated.remainingKeyCount,
-      totalKeyCount: generated.totalKeyCount,
-    };
-  }
-
   await markJob(supabase, job.id, {
     status: "completed",
     progress: 100,
-    current_step: `Generated ${languageCode}`,
+    current_step: "Language pack generated. Ready to preview and publish.",
     result: {
       languageCode,
-      translatedKeyCount: generated.translatedKeyCount,
+      generatedKeyCount: generated.generatedKeyCount,
       totalKeyCount: generated.totalKeyCount,
+      provider: generated.provider,
+      model: generated.model,
+      promptVersion: generated.promptVersion,
+      tokenEstimate: generated.tokenEstimate,
     },
     completed_at: new Date().toISOString(),
   });
@@ -200,8 +232,10 @@ async function processJob(
   return {
     jobId: job.id,
     languageCode,
-    translatedKeyCount: generated.translatedKeyCount,
+    generatedKeyCount: generated.generatedKeyCount,
     totalKeyCount: generated.totalKeyCount,
+    provider: generated.provider,
+    model: generated.model,
   };
 }
 
@@ -212,11 +246,18 @@ export async function POST(request: Request) {
     }
 
     const body = (await request.json().catch(() => ({}))) as {
-      limit?: number;
       languageCode?: string;
     };
-    const limit = 1;
     const supabase = getServiceSupabase();
+    const activeCount = await processingLocaleJobCount(supabase);
+    if (activeCount > 0) {
+      return NextResponse.json({
+        processed: 0,
+        results: [],
+        skipped: "A language pack generation job is already running.",
+      });
+    }
+
     const now = new Date().toISOString();
     const buildQuery = (status: "queued" | "failed") => {
       let query = supabase
@@ -226,10 +267,13 @@ export async function POST(request: Request) {
         .eq("status", status)
         .lte("available_at", now)
         .order("created_at", { ascending: true })
-        .limit(limit);
+        .limit(1);
 
       if (body.languageCode) {
-        query = query.eq("payload->>language_code", body.languageCode);
+        query = query.eq(
+          "payload->>language_code",
+          normalizeLanguageCode(body.languageCode),
+        );
       }
 
       return query;
@@ -237,13 +281,11 @@ export async function POST(request: Request) {
 
     let { data: jobs, error } = await buildQuery("queued");
     if (error) throw error;
-
     if (!jobs || jobs.length === 0) {
       const failedResult = await buildQuery("failed");
       jobs = failedResult.data;
       error = failedResult.error;
     }
-
     if (error) throw error;
 
     const results = [];
@@ -251,43 +293,22 @@ export async function POST(request: Request) {
       try {
         results.push(await processJob(supabase, job));
       } catch (jobError) {
-        if (isTransientTranslationError(jobError)) {
-          const message = errorMessage(jobError);
-          await markJob(supabase, job.id, {
-            status: "queued",
-            progress: Math.max(1, Math.min(99, job.progress || 1)),
-            current_step: retryStep(jobError),
-            error_message: message,
-            available_at: secondsFromNow(75),
-          });
-          results.push({
-            jobId: job.id,
-            status: "queued",
-            retryAfterSeconds: 75,
-            error: message,
-          });
-          continue;
-        }
-
+        const message = errorMessage(jobError);
         await markJob(supabase, job.id, {
           status: "failed",
           progress: 100,
-          current_step: "Locale generation failed",
-          error_message:
-            jobError instanceof Error ? jobError.message : "Locale generation failed.",
+          current_step: "Language pack generation failed",
+          error_message: message,
           completed_at: new Date().toISOString(),
         });
-        results.push({
-          jobId: job.id,
-          error: jobError instanceof Error ? jobError.message : "Locale generation failed.",
-        });
+        results.push({ jobId: job.id, error: message });
       }
     }
 
     return NextResponse.json({ processed: results.length, results });
   } catch (error) {
     return jsonError(
-      error instanceof Error ? error.message : "Could not process locale jobs.",
+      error instanceof Error ? error.message : "Could not process language pack jobs.",
       500,
     );
   }

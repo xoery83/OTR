@@ -26,6 +26,7 @@ export const LOCALE_PREFERENCE_CHANGED_EVENT = "otr:locale-preference-changed";
 
 type I18nContextValue = {
   contentLanguage: string;
+  isLanguagePackPreparing: boolean;
   locale: Locale;
   localePreference: string;
   setLocale: (locale: string) => void;
@@ -37,6 +38,7 @@ type LocaleBundlePayload = {
   languageCode?: string;
   translations?: PartialTranslationDictionary;
   fallback?: boolean;
+  jobQueued?: boolean;
 };
 
 const I18nContext = createContext<I18nContextValue | null>(null);
@@ -72,6 +74,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [localePreference, setLocalePreference] = useState("auto");
   const [dynamicTranslations, setDynamicTranslations] =
     useState<PartialTranslationDictionary | null>(null);
+  const [isLanguagePackPreparing, setIsLanguagePackPreparing] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -119,6 +122,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
 
     if (isLocale(bundleLanguage)) {
       setDynamicTranslations(null);
+      setIsLanguagePackPreparing(false);
       return;
     }
 
@@ -138,18 +142,23 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
 
         if (!response.ok || payload.fallback || !payload.translations) {
           setDynamicTranslations(null);
+          setIsLanguagePackPreparing(Boolean(payload.jobQueued));
           return;
         }
 
         setDynamicTranslations(payload.translations);
+        setIsLanguagePackPreparing(false);
 
         if (!payload.complete) {
           retryTimer = window.setTimeout(() => {
             if (isMounted) void loadBundle();
           }, 2500);
         }
-      } catch {
-        if (isMounted) setDynamicTranslations(null);
+    } catch {
+        if (isMounted) {
+          setDynamicTranslations(null);
+          setIsLanguagePackPreparing(false);
+        }
       }
     }
 
@@ -166,6 +175,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     setLocaleState(resolveLocalePreference(normalizedLanguage));
     setLocalePreference(normalizedLanguage);
     setDynamicTranslations(null);
+    setIsLanguagePackPreparing(false);
     window.localStorage.setItem(LOCALE_STORAGE_KEY, normalizedLanguage);
     window.dispatchEvent(
       new CustomEvent(LOCALE_PREFERENCE_CHANGED_EVENT, {
@@ -203,12 +213,20 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo(
     () => ({
       contentLanguage,
+      isLanguagePackPreparing,
       locale,
       localePreference,
       setLocale,
       t,
     }),
-    [contentLanguage, locale, localePreference, setLocale, t],
+    [
+      contentLanguage,
+      isLanguagePackPreparing,
+      locale,
+      localePreference,
+      setLocale,
+      t,
+    ],
   );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;

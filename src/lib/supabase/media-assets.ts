@@ -86,6 +86,9 @@ type MediaAssetRow = {
   created_at: string;
 };
 
+const MEDIA_ASSET_SELECT =
+  "id, trip_id, user_id, memory_entry_id, asset_type, storage_provider, storage_bucket, original_file_path, compressed_file_path, thumbnail_file_path, provider_file_id, provider_drive_id, provider_web_url, provider_thumbnail_url, provider_original_reference, original_drive_file_id, original_drive_web_url, thumbnail_drive_file_id, thumbnail_drive_web_url, thumbnail_url, preview_url, original_file_size, compressed_file_size, thumbnail_size, mime_type, width, height, thumbnail_width, thumbnail_height, storage_tier, is_original_preserved, retention_until, processing_status, legacy_supabase_path, legacy_thumbnail_path, taken_at, gps_latitude, gps_longitude, camera_model, orientation, exif_json, ai_status, ai_metadata, ocr_text, duplicate_score, blur_score, scene_tags, indexed_at, created_at";
+
 type MemoryRow = {
   id: string;
   trip_id: string;
@@ -117,6 +120,12 @@ type PhotoFaceRow = {
   created_at: string;
   updated_at: string;
 };
+
+const MEMORY_SELECT =
+  "id, trip_id, trip_day_id, itinerary_event_id, itinerary_reservation_id, user_id, type, content, media_url, location_name, captured_at, created_at";
+
+const PHOTO_FACE_SELECT =
+  "id, media_asset_id, trip_id, journey_member_id, bounding_box, embedding, confidence, quality_score, recognition_status, recognized_name, model_name, embedding_version, created_at, updated_at";
 
 function mapPhotoFace(row: PhotoFaceRow): PhotoFace {
   return {
@@ -215,7 +224,7 @@ export async function repairCurrentUserOrphanPhotoMemories(tripId: string) {
 
   const { data: assetRows, error: assetError } = await supabase
     .from("media_assets")
-    .select("*")
+    .select(MEDIA_ASSET_SELECT)
     .eq("trip_id", tripId)
     .eq("user_id", user.id)
     .eq("asset_type", "image")
@@ -276,7 +285,7 @@ export async function getTripPhotoAssets(
 ): Promise<PhotoAssetWithMemory[]> {
   const { data: assetRows, error: assetError } = await supabase
     .from("media_assets")
-    .select("*")
+    .select(MEDIA_ASSET_SELECT)
     .eq("trip_id", tripId)
     .eq("asset_type", "image")
     .order("created_at", { ascending: false });
@@ -294,7 +303,7 @@ export async function getTripPhotoAssets(
   if (memoryIds.length > 0) {
     const { data: memoryRows, error: memoryError } = await supabase
       .from("memory_entries")
-      .select("*")
+      .select(MEMORY_SELECT)
       .in("id", memoryIds);
 
     if (memoryError) {
@@ -350,7 +359,7 @@ export async function getMediaAssetsByMemoryIds(memoryIds: string[]) {
 
   const { data, error } = await supabase
     .from("media_assets")
-    .select("*")
+    .select(MEDIA_ASSET_SELECT)
     .in("memory_entry_id", uniqueIds);
 
   if (error) {
@@ -367,7 +376,7 @@ export async function getPhotoFacesForAssets(assetIds: string[]) {
 
   const { data, error } = await supabase
     .from("photo_faces")
-    .select("*")
+    .select(PHOTO_FACE_SELECT)
     .in("media_asset_id", assetIds)
     .order("created_at", { ascending: true });
 

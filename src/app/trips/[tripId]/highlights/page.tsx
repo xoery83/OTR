@@ -5,19 +5,17 @@ import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
-import { getPlannerV2, type PlannerV2Data } from "@/lib/supabase/planner-v2";
-import { getLedgerData } from "@/lib/supabase/ledger";
-import { getJourneyMembers } from "@/lib/supabase/journey-members";
-import { getItineraryRatingCountsByUser } from "@/lib/supabase/itinerary-ratings";
+import { TranslatedText } from "@/components/TranslatedText";
+import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
+import {
+  journeyResourceKey,
+  loadJourneyHighlightsResource,
+} from "@/lib/journey-resources";
+import type { TranslationKey } from "@/lib/i18n/dictionaries";
+import type { PlannerV2Data } from "@/lib/supabase/planner-v2";
 import {
   getSignedMemoryImageUrls,
-  getTripMemories,
 } from "@/lib/supabase/memories";
-import {
-  getTripFaceTagCountsByMember,
-  getTripImageUploadCountsByUser,
-} from "@/lib/supabase/media-assets";
-import { getTrip } from "@/lib/supabase/trips";
 import type {
   ItineraryEventType,
   ItineraryItemRatingSummary,
@@ -58,32 +56,32 @@ type ContributionRankItem = {
   href: string;
 };
 
-const typeLabels: Record<string, string> = {
-  flight: "航班",
-  hotel: "住宿",
-  car: "租车",
-  activity: "活动",
-  shopping: "购物",
-  meal: "餐饮",
-  transport: "交通",
-  note: "备注",
-  ferry: "渡轮",
-  tour: "游览",
-  restaurant: "餐厅",
-  other: "其他",
+const typeLabelKeys: Record<string, TranslationKey> = {
+  flight: "highlights.type.flight",
+  hotel: "highlights.type.hotel",
+  car: "highlights.type.car",
+  activity: "highlights.type.activity",
+  shopping: "highlights.type.shopping",
+  meal: "highlights.type.meal",
+  transport: "highlights.type.transport",
+  note: "highlights.type.note",
+  ferry: "highlights.type.ferry",
+  tour: "highlights.type.tour",
+  restaurant: "highlights.type.restaurant",
+  other: "highlights.type.other",
 };
 
-const ledgerCategoryLabels: Record<LedgerCategory, string> = {
-  flight: "机票",
-  hotel: "酒店",
-  car: "租车",
-  fuel: "油费",
-  food: "餐饮",
-  ticket: "门票",
-  shopping: "购物",
-  transport: "交通",
-  insurance: "保险",
-  other: "其他",
+const ledgerCategoryLabelKeys: Record<LedgerCategory, TranslationKey> = {
+  flight: "highlights.ledgerCategory.flight",
+  hotel: "highlights.ledgerCategory.hotel",
+  car: "highlights.ledgerCategory.car",
+  fuel: "highlights.ledgerCategory.fuel",
+  food: "highlights.ledgerCategory.food",
+  ticket: "highlights.ledgerCategory.ticket",
+  shopping: "highlights.ledgerCategory.shopping",
+  transport: "highlights.ledgerCategory.transport",
+  insurance: "highlights.ledgerCategory.insurance",
+  other: "highlights.ledgerCategory.other",
 };
 
 const ledgerCategoryOrder: LedgerCategory[] = [
@@ -241,7 +239,7 @@ function rankedMemoriesBy(
 
 function HighlightsContent() {
   const { tripId } = useParams<{ tripId: string }>();
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [planner, setPlanner] = useState<PlannerV2Data>({ days: [] });
   const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
@@ -258,56 +256,49 @@ function HighlightsContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const highlightsResource = useJourneyCachedResource({
+    cacheKey: journeyResourceKey.highlights(tripId),
+    loader: () => loadJourneyHighlightsResource(tripId),
+    ttl: 2 * 60_000,
+    staleTime: 30_000,
+    keepPreviousData: true,
+    backgroundRefresh: true,
+  });
+
   useEffect(() => {
-    let isMounted = true;
+    const data = highlightsResource.data;
+    if (!data) return;
+    setTrip(data.tripData);
+    setPlanner(data.plannerData);
+    setLedgerEntries(data.ledgerData.entries);
+    setLedgerBalances(data.ledgerData.summary.balances);
+    setLedgerCurrency(data.ledgerData.ledger.baseCurrency);
+    setMembers(data.journeyMembers);
+    setImageUploadCounts(data.imageCounts);
+    setFaceTagCounts(data.faceCounts);
+    setRatingCounts(data.ratingCountsByUser);
+    setMemories(data.memoryData);
+    setIsLoading(false);
+    setError(null);
 
-    async function loadHighlights() {
-      try {
-        const tripData = await getTrip(tripId);
-        const [
-          plannerData,
-          ledgerData,
-          journeyMembers,
-          imageCounts,
-          faceCounts,
-          ratingCountsByUser,
-          memoryData,
-        ] = await Promise.all([
-          getPlannerV2(tripData),
-          getLedgerData(tripData.id),
-          getJourneyMembers(tripData.id),
-          getTripImageUploadCountsByUser(tripData.id),
-          getTripFaceTagCountsByMember(tripData.id),
-          getItineraryRatingCountsByUser(tripData.id),
-          getTripMemories(tripData.id),
-        ]);
-        const signedImageUrls = await getSignedMemoryImageUrls(memoryData);
-        if (!isMounted) return;
-        setTrip(tripData);
-        setPlanner(plannerData);
-        setLedgerEntries(ledgerData.entries);
-        setLedgerBalances(ledgerData.summary.balances);
-        setLedgerCurrency(ledgerData.ledger.baseCurrency);
-        setMembers(journeyMembers);
-        setImageUploadCounts(imageCounts);
-        setFaceTagCounts(faceCounts);
-        setRatingCounts(ratingCountsByUser);
-        setMemories(memoryData);
-        setMemoryImageUrls(signedImageUrls);
-      } catch (loadError) {
-        if (isMounted) {
-          setError(getErrorMessage(loadError, "Could not load highlights."));
-        }
-      } finally {
-        if (isMounted) setIsLoading(false);
-      }
-    }
-
-    loadHighlights();
+    let cancelled = false;
+    getSignedMemoryImageUrls(data.memoryData)
+      .then((signedImageUrls) => {
+        if (!cancelled) setMemoryImageUrls(signedImageUrls);
+      })
+      .catch(() => {
+        if (!cancelled) setMemoryImageUrls({});
+      });
     return () => {
-      isMounted = false;
+      cancelled = true;
     };
-  }, [tripId]);
+  }, [highlightsResource.data]);
+
+  useEffect(() => {
+    if (!highlightsResource.error || highlightsResource.data) return;
+    setError(getErrorMessage(highlightsResource.error, "Could not load highlights."));
+    setIsLoading(false);
+  }, [highlightsResource.data, highlightsResource.error]);
 
   const bestItems = useMemo(() => ratedItems(planner), [planner]);
   const bestByType = useMemo(() => {
@@ -316,7 +307,7 @@ function HighlightsContent() {
       grouped.set(item.type, [...(grouped.get(item.type) ?? []), item]);
     });
     return [...grouped.entries()].sort(([left], [right]) =>
-      (typeLabels[left] ?? left).localeCompare(typeLabels[right] ?? right),
+      left.localeCompare(right),
     );
   }, [bestItems]);
   const expensiveByCategory = useMemo(
@@ -383,9 +374,9 @@ function HighlightsContent() {
       topItineraryCreator
         ? {
             id: "itinerary-created",
-            label: "添加行程最多",
+            label: t("highlights.contribution.itinerary"),
             title: memberLabel(membersByUserId.get(topItineraryCreator.value.userId ?? "")),
-            subtitle: "创建活动和预订",
+            subtitle: t("highlights.contribution.itinerarySubtitle"),
             count: topItineraryCreator.count,
             href: `/trips/${tripId}/planner`,
           }
@@ -393,9 +384,9 @@ function HighlightsContent() {
       topMemoryUploader
         ? {
             id: "memory-uploaded",
-            label: "上传记忆最多",
+            label: t("highlights.contribution.memory"),
             title: memberLabel(membersByUserId.get(topMemoryUploader.value.userId ?? "")),
-            subtitle: "文字、照片和语音记忆",
+            subtitle: t("highlights.contribution.memorySubtitle"),
             count: topMemoryUploader.count,
             href: `/trips/${tripId}/timeline`,
           }
@@ -403,9 +394,9 @@ function HighlightsContent() {
       topImageUploader
         ? {
             id: "image-uploaded",
-            label: "上传图片最多",
+            label: t("highlights.contribution.image"),
             title: memberLabel(membersByUserId.get(topImageUploader.value.userId ?? "")),
-            subtitle: "图片媒体上传",
+            subtitle: t("highlights.contribution.imageSubtitle"),
             count: topImageUploader.count,
             href: `/trips/${tripId}/timeline`,
           }
@@ -413,9 +404,9 @@ function HighlightsContent() {
       topFaceTagged
         ? {
             id: "face-tagged",
-            label: "最多脸被标记",
+            label: t("highlights.contribution.face"),
             title: memberLabel(membersById.get(topFaceTagged.value.id)),
-            subtitle: "照片中被识别或确认",
+            subtitle: t("highlights.contribution.faceSubtitle"),
             count: topFaceTagged.count,
             href: `/trips/${tripId}/people`,
           }
@@ -423,9 +414,9 @@ function HighlightsContent() {
       topRater
         ? {
             id: "rating-created",
-            label: "最多点评贡献",
+            label: t("highlights.contribution.rating"),
             title: memberLabel(membersByUserId.get(topRater.value.userId ?? "")),
-            subtitle: "行程与预订评分",
+            subtitle: t("highlights.contribution.ratingSubtitle"),
             count: topRater.count,
             href: `/trips/${tripId}/highlights`,
           }
@@ -437,6 +428,7 @@ function HighlightsContent() {
     members,
     planner.days,
     ratingCounts,
+    t,
     tripId,
   ]);
   const likedMemories = useMemo(
@@ -453,23 +445,46 @@ function HighlightsContent() {
       : activeTab === "favorites"
         ? favoritedMemories
         : [];
-  const activeMemoryRankLabel = activeTab === "likes" ? "点赞" : "收藏";
+  const activeMemoryRankLabel =
+    activeTab === "likes" ? t("highlights.tab.likes") : t("highlights.tab.favorites");
 
-  if (isLoading) {
-    return <div className="rounded-2xl bg-white p-5">加载精选中...</div>;
+  if (isLoading && !highlightsResource.data) {
+    return (
+      <div className="space-y-3 rounded-2xl bg-white p-5">
+        <div className="h-5 w-32 animate-pulse rounded bg-stone-200" />
+        <div className="h-20 animate-pulse rounded-2xl bg-stone-100" />
+        <div className="h-20 animate-pulse rounded-2xl bg-stone-100" />
+      </div>
+    );
   }
 
   return (
     <div className="space-y-5">
+      {highlightsResource.error && highlightsResource.data ? (
+        <p className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+          {t("highlights.refreshFailed")}
+        </p>
+      ) : null}
       <section>
         <p className="text-sm font-semibold text-emerald-700">
-          {trip?.name ?? "Journey"}
+          {trip?.name ? (
+            <TranslatedText
+              as="span"
+              showToggle={false}
+              sourceField="name"
+              sourceId={trip.id}
+              sourceType="trip"
+              text={trip.name}
+            />
+          ) : (
+            t("common.journey")
+          )}
         </p>
         <h1 className="mt-1 text-3xl font-semibold text-stone-950">
-          Journey Highlights
+          {t("highlights.title")}
         </h1>
         <p className="mt-3 text-base leading-7 text-stone-600">
-          汇总行程点评和账本消费，自动生成旅途里的排行榜。
+          {t("highlights.description")}
         </p>
       </section>
 
@@ -482,17 +497,21 @@ function HighlightsContent() {
       <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-black text-emerald-800">Highlights</p>
-            <h2 className="text-xl font-semibold text-stone-950">排行榜</h2>
+            <p className="text-sm font-black text-emerald-800">
+              {t("highlights.eyebrow")}
+            </p>
+            <h2 className="text-xl font-semibold text-stone-950">
+              {t("highlights.rankings")}
+            </h2>
           </div>
           <div className="grid grid-cols-5 rounded-full bg-stone-100 p-1 text-xs font-black text-stone-600">
             {(
               [
-                ["spending", `消费 ${spendingRankCount}`],
-                ["contribution", `贡献 ${contributionItems.length}`],
-                ["likes", `点赞 ${likedMemories.length}`],
-                ["favorites", `收藏 ${favoritedMemories.length}`],
-                ["journey", `行程 ${bestItems.length}`],
+                ["spending", t("highlights.tabWithCount", { label: t("highlights.tab.spending"), count: spendingRankCount })],
+                ["contribution", t("highlights.tabWithCount", { label: t("highlights.tab.contribution"), count: contributionItems.length })],
+                ["likes", t("highlights.tabWithCount", { label: t("highlights.tab.likes"), count: likedMemories.length })],
+                ["favorites", t("highlights.tabWithCount", { label: t("highlights.tab.favorites"), count: favoritedMemories.length })],
+                ["journey", t("highlights.tabWithCount", { label: t("highlights.tab.journey"), count: bestItems.length })],
               ] as const
             ).map(([value, label]) => (
               <button
@@ -513,7 +532,7 @@ function HighlightsContent() {
 
         {activeTab === "spending" && spendingRankCount === 0 ? (
           <div className="mt-4 rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
-            还没有消费记录。添加酒店、机票或餐饮支出后，这里会自动生成各分类最高消费。
+            {t("highlights.empty.spending")}
           </div>
         ) : null}
 
@@ -523,17 +542,20 @@ function HighlightsContent() {
               topConsumer
                 ? {
                     id: "top-consumer",
-                    label: "消费最多的人",
+                    label: t("highlights.label.topConsumer"),
                     title: topConsumer.balance.member.displayName,
-                    subtitle: `共享 ${money(
+                    subtitle: t("highlights.subtitle.topConsumer", {
+                      shared: money(
                       topConsumer.balance.owedTotal,
                       ledgerCurrency,
                       locale,
-                    )} · 个人 ${money(
+                      ),
+                      personal: money(
                       topConsumer.balance.statsOnlyTotal,
                       ledgerCurrency,
                       locale,
-                    )}`,
+                      ),
+                    }),
                     amount: topConsumer.amount,
                     href: `/trips/${tripId}/ledger?view=people`,
                   }
@@ -541,13 +563,11 @@ function HighlightsContent() {
               topPayer
                 ? {
                     id: "top-payer",
-                    label: "付钱最多的人",
+                    label: t("highlights.label.topPayer"),
                     title: topPayer.balance.member.displayName,
-                    subtitle: `共享支出付款 ${money(
-                      topPayer.balance.paidTotal,
-                      ledgerCurrency,
-                      locale,
-                    )}`,
+                    subtitle: t("highlights.subtitle.topPayer", {
+                      amount: money(topPayer.balance.paidTotal, ledgerCurrency, locale),
+                    }),
                     amount: topPayer.amount,
                     href: `/trips/${tripId}/ledger?view=people`,
                   }
@@ -601,14 +621,27 @@ function HighlightsContent() {
                 </span>
                 <span className="min-w-0">
                   <span className="block text-[11px] font-black uppercase tracking-wide text-emerald-800">
-                    最贵{ledgerCategoryLabels[category]} ·{" "}
+                    {t("highlights.label.mostExpensiveCategory", {
+                      category: t(ledgerCategoryLabelKeys[category]),
+                    })} ·{" "}
                     {dateLabel(entry.expenseDate, locale)}
                   </span>
                   <span className="mt-0.5 block truncate text-sm font-semibold text-stone-950">
-                    {entry.title}
+                    <TranslatedText
+                      as="span"
+                      className="block truncate"
+                      protectedEntities={[entry.originalCurrency, ledgerCurrency]}
+                      showToggle={false}
+                      sourceField="title"
+                      sourceId={entry.id}
+                      sourceType="expense"
+                      text={entry.title}
+                    />
                   </span>
                   <span className="mt-0.5 block truncate text-xs text-stone-500">
-                    原始金额 {money(entry.originalAmount, entry.originalCurrency, locale)}
+                    {t("highlights.originalAmount", {
+                      amount: money(entry.originalAmount, entry.originalCurrency, locale),
+                    })}
                   </span>
                 </span>
                 <span className="self-center rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-950">
@@ -621,7 +654,7 @@ function HighlightsContent() {
 
         {activeTab === "contribution" && contributionItems.length === 0 ? (
           <div className="mt-4 rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
-            还没有足够的互动记录。添加行程、上传记忆、标记照片或点评后，这里会生成贡献榜。
+            {t("highlights.empty.contribution")}
           </div>
         ) : null}
 
@@ -648,7 +681,7 @@ function HighlightsContent() {
                   </span>
                 </span>
                 <span className="self-center rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-950">
-                  {item.count} 次
+                  {t("highlights.countTimes", { count: item.count })}
                 </span>
               </Link>
             ))}
@@ -658,7 +691,7 @@ function HighlightsContent() {
         {(activeTab === "likes" || activeTab === "favorites") &&
         activeMemoryRank.length === 0 ? (
           <div className="mt-4 rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
-            还没有{activeMemoryRankLabel}过的记忆。
+            {t("highlights.empty.memoryRank", { label: activeMemoryRankLabel })}
           </div>
         ) : null}
 
@@ -689,10 +722,30 @@ function HighlightsContent() {
                   ) : (
                     <span className="flex h-full w-full flex-col justify-between bg-[#fffdf8] p-3">
                       <span className="line-clamp-5 text-sm font-semibold leading-5 text-stone-950">
-                        {memory.content || memory.locationName || "Memory"}
+                        {memory.content ? (
+                          <TranslatedText
+                            as="span"
+                            showToggle={false}
+                            sourceField="content"
+                            sourceId={memory.id}
+                            sourceType="memory"
+                            text={memory.content}
+                          />
+                        ) : memory.locationName ? (
+                          <TranslatedText
+                            as="span"
+                            showToggle={false}
+                            sourceField="location_name"
+                            sourceId={memory.id}
+                            sourceType="memory"
+                            text={memory.locationName}
+                          />
+                        ) : (
+                          t("highlights.memory")
+                        )}
                       </span>
                       <span className="text-[10px] font-black uppercase tracking-wide text-emerald-800">
-                        Text
+                        {t("highlights.text")}
                       </span>
                     </span>
                   )}
@@ -704,9 +757,27 @@ function HighlightsContent() {
                   </span>
                   <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-stone-950/80 to-transparent p-2 text-white opacity-0 transition group-hover:opacity-100">
                     <span className="line-clamp-2 text-xs font-bold">
-                      {memory.content ||
-                        memory.locationName ||
-                        dateTimeLabel(memory.capturedAt, locale)}
+                      {memory.content ? (
+                        <TranslatedText
+                          as="span"
+                          showToggle={false}
+                          sourceField="content"
+                          sourceId={memory.id}
+                          sourceType="memory"
+                          text={memory.content}
+                        />
+                      ) : memory.locationName ? (
+                        <TranslatedText
+                          as="span"
+                          showToggle={false}
+                          sourceField="location_name"
+                          sourceId={memory.id}
+                          sourceType="memory"
+                          text={memory.locationName}
+                        />
+                      ) : (
+                        dateTimeLabel(memory.capturedAt, locale)
+                      )}
                     </span>
                   </span>
                 </button>
@@ -717,7 +788,7 @@ function HighlightsContent() {
 
         {activeTab === "journey" && bestItems.length === 0 ? (
           <div className="mt-4 rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
-            还没有行程点评。打开任意行程卡片，点小星星就可以开始打分。
+            {t("highlights.empty.journey")}
           </div>
         ) : null}
 
@@ -726,7 +797,9 @@ function HighlightsContent() {
             {bestByType.map(([type, items]) => (
               <div key={type}>
                 <h3 className="text-sm font-black text-stone-900">
-                  Best {typeLabels[type] ?? type}
+                  {t("highlights.bestType", {
+                    type: typeLabelKeys[type] ? t(typeLabelKeys[type]) : type,
+                  })}
                 </h3>
                 <div className="mt-2 space-y-2">
                   {items.slice(0, 5).map((item, index) => (
@@ -741,20 +814,40 @@ function HighlightsContent() {
                       <span className="min-w-0">
                         <span className="block text-[11px] font-black uppercase tracking-wide text-emerald-800">
                           {dateLabel(item.date, locale)} ·{" "}
-                          {typeLabels[item.type] ?? item.type}
+                          {typeLabelKeys[item.type]
+                            ? t(typeLabelKeys[item.type])
+                            : item.type}
                         </span>
                         <span className="mt-0.5 block truncate text-sm font-semibold text-stone-950">
-                          {item.title}
+                          <TranslatedText
+                            as="span"
+                            className="block truncate"
+                            showToggle={false}
+                            sourceField="title"
+                            sourceId={item.itemId}
+                            sourceType="plan_item"
+                            text={item.title}
+                          />
                         </span>
                         {item.subtitle ? (
                           <span className="mt-0.5 block truncate text-xs text-stone-500">
-                            {item.subtitle}
+                            <TranslatedText
+                              as="span"
+                              className="block truncate"
+                              showToggle={false}
+                              sourceField="subtitle"
+                              sourceId={item.itemId}
+                              sourceType="plan_item"
+                              text={item.subtitle}
+                            />
                           </span>
                         ) : null}
                       </span>
                       <span className="self-center rounded-full bg-amber-300 px-3 py-1 text-xs font-black text-amber-950">
                         {item.rating.averageRating?.toFixed(1) ?? "0.0"} ·{" "}
-                        {item.rating.ratingCount}人
+                        {t("highlights.peopleCount", {
+                          count: item.rating.ratingCount,
+                        })}
                       </span>
                     </Link>
                   ))}
@@ -781,9 +874,19 @@ function HighlightsContent() {
                 </p>
                 <p className="mt-0.5 text-xs font-semibold text-white/65">
                   {dateTimeLabel(selectedMemory.capturedAt, locale)}
-                  {selectedMemory.locationName
-                    ? ` · ${selectedMemory.locationName}`
-                    : ""}
+                  {selectedMemory.locationName ? (
+                    <>
+                      {" · "}
+                      <TranslatedText
+                        as="span"
+                        showToggle={false}
+                        sourceField="location_name"
+                        sourceId={selectedMemory.id}
+                        sourceType="memory"
+                        text={selectedMemory.locationName}
+                      />
+                    </>
+                  ) : null}
                 </p>
               </div>
               <button
@@ -791,7 +894,7 @@ function HighlightsContent() {
                 onClick={() => setSelectedMemory(null)}
                 className="rounded-full bg-white/15 px-3 py-2 text-xs font-black text-white"
               >
-                关闭
+                {t("common.close")}
               </button>
             </div>
 
@@ -809,39 +912,80 @@ function HighlightsContent() {
                     />
                   </div>
                   <aside className="min-h-0 overflow-y-auto p-4">
-                    <p className="text-xs font-black uppercase tracking-wide text-emerald-800">
-                      Photo Memory
-                    </p>
-                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-stone-700">
-                      {selectedMemory.content || "没有文字说明。"}
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-2 text-xs font-black text-stone-600">
-                      <span className="rounded-full bg-stone-100 px-3 py-1">
-                        {selectedMemory.likeCount ?? 0} 赞
-                      </span>
-                      <span className="rounded-full bg-stone-100 px-3 py-1">
-                        {selectedMemory.favoriteCount ?? 0} 收藏
-                      </span>
-                    </div>
+                  <p className="text-xs font-black uppercase tracking-wide text-emerald-800">
+                    {t("highlights.photoMemory")}
+                  </p>
+                  <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-stone-700">
+                    {selectedMemory.content ? (
+                      <TranslatedText
+                        as="span"
+                        showToggle={false}
+                        sourceField="content"
+                        sourceId={selectedMemory.id}
+                        sourceType="memory"
+                        text={selectedMemory.content}
+                      />
+                    ) : (
+                      t("highlights.noCaption")
+                    )}
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-2 text-xs font-black text-stone-600">
+                    <span className="rounded-full bg-stone-100 px-3 py-1">
+                      {t("highlights.likeCount", {
+                        count: selectedMemory.likeCount ?? 0,
+                      })}
+                    </span>
+                    <span className="rounded-full bg-stone-100 px-3 py-1">
+                      {t("highlights.favoriteCount", {
+                        count: selectedMemory.favoriteCount ?? 0,
+                      })}
+                    </span>
+                  </div>
                   </aside>
                 </div>
               ) : (
                 <article className="max-h-full w-full overflow-y-auto p-6">
                   <p className="text-xs font-black uppercase tracking-wide text-emerald-800">
-                    Text Memory
+                    {t("highlights.textMemory")}
                   </p>
                   <h3 className="mt-3 text-2xl font-semibold text-stone-950">
-                    {selectedMemory.locationName || "全文"}
+                    {selectedMemory.locationName ? (
+                      <TranslatedText
+                        as="span"
+                        showToggle={false}
+                        sourceField="location_name"
+                        sourceId={selectedMemory.id}
+                        sourceType="memory"
+                        text={selectedMemory.locationName}
+                      />
+                    ) : (
+                      t("highlights.fullText")
+                    )}
                   </h3>
                   <p className="mt-4 whitespace-pre-wrap text-base leading-8 text-stone-700">
-                    {selectedMemory.content || "没有文字内容。"}
+                    {selectedMemory.content ? (
+                      <TranslatedText
+                        as="span"
+                        showToggle={false}
+                        sourceField="content"
+                        sourceId={selectedMemory.id}
+                        sourceType="memory"
+                        text={selectedMemory.content}
+                      />
+                    ) : (
+                      t("highlights.noText")
+                    )}
                   </p>
                   <div className="mt-6 flex flex-wrap gap-2 text-xs font-black text-stone-600">
                     <span className="rounded-full bg-stone-100 px-3 py-1">
-                      {selectedMemory.likeCount ?? 0} 赞
+                      {t("highlights.likeCount", {
+                        count: selectedMemory.likeCount ?? 0,
+                      })}
                     </span>
                     <span className="rounded-full bg-stone-100 px-3 py-1">
-                      {selectedMemory.favoriteCount ?? 0} 收藏
+                      {t("highlights.favoriteCount", {
+                        count: selectedMemory.favoriteCount ?? 0,
+                      })}
                     </span>
                   </div>
                 </article>

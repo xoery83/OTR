@@ -16,6 +16,15 @@ type LocaleBundleRow = {
   translations_json: Record<string, string> | null;
   status: "machine" | "reviewed";
   engine: string;
+  provider: string | null;
+  model: string | null;
+  prompt_version: string | null;
+  missing_keys_count: number | null;
+  token_estimate: number | null;
+  cost_estimate_usd: number | null;
+  error_message: string | null;
+  generated_by: string | null;
+  published_at: string | null;
   updated_at: string;
 };
 
@@ -28,19 +37,13 @@ type BackgroundJobRow = {
   progress: number | null;
   error_message: string | null;
   payload: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
   created_at: string;
   updated_at: string | null;
   completed_at: string | null;
 };
 
 type SummaryPayload = {
-  advancement?: {
-    complete: boolean;
-    error?: string;
-    languageCode: string;
-    translatedKeyCount: number;
-    totalKeyCount: number;
-  } | null;
   bundles: LocaleBundleRow[];
   jobs: BackgroundJobRow[];
   totalKeyCount?: number;
@@ -59,6 +62,12 @@ function jobLanguage(job: BackgroundJobRow) {
   return typeof value === "string" ? value : "";
 }
 
+function statusLabel(status: string) {
+  if (status === "queued") return "pending";
+  if (status === "processing") return "running";
+  return status;
+}
+
 function AdminLocalizationContent({ user }: { user: User }) {
   const [isAdmin, setIsAdmin] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -67,9 +76,29 @@ function AdminLocalizationContent({ user }: { user: User }) {
     bundles: [],
     jobs: [],
   });
+  const [selectedLanguage, setSelectedLanguage] = useState<string>(
+    i18nPrewarmLanguageCodes[0],
+  );
+  const [fullRegenerate, setFullRegenerate] = useState(false);
+  const [previewBundleId, setPreviewBundleId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const previewBundle = useMemo(
+    () => summary.bundles.find((bundle) => bundle.id === previewBundleId) ?? null,
+    [previewBundleId, summary.bundles],
+  );
+  const selectedBundle = useMemo(
+    () =>
+      summary.bundles.find(
+        (bundle) => bundle.language_code === selectedLanguage,
+      ) ?? null,
+    [selectedLanguage, summary.bundles],
+  );
+  const selectedMissingCount = Math.max(
+    0,
+    (summary.totalKeyCount ?? 0) - (selectedBundle ? countKeys(selectedBundle) : 0),
+  );
   const queuedLocaleJobs = useMemo(
     () =>
       summary.jobs.filter(
@@ -86,16 +115,6 @@ function AdminLocalizationContent({ user }: { user: User }) {
       ).length,
     [summary.jobs],
   );
-  const incompletePrewarmCount = useMemo(() => {
-    const total = summary.totalKeyCount ?? 0;
-    if (!total) return 0;
-    return i18nPrewarmLanguageCodes.filter((languageCode) => {
-      const bundle = summary.bundles.find(
-        (item) => item.language_code === languageCode,
-      );
-      return !bundle || countKeys(bundle) < total;
-    }).length;
-  }, [summary.bundles, summary.totalKeyCount]);
 
   const loadSummary = useCallback(async () => {
     setError(null);
@@ -109,7 +128,6 @@ function AdminLocalizationContent({ user }: { user: User }) {
     const payload = (await response.json()) as SummaryPayload & { error?: string };
     if (!response.ok) throw new Error(payload.error || "Could not load localization.");
     setSummary({
-      advancement: payload.advancement ?? null,
       bundles: payload.bundles ?? [],
       jobs: payload.jobs ?? [],
       totalKeyCount: payload.totalKeyCount,
@@ -143,16 +161,22 @@ function AdminLocalizationContent({ user }: { user: User }) {
   }, [loadSummary, user.id]);
 
   useEffect(() => {
-    if (!isAdmin || incompletePrewarmCount === 0 || isWorking) return;
+    if (!isAdmin) return;
+    const hasRunningJob = summary.jobs.some(
+      (job) =>
+        job.job_type === "generate_locale_bundle" &&
+        (job.status === "queued" || job.status === "processing"),
+    );
+    if (!hasRunningJob) return;
 
     const timer = window.setTimeout(() => {
       void loadSummary();
-    }, summary.advancement?.error ? 30000 : 3500);
+    }, 5000);
 
     return () => window.clearTimeout(timer);
-  }, [incompletePrewarmCount, isAdmin, isWorking, loadSummary, summary]);
+  }, [isAdmin, loadSummary, summary.jobs]);
 
-  async function postWorker(path: string, body: Record<string, unknown>) {
+  async function postJson(path: string, body: Record<string, unknown>) {
     setIsWorking(true);
     setError(null);
     setNotice(null);
@@ -169,34 +193,56 @@ function AdminLocalizationContent({ user }: { user: User }) {
         },
         body: JSON.stringify(body),
       });
-      const payload = (await response.json()) as { error?: string };
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        queued?: boolean;
+      };
       if (!response.ok) throw new Error(payload.error || "Operation failed.");
-      setNotice("Operation finished. Summary refreshed.");
       await loadSummary();
+      return payload;
     } catch (workError) {
       setError(getErrorMessage(workError, "Localization operation failed."));
+      return null;
     } finally {
       setIsWorking(false);
     }
   }
 
-  async function markReviewed(bundleId: string) {
-    setIsWorking(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const { error: updateError } = await supabase
-        .from("i18n_locale_bundles")
-        .update({ status: "reviewed", created_by: "admin" })
-        .eq("id", bundleId);
-      if (updateError) throw updateError;
-      setNotice("Language bundle marked as reviewed.");
-      await loadSummary();
-    } catch (reviewError) {
-      setError(getErrorMessage(reviewError, "Could not mark bundle reviewed."));
-    } finally {
-      setIsWorking(false);
-    }
+  async function generateLanguagePack() {
+    const payload = await postJson("/api/i18n/admin/language-pack-jobs", {
+      languageCode: selectedLanguage,
+      fullRegenerate,
+      requestedBy: user.id,
+    });
+    if (!payload) return;
+    setNotice(
+      payload.queued
+        ? "Language pack generation queued."
+        : "A matching language pack job is already pending.",
+    );
+  }
+
+  async function processBundleJob() {
+    const payload = await postJson("/api/i18n/process-locale-jobs", {
+      languageCode: selectedLanguage,
+    });
+    if (!payload) return;
+    setNotice("Language pack worker finished one pass.");
+  }
+
+  async function processContentJobs() {
+    const payload = await postJson("/api/i18n/process-content-jobs", { limit: 10 });
+    if (!payload) return;
+    setNotice("Content translation worker finished one pass.");
+  }
+
+  async function publishBundle(bundleId: string) {
+    const payload = await postJson(
+      `/api/i18n/admin/language-packs/${encodeURIComponent(bundleId)}/publish`,
+      {},
+    );
+    if (!payload) return;
+    setNotice("Language pack published.");
   }
 
   if (isLoading) {
@@ -226,32 +272,12 @@ function AdminLocalizationContent({ user }: { user: User }) {
         <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h1 className="text-2xl font-semibold text-stone-950">
-              Language bundles and translation cache
+              Language packs and translation cache
             </h1>
             <p className="mt-2 text-sm leading-6 text-stone-600">
-              Base version {i18nBaseVersion}. Prewarm languages:{" "}
-              {i18nPrewarmLanguageCodes.join(", ")}.
+              Base version {i18nBaseVersion}. Source locale: English. Dynamic user
+              content still uses LibreTranslate.
             </p>
-            {incompletePrewarmCount > 0 ? (
-              <p className="mt-1 text-sm font-semibold text-emerald-700">
-                Auto prewarming {incompletePrewarmCount} language bundle
-                {incompletePrewarmCount === 1 ? "" : "s"}...
-              </p>
-            ) : null}
-            {summary.advancement ? (
-              summary.advancement.error ? (
-                <p className="mt-1 text-xs font-semibold text-red-600">
-                  Latest batch paused: {summary.advancement.languageCode} ·{" "}
-                  {summary.advancement.error}
-                </p>
-              ) : (
-                <p className="mt-1 text-xs font-semibold text-stone-500">
-                  Latest batch: {summary.advancement.languageCode}{" "}
-                  {summary.advancement.translatedKeyCount}/
-                  {summary.advancement.totalKeyCount}
-                </p>
-              )
-            ) : null}
           </div>
           <button
             type="button"
@@ -275,38 +301,72 @@ function AdminLocalizationContent({ user }: { user: User }) {
         </p>
       ) : null}
 
-      <section className="grid gap-3 md:grid-cols-3">
+      <section className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+        <h2 className="text-lg font-semibold text-stone-950">
+          Generate Language Pack
+        </h2>
+        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto_auto] md:items-end">
+          <label className="block">
+            <span className="text-xs font-bold uppercase tracking-[0.14em] text-stone-500">
+              Target language
+            </span>
+            <select
+              value={selectedLanguage}
+              onChange={(event) => setSelectedLanguage(event.target.value)}
+              className="mt-2 w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-sm font-bold text-stone-900"
+            >
+              {i18nPrewarmLanguageCodes.map((languageCode) => (
+                <option key={languageCode} value={languageCode}>
+                  {languageCode}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex min-h-12 items-center gap-3 rounded-2xl border border-stone-200 px-4 py-3 text-sm font-bold text-stone-700">
+            <input
+              type="checkbox"
+              checked={fullRegenerate}
+              onChange={(event) => setFullRegenerate(event.target.checked)}
+              className="h-4 w-4 accent-emerald-700"
+            />
+            Full regenerate
+          </label>
+          <button
+            type="button"
+            onClick={() => void generateLanguagePack()}
+            disabled={isWorking}
+            className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-black text-white shadow-sm disabled:bg-stone-300"
+          >
+            Generate Language Pack
+          </button>
+        </div>
+        <p className="mt-3 text-xs font-semibold text-stone-500">
+          {selectedBundle
+            ? `${selectedLanguage} has ${countKeys(selectedBundle)}/${
+                summary.totalKeyCount ?? 0
+              } keys. Missing: ${selectedMissingCount}.`
+            : `${selectedLanguage} has not been generated yet.`}
+        </p>
+      </section>
+
+      <section className="grid gap-3 md:grid-cols-2">
         <button
           type="button"
-          onClick={() => void postWorker("/api/i18n/prewarm", {})}
-          disabled={isWorking}
-          className="rounded-2xl border border-emerald-100 bg-white p-4 text-left shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50 disabled:opacity-60"
-        >
-          <p className="text-sm font-bold text-emerald-800">Prewarm bundles</p>
-          <p className="mt-1 text-xs leading-5 text-stone-600">
-            Queue common language bundles.
-          </p>
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            void postWorker("/api/i18n/process-locale-jobs", { limit: 3 })
-          }
+          onClick={() => void processBundleJob()}
           disabled={isWorking}
           className="rounded-2xl border border-sky-100 bg-white p-4 text-left shadow-sm transition hover:border-sky-200 hover:bg-sky-50 disabled:opacity-60"
         >
           <p className="text-sm font-bold text-sky-800">
-            Process bundle jobs ({queuedLocaleJobs})
+            Process language pack job ({queuedLocaleJobs})
           </p>
           <p className="mt-1 text-xs leading-5 text-stone-600">
-            Generate queued menu language packs.
+            Runs one queued LLM generation task. Only one language pack can run at a
+            time.
           </p>
         </button>
         <button
           type="button"
-          onClick={() =>
-            void postWorker("/api/i18n/process-content-jobs", { limit: 10 })
-          }
+          onClick={() => void processContentJobs()}
           disabled={isWorking}
           className="rounded-2xl border border-amber-100 bg-white p-4 text-left shadow-sm transition hover:border-amber-200 hover:bg-amber-50 disabled:opacity-60"
         >
@@ -314,13 +374,13 @@ function AdminLocalizationContent({ user }: { user: User }) {
             Process content jobs ({queuedContentJobs})
           </p>
           <p className="mt-1 text-xs leading-5 text-stone-600">
-            Translate queued user notes and descriptions.
+            Translates queued user notes and descriptions through LibreTranslate.
           </p>
         </button>
       </section>
 
       <section className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-        <h2 className="text-lg font-semibold text-stone-950">Language bundles</h2>
+        <h2 className="text-lg font-semibold text-stone-950">Language packs</h2>
         <div className="mt-4 overflow-x-auto">
           <table className="min-w-full divide-y divide-stone-100 text-sm">
             <thead className="text-left text-xs uppercase text-stone-500">
@@ -328,7 +388,8 @@ function AdminLocalizationContent({ user }: { user: User }) {
                 <th className="py-2 pr-4">Language</th>
                 <th className="py-2 pr-4">Status</th>
                 <th className="py-2 pr-4">Keys</th>
-                <th className="py-2 pr-4">Engine</th>
+                <th className="py-2 pr-4">Provider</th>
+                <th className="py-2 pr-4">Tokens</th>
                 <th className="py-2 pr-4">Updated</th>
                 <th className="py-2 pr-4">Action</th>
               </tr>
@@ -339,34 +400,53 @@ function AdminLocalizationContent({ user }: { user: User }) {
                   <td className="py-3 pr-4 font-semibold text-stone-900">
                     {bundle.language_code}
                   </td>
-                  <td className="py-3 pr-4 text-stone-700">{bundle.status}</td>
-                  <td className="py-3 pr-4 text-stone-700">{countKeys(bundle)}</td>
-                  <td className="py-3 pr-4 text-stone-700">{bundle.engine}</td>
+                  <td className="py-3 pr-4 text-stone-700">
+                    {bundle.status === "reviewed" ? "published" : "draft"}
+                  </td>
+                  <td className="py-3 pr-4 text-stone-700">
+                    {countKeys(bundle)}/{summary.totalKeyCount ?? "-"}
+                  </td>
+                  <td className="py-3 pr-4 text-stone-700">
+                    {bundle.provider || bundle.engine}
+                    {bundle.model ? ` · ${bundle.model}` : ""}
+                  </td>
+                  <td className="py-3 pr-4 text-stone-700">
+                    {bundle.token_estimate ?? "-"}
+                  </td>
                   <td className="py-3 pr-4 text-stone-500">
                     {new Date(bundle.updated_at).toLocaleString()}
                   </td>
                   <td className="py-3 pr-4">
-                    {bundle.status === "machine" ? (
+                    <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        onClick={() => void markReviewed(bundle.id)}
-                        disabled={isWorking}
-                        className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800 disabled:text-stone-400"
+                        onClick={() => setPreviewBundleId(bundle.id)}
+                        className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-700"
                       >
-                        Mark reviewed
+                        Preview
                       </button>
-                    ) : (
-                      <span className="text-xs font-semibold text-stone-400">
-                        Reviewed
-                      </span>
-                    )}
+                      {bundle.status === "machine" ? (
+                        <button
+                          type="button"
+                          onClick={() => void publishBundle(bundle.id)}
+                          disabled={isWorking}
+                          className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800 disabled:text-stone-400"
+                        >
+                          Publish
+                        </button>
+                      ) : (
+                        <span className="rounded-full bg-stone-50 px-3 py-1 text-xs font-semibold text-stone-400">
+                          Published
+                        </span>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
               {summary.bundles.length === 0 ? (
                 <tr>
-                  <td className="py-5 text-sm font-semibold text-stone-500" colSpan={6}>
-                    No generated bundles yet.
+                  <td className="py-5 text-sm font-semibold text-stone-500" colSpan={7}>
+                    No generated language packs yet.
                   </td>
                 </tr>
               ) : null}
@@ -374,6 +454,32 @@ function AdminLocalizationContent({ user }: { user: User }) {
           </table>
         </div>
       </section>
+
+      {previewBundle ? (
+        <section className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-stone-950">
+                Preview JSON · {previewBundle.language_code}
+              </h2>
+              <p className="mt-1 text-xs font-semibold text-stone-500">
+                {countKeys(previewBundle)} keys ·{" "}
+                {previewBundle.prompt_version || "no prompt version"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPreviewBundleId(null)}
+              className="rounded-full bg-stone-100 px-4 py-2 text-sm font-bold text-stone-700"
+            >
+              Close preview
+            </button>
+          </div>
+          <pre className="mt-4 max-h-96 overflow-auto rounded-2xl bg-stone-950 p-4 text-xs leading-5 text-stone-50">
+            {JSON.stringify(previewBundle.translations_json ?? {}, null, 2)}
+          </pre>
+        </section>
+      ) : null}
 
       <section className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
         <h2 className="text-lg font-semibold text-stone-950">Recent jobs</h2>
@@ -386,10 +492,11 @@ function AdminLocalizationContent({ user }: { user: User }) {
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-sm font-bold text-stone-900">
-                    {job.title || job.job_type} {jobLanguage(job) ? `· ${jobLanguage(job)}` : ""}
+                    {job.title || job.job_type}{" "}
+                    {jobLanguage(job) ? `· ${jobLanguage(job)}` : ""}
                   </p>
                   <p className="mt-1 text-xs text-stone-500">
-                    {job.status} · {job.current_step || "Queued"} ·{" "}
+                    {statusLabel(job.status)} · {job.current_step || "Queued"} ·{" "}
                     {new Date(job.created_at).toLocaleString()}
                   </p>
                 </div>
@@ -397,6 +504,15 @@ function AdminLocalizationContent({ user }: { user: User }) {
                   {job.progress ?? 0}%
                 </span>
               </div>
+              {job.result ? (
+                <p className="mt-2 text-xs font-semibold text-stone-500">
+                  {typeof job.result.provider === "string"
+                    ? `${job.result.provider} · ${job.result.model ?? ""} · ${
+                        job.result.tokenEstimate ?? "-"
+                      } tokens`
+                    : null}
+                </p>
+              ) : null}
               {job.error_message ? (
                 <p className="mt-3 rounded-xl bg-red-50 p-3 text-xs font-semibold text-red-700">
                   {job.error_message}

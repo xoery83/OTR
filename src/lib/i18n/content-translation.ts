@@ -4,6 +4,8 @@ import { translateText } from "@/lib/translation/provider";
 export type ContentTranslationSourceType =
   | "memory"
   | "comment"
+  | "chat_message"
+  | "trip"
   | "plan_item"
   | "expense"
   | "summary"
@@ -29,6 +31,7 @@ export function collectProtectedEntities(
   extraEntities: string[] = [],
 ) {
   const patterns = [
+    /\b[A-Z][A-Z0-9]{1,}(?:[-_/][A-Z0-9]{2,})*\b/g,
     /\b[A-Z]{2}\d{2,5}\b/g,
     /\b[A-Z]{3}\b/g,
     /\b[A-Z]{3}\s?\d{1,4}\b/g,

@@ -86,6 +86,15 @@ type LedgerParticipantRow = {
   updated_at: string;
 };
 
+const JOURNEY_LEDGER_SELECT =
+  "id, journey_id, base_currency, display_currency, exchange_rates_snapshot_date, exchange_rates_snapshot_source, exchange_rates_refreshed_at, exchange_rates_refreshed_by, exchange_rates_refresh_count, created_at, updated_at";
+
+const LEDGER_ENTRY_SELECT =
+  "id, journey_id, itinerary_event_id, itinerary_reservation_id, memory_entry_id, title, description, category, accounting_mode, expense_date, start_date, end_date, original_amount, original_currency, base_amount, base_currency, exchange_rate, exchange_rate_date, exchange_rate_source, payer_member_id, address_text, latitude, longitude, location_source, status, created_by_member_id, created_by_user_id, created_at, updated_at";
+
+const LEDGER_PARTICIPANT_SELECT =
+  "id, ledger_entry_id, member_id, split_method, share_amount, share_percentage, computed_share_base_amount, created_at, updated_at";
+
 type LinkedReservationRangeRow = {
   id: string;
   starts_at: string | null;
@@ -324,7 +333,7 @@ function currentUserMember(members: JourneyMember[], userId: string) {
 async function ensureJourneyLedger(journeyId: string) {
   const { data: existing, error: selectError } = await supabase
     .from("journey_ledgers")
-    .select("*")
+    .select(JOURNEY_LEDGER_SELECT)
     .eq("journey_id", journeyId)
     .maybeSingle();
 
@@ -340,7 +349,7 @@ async function ensureJourneyLedger(journeyId: string) {
       exchange_rates_snapshot_date: new Date().toISOString().slice(0, 10),
       exchange_rates_snapshot_source: "default_at_creation",
     })
-    .select("*")
+    .select(JOURNEY_LEDGER_SELECT)
     .single();
 
   if (error) throw error;
@@ -350,7 +359,9 @@ async function ensureJourneyLedger(journeyId: string) {
 export async function getJourneyExchangeRates(journeyId: string) {
   const { data, error } = await supabase
     .from("journey_exchange_rates")
-    .select("*")
+    .select(
+      "id, journey_id, base_currency, quote_currency, rate_to_base, rate_date, source, created_at, updated_at",
+    )
     .eq("journey_id", journeyId)
     .order("quote_currency", { ascending: true });
 
@@ -524,7 +535,7 @@ export async function refreshJourneyExchangeRatesOnce(journeyId: string) {
     })
     .eq("journey_id", journeyId)
     .eq("exchange_rates_refresh_count", 0)
-    .select("*")
+    .select(JOURNEY_LEDGER_SELECT)
     .single();
 
   if (error) throw error;
@@ -682,7 +693,7 @@ export async function getLedgerData(journeyId: string): Promise<LedgerData> {
 
   const { data: entryRows, error: entriesError } = await supabase
     .from("ledger_entries")
-    .select("*")
+    .select(LEDGER_ENTRY_SELECT)
     .eq("journey_id", journeyId)
     .order("expense_date", { ascending: false })
     .order("created_at", { ascending: false });
@@ -695,7 +706,7 @@ export async function getLedgerData(journeyId: string): Promise<LedgerData> {
     entryIds.length > 0
       ? await supabase
           .from("ledger_entry_participants")
-          .select("*")
+          .select(LEDGER_PARTICIPANT_SELECT)
           .in("ledger_entry_id", entryIds)
       : { data: [], error: null };
 

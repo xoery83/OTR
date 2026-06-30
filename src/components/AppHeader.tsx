@@ -5,8 +5,14 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
+import { TranslatedText } from "@/components/TranslatedText";
+import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
+import {
+  journeyResourceKey,
+  loadJourneyBaseListResource,
+  loadJourneyTripResource,
+} from "@/lib/journey-resources";
 import { logout } from "@/lib/supabase/auth";
-import { getTrip, getTripsForCurrentUser } from "@/lib/supabase/trips";
 import type { Trip } from "@/types";
 
 const languageOptions = [
@@ -35,7 +41,7 @@ function getJourneySwitchHref(pathname: string, tripId: string) {
 export function AppHeader() {
   const pathname = usePathname();
   const router = useRouter();
-  const { contentLanguage, setLocale, t } = useI18n();
+  const { contentLanguage, isLanguagePackPreparing, setLocale, t } = useI18n();
   const { openCapture } = useCaptureModal();
   const tripId = getActiveTripId(pathname);
   const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
@@ -47,53 +53,51 @@ export function AppHeader() {
   const [journeys, setJourneys] = useState<Trip[]>([]);
   const journeyMenuRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    let isMounted = true;
+  const activeJourneyResource = useJourneyCachedResource({
+    cacheKey: tripId ? journeyResourceKey.trip(tripId) : null,
+    loader: () => loadJourneyTripResource(tripId ?? ""),
+    ttl: 10 * 60_000,
+    staleTime: 60_000,
+    keepPreviousData: true,
+    backgroundRefresh: true,
+    enabled: Boolean(tripId),
+  });
 
-    async function loadJourneyName() {
-      if (!tripId) {
-        setJourneyName(null);
-        setJourneyCoverImageUrl(null);
-        return;
-      }
-
-      try {
-        const trip = await getTrip(tripId);
-        if (isMounted) {
-          setJourneyName(trip.name);
-          setJourneyCoverImageUrl(trip.coverImageUrl);
-        }
-      } catch {
-        if (isMounted) {
-          setJourneyName(t("common.journey"));
-          setJourneyCoverImageUrl(null);
-        }
-      }
-    }
-
-    loadJourneyName();
-    return () => {
-      isMounted = false;
-    };
-  }, [tripId, t]);
+  const journeyListResource = useJourneyCachedResource({
+    cacheKey: journeyResourceKey.tripsBase(),
+    loader: loadJourneyBaseListResource,
+    ttl: 2 * 60_000,
+    staleTime: 30_000,
+    keepPreviousData: true,
+    backgroundRefresh: true,
+  });
 
   useEffect(() => {
-    let isMounted = true;
-
-    async function loadJourneys() {
-      try {
-        const data = await getTripsForCurrentUser();
-        if (isMounted) setJourneys(data);
-      } catch {
-        if (isMounted) setJourneys([]);
-      }
+    if (!tripId) {
+      setJourneyName(null);
+      setJourneyCoverImageUrl(null);
+      return;
     }
+    if (activeJourneyResource.data) {
+      setJourneyName(activeJourneyResource.data.name);
+      setJourneyCoverImageUrl(activeJourneyResource.data.coverImageUrl);
+      return;
+    }
+    if (activeJourneyResource.error) {
+      setJourneyName((current) => current ?? t("common.journey"));
+      setJourneyCoverImageUrl((current) => current ?? null);
+    }
+  }, [activeJourneyResource.data, activeJourneyResource.error, tripId, t]);
 
-    loadJourneys();
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  useEffect(() => {
+    if (journeyListResource.data) {
+      setJourneys(journeyListResource.data);
+      return;
+    }
+    if (journeyListResource.error) {
+      setJourneys((current) => current);
+    }
+  }, [journeyListResource.data, journeyListResource.error]);
 
   useEffect(() => {
     if (!isJourneyMenuOpen) return;
@@ -201,7 +205,21 @@ export function AppHeader() {
                   isChatPage ? "text-white drop-shadow" : "text-stone-900"
                 }`}
               >
-                {tripId ? journeyName || t("common.journey") : "OTR"}
+                {tripId && journeyName ? (
+                  <TranslatedText
+                    as="span"
+                    className="block truncate"
+                    showToggle={false}
+                    sourceField="name"
+                    sourceId={tripId}
+                    sourceType="trip"
+                    text={journeyName}
+                  />
+                ) : tripId ? (
+                  t("common.journey")
+                ) : (
+                  "OTR"
+                )}
               </p>
               <div ref={journeyMenuRef} className="relative">
                 <button
@@ -226,7 +244,7 @@ export function AppHeader() {
                   <div className="absolute right-0 top-12 z-[680] w-72 max-w-[82vw] overflow-hidden rounded-2xl border border-emerald-100 bg-white shadow-xl">
                     <div className="border-b border-stone-100 px-4 py-3">
                       <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">
-                        Journeys
+                        {t("nav.journeys")}
                       </p>
                     </div>
                     <div className="max-h-80 overflow-y-auto p-2">
@@ -245,18 +263,32 @@ export function AppHeader() {
                                   : "text-stone-800 hover:bg-stone-50"
                               }`}
                             >
-                              <span className="block truncate">{journey.name}</span>
+                              <TranslatedText
+                                as="span"
+                                className="block truncate"
+                                showToggle={false}
+                                sourceField="name"
+                                sourceId={journey.id}
+                                sourceType="trip"
+                                text={journey.name}
+                              />
                               {journey.destination ? (
-                                <span className="mt-1 block truncate text-xs font-semibold text-stone-500">
-                                  {journey.destination}
-                                </span>
+                                <TranslatedText
+                                  as="span"
+                                  className="mt-1 block truncate text-xs font-semibold text-stone-500"
+                                  showToggle={false}
+                                  sourceField="destination"
+                                  sourceId={journey.id}
+                                  sourceType="trip"
+                                  text={journey.destination}
+                                />
                               ) : null}
                             </Link>
                           );
                         })
                       ) : (
                         <p className="px-3 py-4 text-sm font-semibold text-stone-500">
-                          No journeys yet.
+                          {t("trips.emptyGroup")}
                         </p>
                       )}
                     </div>
@@ -316,6 +348,11 @@ export function AppHeader() {
                   </option>
                 ))}
               </select>
+              {isLanguagePackPreparing ? (
+                <p className="mt-2 px-1 text-xs font-semibold text-amber-700">
+                  {t("app.languagePreparing")}
+                </p>
+              ) : null}
             </div>
             <nav className="mt-7 grid gap-2">
               {(

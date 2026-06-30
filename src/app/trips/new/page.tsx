@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
+import { invalidateJourneyResource } from "@/hooks/useJourneyCachedResource";
 import { getErrorMessage } from "@/lib/errors";
+import { journeyResourceKey } from "@/lib/journey-resources";
 import { getCurrentUser } from "@/lib/supabase/auth";
 import {
   createJourneyMember,
@@ -259,6 +261,8 @@ function NewJourneyTour() {
         });
       }
 
+      invalidateJourneyResource(journeyResourceKey.trips());
+      invalidateJourneyResource(journeyResourceKey.tripsBase());
       setCreatedTrip(trip);
       setAiCoverCount(1);
       setCoverImageUrl(generateAiCoverUrl(name.trim(), destination.trim(), 1));
@@ -282,6 +286,8 @@ function NewJourneyTour() {
         coverImageUrl: coverImageUrl.trim() || null,
         photoStorageProvider: storageProviderFromChoice(storageChoice),
       });
+      invalidateJourneyResource(journeyResourceKey.trips());
+      invalidateJourneyResource(journeyResourceKey.tripsBase());
       router.push(`/trips/${createdTrip.id}/planner`);
     } catch (settingsError) {
       setError(

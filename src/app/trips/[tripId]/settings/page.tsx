@@ -5,7 +5,9 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
+import { invalidateJourneyResource } from "@/hooks/useJourneyCachedResource";
 import { getErrorMessage } from "@/lib/errors";
+import { journeyResourceKey } from "@/lib/journey-resources";
 import { getCurrentUser } from "@/lib/supabase/auth";
 import { supabase } from "@/lib/supabase/client";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
@@ -383,6 +385,8 @@ function SettingsContent() {
     setNotice(null);
     try {
       await deleteTrip(trip.id);
+      invalidateJourneyResource(journeyResourceKey.trips());
+      invalidateJourneyResource(journeyResourceKey.tripsBase());
       router.replace("/trips");
     } catch (deleteError) {
       setError(getErrorMessage(deleteError, t("journeySettings.deleteError")));

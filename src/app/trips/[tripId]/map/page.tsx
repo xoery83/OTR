@@ -11,6 +11,7 @@ import {
 } from "@/components/LeafletMapCanvas";
 import { LiveLocationToggle } from "@/components/LiveLocationToggle";
 import { useI18n } from "@/components/I18nProvider";
+import { TranslatedText } from "@/components/TranslatedText";
 import {
   readTodayScopedValue,
   writeTodayScopedValue,
@@ -23,26 +24,27 @@ import {
 } from "@/lib/geo";
 import { getErrorMessage } from "@/lib/errors";
 import { formatJourneyTime, journeyDateKey } from "@/lib/format";
+import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
+import {
+  journeyResourceKey,
+  loadJourneyMapResource,
+} from "@/lib/journey-resources";
 import {
   manualPinLocationClient,
   resolveJourneyLocationsClient,
   resolveLocationItemClient,
   type ResolveJourneyLocationsSummary,
 } from "@/lib/place-service/client";
-import { getCurrentUser } from "@/lib/supabase/auth";
-import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import { getActiveJourneyMembers } from "@/lib/journeys/stats";
 import {
   getJourneyLiveLocations,
   getJourneyMapObjects,
 } from "@/lib/supabase/map";
 import {
-  getPlannerV2,
   type PlannerV2Data,
   type PlannerV2Day,
 } from "@/lib/supabase/planner-v2";
 import { getSignedMemoryImageUrls } from "@/lib/supabase/memories";
-import { getTrip } from "@/lib/supabase/trips";
 import type {
   ItineraryEvent,
   ItineraryReservation,
@@ -705,9 +707,9 @@ function JourneyMapContent() {
     NonNullable<ResolveJourneyLocationsSummary["results"]>[number] | null
   >(null);
   const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const dateStripRef = useRef<HTMLDivElement | null>(null);
   const locationRepairKeyRef = useRef<string | null>(null);
+  const hydratedMapViewTripRef = useRef<string | null>(null);
 
   const refreshLiveLocations = useCallback(async () => {
     const locations = await getJourneyLiveLocations(tripId);
@@ -760,60 +762,61 @@ function JourneyMapContent() {
           ambiguous: current?.ambiguous ?? 0,
           skipped: current?.skipped ?? 0,
           isResolving: false,
-          error: getErrorMessage(repairError, "地点定位失败"),
+          error: getErrorMessage(repairError, t("map.repair.error")),
         }));
       }
     },
-    [days, refreshMapObjects, selectedDayId, tripId],
+    [days, refreshMapObjects, selectedDayId, t, tripId],
   );
 
+  const mapResource = useJourneyCachedResource({
+    cacheKey: journeyResourceKey.map(tripId),
+    loader: () => loadJourneyMapResource(tripId),
+    ttl: 90_000,
+    staleTime: 15_000,
+    keepPreviousData: true,
+    backgroundRefresh: true,
+  });
+
   useEffect(() => {
-    let isMounted = true;
-
-    async function loadMapData() {
-      setIsLoading(true);
-      try {
-        const user = await getCurrentUser();
-        const journey = await getTrip(tripId);
-        const [journeyMembers, locations, objects, planner] = await Promise.all([
-          getJourneyMembers(tripId),
-          getJourneyLiveLocations(tripId),
-          getJourneyMapObjects(tripId),
-          getPlannerV2(journey),
-        ]);
-
-        if (!isMounted) return;
-        setCurrentUserId(user?.id ?? null);
-        setTrip(journey);
-        setMembers(journeyMembers);
-        setLiveLocations(locations);
-        setMapObjects(objects);
-        setDays(planner.days);
-        const requestedDayId = getQueryMapViewId(requestedDate, planner.days);
-        const nextSelectedDayId =
-          requestedDayId ??
-          getStoredMapViewId(tripId, planner.days) ??
-          getDefaultDayId(planner.days);
-        setSelectedDayId(nextSelectedDayId);
-        if (requestedDayId && requestedDate) {
-          writeTodayScopedValue(`otr:map-view:${tripId}`, requestedDate);
-          writeTodayScopedValue(`otr:planner-day:${tripId}`, requestedDate);
-        }
-        setError(null);
-      } catch (mapError) {
-        if (isMounted) {
-          setError(getErrorMessage(mapError, t("map.loadError")));
-        }
-      } finally {
-        if (isMounted) setIsLoading(false);
+    const data = mapResource.data;
+    if (!data) return;
+    setCurrentUserId(data.currentUserId);
+    setTrip(data.trip);
+    setMembers(data.members);
+    setLiveLocations(data.liveLocations);
+    setMapObjects(data.mapObjects);
+    setDays(data.days);
+    const requestedDayId = getQueryMapViewId(requestedDate, data.days);
+    const storedDayId = getStoredMapViewId(tripId, data.days);
+    const hasHydratedThisTrip = hydratedMapViewTripRef.current === tripId;
+    setSelectedDayId((current) => {
+      if (requestedDayId) return requestedDayId;
+      if (!hasHydratedThisTrip && storedDayId) return storedDayId;
+      if (
+        hasHydratedThisTrip &&
+        current &&
+        (current === "journey" || data.days.some((day) => day.day.id === current))
+      ) {
+        return current;
       }
+      return (
+        storedDayId ??
+        getDefaultDayId(data.days)
+      );
+    });
+    hydratedMapViewTripRef.current = tripId;
+    if (requestedDayId && requestedDate) {
+      writeTodayScopedValue(`otr:map-view:${tripId}`, requestedDate);
+      writeTodayScopedValue(`otr:planner-day:${tripId}`, requestedDate);
     }
+    setError(null);
+  }, [mapResource.data, requestedDate, tripId]);
 
-    loadMapData();
-    return () => {
-      isMounted = false;
-    };
-  }, [requestedDate, t, tripId]);
+  useEffect(() => {
+    if (!mapResource.error || mapResource.data) return;
+    setError(getErrorMessage(mapResource.error, t("map.loadError")));
+  }, [mapResource.data, mapResource.error, t]);
 
   const selectedDay = useMemo(
     () => days.find((day) => day.day.id === selectedDayId) ?? null,
@@ -866,12 +869,12 @@ function JourneyMapContent() {
   }, [photoMemoryPathKey]);
 
   useEffect(() => {
-    if (isLoading || !trip || !days.length) return;
+    if (!trip || !days.length) return;
     const key = `${tripId}:${days.length}`;
     if (locationRepairKeyRef.current === key) return;
     locationRepairKeyRef.current = key;
     runLocationRepair(false, { silent: true }).catch(() => undefined);
-  }, [days.length, isLoading, runLocationRepair, trip, tripId]);
+  }, [days.length, runLocationRepair, trip, tripId]);
 
   const hotelStops = useMemo(
     () =>
@@ -1370,8 +1373,10 @@ function JourneyMapContent() {
   const mappedStopCount =
     activePlanStops.length + visibleMemoryStops.length;
   const mapScopeLabel = selectedDay
-    ? `${selectedDay.dayTag ?? `D${selectedDay.dayNumber}`} 当前视图`
-    : "全旅程视图";
+    ? t("map.scopeDay", {
+        day: selectedDay.dayTag ?? `D${selectedDay.dayNumber}`,
+      })
+    : t("map.scopeJourney");
   const unresolvedLocations = (locationRepair?.results ?? []).filter(
     (result) => result.status === "failed" || result.status === "ambiguous",
   );
@@ -1395,7 +1400,7 @@ function JourneyMapContent() {
   async function handleMapClick(coordinates: Coordinates) {
     if (!manualPinTarget?.locationText) return;
     const title = manualPinTarget.title || manualPinTarget.locationText;
-    if (!window.confirm(`把“${title}”设为这里？`)) return;
+    if (!window.confirm(t("map.repair.confirmPin", { title }))) return;
 
     try {
       await manualPinLocationClient({
@@ -1420,7 +1425,7 @@ function JourneyMapContent() {
         skipped: current?.skipped ?? 0,
         results: current?.results ?? [],
         isResolving: false,
-        error: getErrorMessage(pinError, "手动选点失败"),
+        error: getErrorMessage(pinError, t("map.repair.manualPinError")),
       }));
     }
   }
@@ -1460,7 +1465,7 @@ function JourneyMapContent() {
 
   return (
     <section className="otr-journey-map fixed inset-0 z-10 bg-stone-100 md:left-44">
-      {isLoading ? (
+      {!mapResource.data && mapResource.isLoading ? (
         <div className="h-full w-full bg-gradient-to-br from-emerald-50 via-sky-50 to-stone-100" />
       ) : (
         <LeafletMapCanvas
@@ -1479,7 +1484,19 @@ function JourneyMapContent() {
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate text-xs font-black uppercase tracking-[0.12em] text-emerald-900 md:tracking-[0.16em]">
-                {trip?.name || t("map.title")}
+                {trip?.name ? (
+                  <TranslatedText
+                    as="span"
+                    className="block truncate"
+                    showToggle={false}
+                    sourceField="name"
+                    sourceId={trip.id}
+                    sourceType="trip"
+                    text={trip.name}
+                  />
+                ) : (
+                  t("map.title")
+                )}
               </p>
               <p className="truncate text-[11px] font-bold text-stone-600">
                 {selectedDay
@@ -1549,19 +1566,41 @@ function JourneyMapContent() {
                 disabled={locationRepair?.isResolving}
                 className="rounded-full bg-white px-2.5 py-2 text-xs font-black text-emerald-800 shadow-sm disabled:opacity-60"
               >
-                {locationRepair?.isResolving ? "定位中" : "修复地点"}
+                {locationRepair?.isResolving
+                  ? t("map.repair.resolving")
+                  : t("map.repair.action")}
               </button>
             </div>
           </div>
 
           {locationRepair ? (
             <p className="mt-2 truncate text-[11px] font-bold text-stone-600">
-              {mapScopeLabel}显示 {mappedStopCount} 个地点
+              {t("map.repair.visibleCount", {
+                scope: mapScopeLabel,
+                count: mappedStopCount,
+              })}
               {locationRepair.isResolving
-                ? ` · ${locationRepair.total ? `正在修复 ${locationRepair.total} 个地点` : "正在后台修复地点"}`
-                : ` · 本次修复 ${locationRepair.resolved} 成功 / ${locationRepair.failed} 失败 / ${locationRepair.ambiguous} 待确认`}
+                ? ` · ${
+                    locationRepair.total
+                      ? t("map.repair.resolvingCount", {
+                          count: locationRepair.total,
+                        })
+                      : t("map.repair.resolvingBackground")
+                  }`
+                : ` · ${t("map.repair.summary", {
+                    resolved: locationRepair.resolved,
+                    failed: locationRepair.failed,
+                    ambiguous: locationRepair.ambiguous,
+                  })}`}
               {locationRepair.error ? ` · ${locationRepair.error}` : ""}
-              {manualPinTarget ? ` · 点击地图设置 ${manualPinTarget.title || manualPinTarget.locationText}` : ""}
+              {manualPinTarget
+                ? ` · ${t("map.repair.clickMap", {
+                    title:
+                      manualPinTarget.title ||
+                      manualPinTarget.locationText ||
+                      t("map.repair.unnamedLocation"),
+                  })}`
+                : ""}
             </p>
           ) : null}
 
@@ -1613,16 +1652,21 @@ function JourneyMapContent() {
             {error}
           </p>
         ) : null}
+        {mapResource.error && mapResource.data ? (
+          <p className="pointer-events-auto mt-3 rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800 shadow-sm">
+            {t("map.loadError")}
+          </p>
+        ) : null}
       </div>
 
       <div className="pointer-events-none absolute inset-x-0 bottom-20 z-[500] px-3 md:bottom-5 md:px-5">
-        {isLoading ? (
+        {!mapResource.data && mapResource.isLoading ? (
           <p className="pointer-events-auto mb-3 inline-flex rounded-full bg-white px-4 py-2 text-sm font-black text-stone-600 shadow-lg">
             {t("map.loading")}
           </p>
         ) : null}
 
-        {!isLoading && mappedStopCount === 0 ? (
+        {mapResource.data && mappedStopCount === 0 ? (
           <p className="pointer-events-auto mb-3 inline-flex rounded-full bg-white px-4 py-2 text-sm font-black text-stone-600 shadow-lg">
             {t("map.noMappedStops")}
           </p>
@@ -1631,24 +1675,48 @@ function JourneyMapContent() {
         {unresolvedLocations.length ? (
           <div className="pointer-events-auto mb-3 max-w-md rounded-2xl bg-white/95 p-3 text-sm shadow-lg backdrop-blur">
             <div className="mb-2 flex items-center justify-between gap-3">
-              <p className="font-black text-stone-900">未定位地点</p>
+              <p className="font-black text-stone-900">
+                {t("map.repair.unresolvedTitle")}
+              </p>
               <button
                 type="button"
                 onClick={() => runLocationRepair(true)}
                 className="rounded-full bg-emerald-700 px-3 py-1 text-xs font-black text-white"
               >
-                重新定位
+                {t("map.repair.retry")}
               </button>
             </div>
             <div className="space-y-2">
               {unresolvedLocations.slice(0, 4).map((item) => (
                 <div key={`${item.itemType}-${item.itemId}`} className="rounded-xl bg-stone-50 p-2">
                   <p className="line-clamp-1 font-bold text-stone-900">
-                    {item.title || item.locationText || "未命名地点"}
+                    {item.title || item.locationText ? (
+                      <TranslatedText
+                        as="span"
+                        showToggle={false}
+                        sourceField={item.title ? "title" : "location_text"}
+                        sourceId={item.itemId}
+                        sourceType="plan_item"
+                        text={item.title || item.locationText}
+                      />
+                    ) : (
+                      t("map.repair.unnamedLocation")
+                    )}
                   </p>
                   <div className="mt-1 flex items-center justify-between gap-2">
                     <p className="line-clamp-1 text-xs text-stone-600">
-                      {item.locationText || item.error || "需要手动确认"}
+                      {item.locationText ? (
+                        <TranslatedText
+                          as="span"
+                          showToggle={false}
+                          sourceField="location_text"
+                          sourceId={item.itemId}
+                          sourceType="plan_item"
+                          text={item.locationText}
+                        />
+                      ) : (
+                        item.error || t("map.repair.needsManualConfirm")
+                      )}
                     </p>
                     <button
                       type="button"
@@ -1659,7 +1727,7 @@ function JourneyMapContent() {
                           : "bg-stone-200 text-stone-700"
                       }`}
                     >
-                      手动选点
+                      {t("map.repair.manualPin")}
                     </button>
                   </div>
                 </div>

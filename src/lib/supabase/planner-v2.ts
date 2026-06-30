@@ -30,6 +30,9 @@ type TripDayRow = {
   updated_at: string;
 };
 
+const TRIP_DAY_SELECT =
+  "id, trip_id, day_date, title, notes, order_index, created_by, created_at, updated_at";
+
 export type PlannerV2Day = {
   day: TripDay;
   dayNumber: number;
@@ -159,7 +162,7 @@ function makeSyntheticDay(tripId: string, date: string, orderIndex: number): Tri
 async function getTripDays(tripId: string) {
   const { data, error } = await supabase
     .from("trip_days")
-    .select("*")
+    .select(TRIP_DAY_SELECT)
     .eq("trip_id", tripId)
     .order("day_date", { ascending: true });
 
@@ -203,7 +206,7 @@ export async function upsertTripDay({
       },
       { onConflict: "trip_id,day_date" },
     )
-    .select("*")
+    .select(TRIP_DAY_SELECT)
     .single();
 
   if (error) {
@@ -230,7 +233,7 @@ export async function updateTripDayTitle({
 
   const { data: existing, error: existingError } = await supabase
     .from("trip_days")
-    .select("*")
+    .select(TRIP_DAY_SELECT)
     .eq("trip_id", tripId)
     .eq("day_date", date)
     .maybeSingle();
@@ -251,7 +254,7 @@ export async function updateTripDayTitle({
       },
       { onConflict: "trip_id,day_date" },
     )
-    .select("*")
+    .select(TRIP_DAY_SELECT)
     .single();
 
   if (error) {

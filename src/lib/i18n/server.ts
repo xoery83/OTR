@@ -54,26 +54,40 @@ export async function isAuthorizedI18nWorker(request: Request) {
   return Boolean(data);
 }
 
-export function localeGenerationPayload(languageCode: string, requestedBy: string) {
+export function localeGenerationPayload(
+  languageCode: string,
+  requestedBy: string,
+  options?: { fullRegenerate?: boolean },
+) {
   return {
     language_code: normalizeLanguageCode(languageCode),
     namespace: i18nDefaultNamespace,
     base_version: i18nBaseVersion,
     requested_by: requestedBy,
+    full_regenerate: options?.fullRegenerate === true,
   };
 }
 
 export async function enqueueLocaleGenerationJob(
   supabase: ReturnType<typeof getServiceSupabase> | NonNullable<ReturnType<typeof getRequestSupabase>>,
-  input: { languageCode: string; requestedBy: string; userId?: string | null },
+  input: {
+    fullRegenerate?: boolean;
+    languageCode: string;
+    requestedBy: string;
+    userId?: string | null;
+  },
 ) {
   const languageCode = normalizeLanguageCode(input.languageCode);
-  const payload = localeGenerationPayload(languageCode, input.requestedBy);
+  const payload = localeGenerationPayload(languageCode, input.requestedBy, {
+    fullRegenerate: input.fullRegenerate,
+  });
   const { error } = await supabase.from("background_jobs").insert({
     journey_id: null,
     user_id: input.userId ?? null,
     job_type: "generate_locale_bundle",
-    title: `Generate ${languageCode} language bundle`,
+    title: input.fullRegenerate
+      ? `Regenerate ${languageCode} language pack`
+      : `Generate ${languageCode} language pack`,
     current_step: "Queued",
     payload,
   });

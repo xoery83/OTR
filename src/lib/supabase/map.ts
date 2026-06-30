@@ -37,6 +37,12 @@ type JourneyLiveLocationRow = {
   updated_at: string;
 };
 
+const JOURNEY_MAP_OBJECT_SELECT =
+  "id, journey_id, type, source_type, source_id, title, description, latitude, longitude, accuracy, timestamp, owner_user_id, visibility, metadata, created_at, updated_at";
+
+const JOURNEY_LIVE_LOCATION_SELECT =
+  "journey_id, user_id, latitude, longitude, accuracy, recorded_at, is_live_enabled, updated_at";
+
 export type UpsertLiveLocationInput = {
   journeyId: string;
   latitude: number;
@@ -114,7 +120,7 @@ async function assertCanShareJourneyLiveLocation(journeyId: string) {
 export async function getJourneyMapObjects(journeyId: string) {
   const { data, error } = await supabase
     .from("journey_map_objects")
-    .select("*")
+    .select(JOURNEY_MAP_OBJECT_SELECT)
     .eq("journey_id", journeyId)
     .order("timestamp", { ascending: true, nullsFirst: false });
 
@@ -125,7 +131,7 @@ export async function getJourneyMapObjects(journeyId: string) {
 export async function getJourneyLiveLocations(journeyId: string) {
   const { data, error } = await supabase
     .from("journey_live_locations")
-    .select("*")
+    .select(JOURNEY_LIVE_LOCATION_SELECT)
     .eq("journey_id", journeyId)
     .order("updated_at", { ascending: false });
 
@@ -139,7 +145,7 @@ export async function getOwnLiveLocation(journeyId: string) {
 
   const { data, error } = await supabase
     .from("journey_live_locations")
-    .select("*")
+    .select(JOURNEY_LIVE_LOCATION_SELECT)
     .eq("journey_id", journeyId)
     .eq("user_id", user.id)
     .maybeSingle();
@@ -172,7 +178,7 @@ export async function upsertLiveLocation(input: UpsertLiveLocationInput) {
       },
       { onConflict: "journey_id,user_id" },
     )
-    .select("*")
+    .select(JOURNEY_LIVE_LOCATION_SELECT)
     .single();
 
   if (error) throw error;
@@ -200,7 +206,7 @@ export async function setLiveLocationEnabled(
       },
       { onConflict: "journey_id,user_id" },
     )
-    .select("*")
+    .select(JOURNEY_LIVE_LOCATION_SELECT)
     .single();
 
   if (error) throw error;

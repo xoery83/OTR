@@ -1,15 +1,20 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import type { PointerEvent } from "react";
+import type { ClipboardEvent, PointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { PhotoLightbox } from "@/components/PhotoLightbox";
+import { TranslatedText } from "@/components/TranslatedText";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { getErrorMessage } from "@/lib/errors";
+import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
+import {
+  journeyResourceKey,
+  loadJourneyChatResource,
+} from "@/lib/journey-resources";
 import { getPhotoFacesForAssets } from "@/lib/supabase/media-assets";
 import {
-  getJourneyChatMessages,
   getOlderJourneyChatMessages,
   markJourneyChatRead,
   revokeChatMessage,
@@ -18,7 +23,6 @@ import {
   sendVoiceChatMessage,
 } from "@/lib/supabase/chat";
 import { supabase } from "@/lib/supabase/client";
-import { getTrip } from "@/lib/supabase/trips";
 import type { JourneyChatMessage, PhotoFace, Trip } from "@/types";
 
 const commonEmojis = [
@@ -67,6 +71,29 @@ const commonEmojis = [
 const emojiTabs = ["⌕", "☺", "♡", "✌", "😎", "🐰"];
 
 type LocalChatPendingStatus = "uploading" | "failed";
+
+function getClipboardImageFiles(event: ClipboardEvent<HTMLTextAreaElement>) {
+  const items = Array.from(event.clipboardData.items ?? []);
+  const imageFiles = items
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item, index) => {
+      const file = item.getAsFile();
+      if (!file) return null;
+      if (file.name) return file;
+      const extension = file.type.split("/")[1]?.split("+")[0] || "png";
+      return new File([file], `clipboard-image-${Date.now()}-${index}.${extension}`, {
+        type: file.type || "image/png",
+        lastModified: file.lastModified,
+      });
+    })
+    .filter((file): file is File => Boolean(file));
+
+  if (imageFiles.length > 0) return imageFiles;
+
+  return Array.from(event.clipboardData.files ?? []).filter((file) =>
+    file.type.startsWith("image/"),
+  );
+}
 
 function getLocalPendingStatus(message: JourneyChatMessage) {
   const value = message.metadata?.pendingStatus;
@@ -170,12 +197,20 @@ function shouldShowTime(previous: JourneyChatMessage | null, current: JourneyCha
 }
 
 function Avatar({ message, mine }: { message: JourneyChatMessage; mine: boolean }) {
+  const [hasImageError, setHasImageError] = useState(false);
   const initial = (message.senderName || "T").trim().slice(0, 1).toUpperCase();
-  if (message.senderAvatarUrl) {
+  const avatarUrl = message.senderAvatarUrl?.trim() || null;
+
+  useEffect(() => {
+    setHasImageError(false);
+  }, [avatarUrl]);
+
+  if (avatarUrl && !hasImageError) {
     return (
       <img
-        src={message.senderAvatarUrl}
+        src={avatarUrl}
         alt={message.senderName || "Traveler"}
+        onError={() => setHasImageError(true)}
         className="h-9 w-9 shrink-0 rounded-lg object-cover"
       />
     );
@@ -197,12 +232,14 @@ function MessageBubble({
   onOpenImage,
   onRevoke,
   onMediaLoad,
+  protectedEntities,
 }: {
   message: JourneyChatMessage;
   mine: boolean;
   onOpenImage: (message: JourneyChatMessage) => void;
   onRevoke: (message: JourneyChatMessage) => void;
   onMediaLoad: () => void;
+  protectedEntities: Array<string | null | undefined>;
 }) {
   const fromTimeline = message.sourceType === "timeline_memory";
   const pendingStatus = getLocalPendingStatus(message);
@@ -275,9 +312,16 @@ function MessageBubble({
                 <audio src={message.mediaDisplayUrl} controls className="mt-2 h-8 w-full" />
               ) : null}
               {message.transcriptText ? (
-                <div className="mt-2 border-t border-black/10 pt-2 text-sm font-medium text-stone-700">
-                  {message.transcriptText}
-                </div>
+                <TranslatedText
+                  as="div"
+                  className="mt-2 border-t border-black/10 pt-2 text-sm font-medium text-stone-700"
+                  protectedEntities={protectedEntities}
+                  showToggle={false}
+                  sourceField="transcript_text"
+                  sourceId={message.id}
+                  sourceType="chat_message"
+                  text={message.transcriptText}
+                />
               ) : (
                 <div className="mt-2 text-xs font-bold text-stone-500">
                   {pendingStatus === "uploading"
@@ -293,9 +337,16 @@ function MessageBubble({
           ) : null}
 
           {message.textContent && message.messageType !== "voice" ? (
-            <div className={message.messageType === "image" ? "mt-2" : ""}>
-              {message.textContent}
-            </div>
+            <TranslatedText
+              as="div"
+              className={message.messageType === "image" ? "mt-2" : ""}
+              protectedEntities={protectedEntities}
+              showToggle={false}
+              sourceField="text_content"
+              sourceId={message.id}
+              sourceType="chat_message"
+              text={message.textContent}
+            />
           ) : null}
 
           {message.messageType === "text" && pendingStatus ? (
@@ -375,6 +426,15 @@ function ChatContent() {
   const [activeImage, setActiveImage] = useState<JourneyChatMessage | null>(null);
   const [activeImageFaces, setActiveImageFaces] = useState<PhotoFace[]>([]);
 
+  const chatResource = useJourneyCachedResource({
+    cacheKey: journeyResourceKey.chat(tripId),
+    loader: () => loadJourneyChatResource(tripId),
+    ttl: 20_000,
+    staleTime: 5_000,
+    keepPreviousData: true,
+    backgroundRefresh: true,
+  });
+
   const scrollToBottom = useCallback(() => {
     window.requestAnimationFrame(() => {
       const list = listRef.current;
@@ -390,33 +450,44 @@ function ChatContent() {
     window.setTimeout(scrollToBottom, 700);
   }, [scrollToBottom]);
 
-  const load = useCallback(async (mode: "initial" | "refresh" = "refresh") => {
-    const [tripData, bundle] = await Promise.all([
-      getTrip(tripId),
-      getJourneyChatMessages(tripId),
-    ]);
-    setTrip(tripData);
-    setMessages((current) => mergeLoadedMessages(current, bundle.messages));
-    setCurrentUserId(bundle.currentUserId);
-    setFirstUnreadMessageId(
-      bundle.firstUnreadMessageId &&
-        bundle.firstUnreadMessageId !== dismissedUnreadMessageIdRef.current
-        ? bundle.firstUnreadMessageId
-        : null,
-    );
-    setHasMoreBefore(bundle.hasMoreBefore);
-    if (mode === "initial") {
-      initialAutoScrollUntilRef.current = Date.now() + 1800;
-    }
-    if (!hasMarkedReadRef.current) {
-      hasMarkedReadRef.current = true;
-      await markJourneyChatRead(tripId).catch(() => null);
-    }
-    window.dispatchEvent(new CustomEvent("otr:chat-changed"));
-    if (mode === "initial" || isNearBottom()) {
-      scheduleBottomLock();
-    }
-  }, [scheduleBottomLock, tripId]);
+  const applyChatSnapshot = useCallback(
+    async (
+      snapshot: Awaited<ReturnType<typeof loadJourneyChatResource>>,
+      mode: "initial" | "refresh" = "refresh",
+    ) => {
+      const { tripData, bundle } = snapshot;
+      setTrip(tripData);
+      setMessages((current) => mergeLoadedMessages(current, bundle.messages));
+      setCurrentUserId(bundle.currentUserId);
+      setFirstUnreadMessageId(
+        bundle.firstUnreadMessageId &&
+          bundle.firstUnreadMessageId !== dismissedUnreadMessageIdRef.current
+          ? bundle.firstUnreadMessageId
+          : null,
+      );
+      setHasMoreBefore(bundle.hasMoreBefore);
+      if (mode === "initial") {
+        initialAutoScrollUntilRef.current = Date.now() + 1800;
+      }
+      if (!hasMarkedReadRef.current) {
+        hasMarkedReadRef.current = true;
+        await markJourneyChatRead(tripId).catch(() => null);
+      }
+      window.dispatchEvent(new CustomEvent("otr:chat-changed"));
+      if (mode === "initial" || isNearBottom()) {
+        scheduleBottomLock();
+      }
+    },
+    [scheduleBottomLock, tripId],
+  );
+
+  const load = useCallback(
+    async (mode: "initial" | "refresh" = "refresh") => {
+      const snapshot = await chatResource.refresh(true);
+      if (snapshot) await applyChatSnapshot(snapshot, mode);
+    },
+    [applyChatSnapshot, chatResource],
+  );
 
   function isNearBottom() {
     const list = listRef.current;
@@ -510,21 +581,20 @@ function ChatContent() {
   );
 
   useEffect(() => {
-    let cancelled = false;
+    if (!chatResource.data) return;
+    void applyChatSnapshot(chatResource.data, "initial");
+    setIsLoading(false);
+    setError(null);
+  }, [applyChatSnapshot, chatResource.data]);
 
-    async function bootstrap() {
-      setIsLoading(true);
-      setError(null);
-      try {
-        await load("initial");
-      } catch (loadError) {
-        if (!cancelled) setError(getErrorMessage(loadError, "群聊加载失败。"));
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
+  useEffect(() => {
+    if (chatResource.error && !chatResource.data) {
+      setError(getErrorMessage(chatResource.error, "群聊加载失败。"));
+      setIsLoading(false);
     }
+  }, [chatResource.data, chatResource.error]);
 
-    void bootstrap();
+  useEffect(() => {
     const interval = window.setInterval(() => void load("refresh").catch(() => null), 20_000);
     const channel = supabase
       .channel(`journey-chat-${tripId}`)
@@ -543,7 +613,6 @@ function ChatContent() {
       .subscribe();
 
     return () => {
-      cancelled = true;
       window.clearInterval(interval);
       void supabase.removeChannel(channel);
     };
@@ -800,7 +869,7 @@ function ChatContent() {
     [currentUserId, isSending, scheduleBottomLock, tripId],
   );
 
-  async function sendImages(fileList: FileList | null) {
+  async function sendImages(fileList: FileList | File[] | null) {
     const files = Array.from(fileList ?? []).filter((file) =>
       file.type.startsWith("image/"),
     );
@@ -939,6 +1008,7 @@ function ChatContent() {
   }
 
   function startHoldToTalk(event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
     if (isSafariBrowser() && !hasPrimedSafariMicrophoneRef.current) {
       void primeSafariMicrophone();
       return;
@@ -977,7 +1047,7 @@ function ChatContent() {
   }
 
   const content = useMemo(() => {
-    if (isLoading) {
+    if (isLoading && messages.length === 0 && !chatResource.data) {
       return (
         <div className="flex h-full items-center justify-center text-sm font-black text-white/80">
           加载群聊中...
@@ -1026,6 +1096,11 @@ function ChatContent() {
                 mine={mine}
                 onOpenImage={setActiveImage}
                 onRevoke={revoke}
+                protectedEntities={[
+                  message.senderName,
+                  trip?.name,
+                  trip?.destination,
+                ]}
                 onMediaLoad={() => {
                   if (Date.now() < initialAutoScrollUntilRef.current || isNearBottom()) {
                     scheduleBottomLock();
@@ -1040,6 +1115,7 @@ function ChatContent() {
     );
   }, [
     currentUserId,
+    chatResource.data,
     hasMoreBefore,
     isLoading,
     isLoadingOlder,
@@ -1065,6 +1141,11 @@ function ChatContent() {
             刷新
           </button>
         </div>
+        {chatResource.error && chatResource.data ? (
+          <div className="mx-auto mt-2 max-w-3xl rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
+            群聊刷新失败，已保留当前消息。
+          </div>
+        ) : null}
       </div>
 
       <div
@@ -1091,7 +1172,10 @@ function ChatContent() {
       ) : null}
 
       {recorder.isRecording ? (
-        <div className="fixed inset-0 z-40 flex flex-col items-center justify-center bg-black/60 text-white backdrop-blur-sm">
+        <div
+          className="otr-chat-voice-guard fixed inset-0 z-40 flex flex-col items-center justify-center bg-black/60 text-white backdrop-blur-sm"
+          onContextMenu={(event) => event.preventDefault()}
+        >
           <div className="rounded-3xl bg-[#95ec69] px-16 py-10 text-emerald-950 shadow-2xl">
             <div className="text-center text-4xl font-black tracking-widest">▮▮▮▮▮</div>
           </div>
@@ -1124,8 +1208,9 @@ function ChatContent() {
               onPointerDown={startHoldToTalk}
               onPointerUp={stopHoldToTalk}
               onPointerCancel={stopHoldToTalk}
+              onContextMenu={(event) => event.preventDefault()}
               disabled={isSending || isPrimingMicrophone}
-              className="my-2 h-11 flex-1 rounded-2xl bg-white text-base font-black text-stone-900 shadow-sm active:bg-emerald-50"
+              className="otr-chat-voice-guard my-2 h-11 flex-1 rounded-2xl bg-white text-base font-black text-stone-900 shadow-sm active:bg-emerald-50"
             >
               {isPrimingMicrophone ? "正在开启麦克风..." : "按住 说话"}
             </button>
@@ -1134,6 +1219,12 @@ function ChatContent() {
               ref={textareaRef}
               value={text}
               onChange={(event) => setText(event.target.value)}
+              onPaste={(event) => {
+                const imageFiles = getClipboardImageFiles(event);
+                if (imageFiles.length === 0) return;
+                event.preventDefault();
+                void sendImages(imageFiles);
+              }}
               onKeyDown={(event) => {
                 if (
                   event.key === "Enter" &&

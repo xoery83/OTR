@@ -3,6 +3,7 @@
 import {
   type FormEvent,
   type PointerEvent,
+  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -16,9 +17,13 @@ import { TranslatedText } from "@/components/TranslatedText";
 import { useI18n } from "@/components/I18nProvider";
 import { inferCurrencyFromText, normalizeCurrencyCode } from "@/lib/currencies";
 import { getErrorMessage } from "@/lib/errors";
+import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
+import {
+  journeyResourceKey,
+  loadJourneyLedgerResource,
+} from "@/lib/journey-resources";
 import type { Locale, TranslationKey } from "@/lib/i18n/dictionaries";
 import { getLedgerAllocationDates } from "@/lib/ledger/date-allocation";
-import { getCurrentUser } from "@/lib/supabase/auth";
 import {
   createLedgerEntry,
   deleteLedgerEntry,
@@ -28,7 +33,6 @@ import {
   updateLedgerEntry,
   updateJourneyLedgerCurrency,
 } from "@/lib/supabase/ledger";
-import { getTrip } from "@/lib/supabase/trips";
 import type {
   CreateLedgerEntryInput,
   JourneyMember,
@@ -1013,6 +1017,7 @@ function DailyLedgerAnalysis({
   reports,
   currency,
   initialDate,
+  header,
   onEditEntry,
   onDeleteEntry,
   deletingEntryId,
@@ -1020,6 +1025,7 @@ function DailyLedgerAnalysis({
   reports: DailyLedgerReport[];
   currency: string;
   initialDate?: string | null;
+  header?: ReactNode;
   onEditEntry: (entry: LedgerEntry) => void;
   onDeleteEntry: (entry: LedgerEntry) => void;
   deletingEntryId: string | null;
@@ -1048,8 +1054,13 @@ function DailyLedgerAnalysis({
   }
 
   return (
-    <section id="daily-ledger" className="space-y-4 scroll-mt-24">
-      <div className="sticky top-0 z-20 -mx-4 overflow-x-auto border-y border-emerald-100 bg-stone-50/95 px-4 py-3 backdrop-blur">
+    <section
+      id="daily-ledger"
+      className="space-y-4 rounded-3xl border border-stone-200 bg-white p-3 shadow-sm scroll-mt-24"
+    >
+      {header}
+
+      <div className="-mx-1 overflow-x-auto px-1">
         <div className="flex gap-2">
           {reports.map((report) => {
             const active = report.date === activeReport.date;
@@ -1065,7 +1076,7 @@ function DailyLedgerAnalysis({
                     ? "border-emerald-700 bg-emerald-700 text-white"
                     : isToday
                       ? "border-amber-300 bg-amber-50 text-amber-900 ring-2 ring-amber-200"
-                    : "bg-white text-stone-700"
+                    : "border-stone-100 bg-white text-stone-700"
                 } ${active && isToday ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-stone-50" : ""}`}
               >
                 <p className="text-xs font-black uppercase tracking-wide">
@@ -1108,7 +1119,7 @@ function DailyLedgerAnalysis({
         </div>
       </section>
 
-      <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
+      <section className="rounded-2xl bg-[#fff8ec] p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="text-lg font-semibold text-stone-950">
@@ -1182,7 +1193,7 @@ function DailyLedgerAnalysis({
         {activeReport.entries.map(({ entry, allocatedAmount, allocationNote }) => (
           <article
             key={`${activeReport.date}-${entry.id}`}
-            className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm"
+            className="rounded-2xl bg-stone-50 p-4"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -1300,7 +1311,6 @@ function LedgerContent() {
   const [trip, setTrip] = useState<Trip | null>(null);
   const [ledgerData, setLedgerData] = useState<LedgerData | null>(null);
   const [form, setForm] = useState<LedgerFormState | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [deletingEntryId, setDeletingEntryId] = useState<string | null>(null);
   const [isSavingCurrency, setIsSavingCurrency] = useState(false);
@@ -1330,63 +1340,54 @@ function LedgerContent() {
   const [currencyError, setCurrencyError] = useState<string | null>(null);
   const [isLoadingRate, setIsLoadingRate] = useState(false);
 
-  async function loadLedgerSnapshot() {
-    const [tripData, data, user] = await Promise.all([
-      getTrip(tripId),
-      getLedgerData(tripId),
-      getCurrentUser().catch(() => null),
-    ]);
-    return { tripData, data, userId: user?.id ?? null };
-  }
+  const ledgerResource = useJourneyCachedResource({
+    cacheKey: journeyResourceKey.ledger(tripId),
+    loader: () => loadJourneyLedgerResource(tripId),
+    ttl: 2 * 60_000,
+    staleTime: 20_000,
+    keepPreviousData: true,
+    backgroundRefresh: true,
+  });
 
-  function applyLedgerSnapshot({
-    tripData,
-    data,
-    userId,
-  }: {
-    tripData: Trip;
-    data: LedgerData;
-    userId?: string | null;
-  }) {
+  function applyLedgerSnapshot(
+    {
+      tripData,
+      data,
+      userId,
+    }: {
+      tripData: Trip;
+      data: LedgerData;
+      userId?: string | null;
+    },
+    options: { resetForm?: boolean } = {},
+  ) {
     setTrip(tripData);
     setLedgerData(data);
     if (userId !== undefined) {
       setCurrentUserId(userId);
     }
-    setForm(
-      initialForm(
-        data.ledger.baseCurrency,
-        data.members,
-        inferCurrencyFromText(tripData.destination),
-      ),
+    setForm((current) =>
+      current && !options.resetForm
+        ? current
+        : initialForm(
+            data.ledger.baseCurrency,
+            data.members,
+            inferCurrencyFromText(tripData.destination),
+          ),
     );
   }
 
   useEffect(() => {
-    let isMounted = true;
-
-    async function loadInitialLedger() {
-      try {
-        const snapshot = await loadLedgerSnapshot();
-        if (isMounted) {
-          applyLedgerSnapshot(snapshot);
-        }
-      } catch (loadError) {
-        if (isMounted) {
-          setError(getErrorMessage(loadError, t("ledger.error.load")));
-        }
-      } finally {
-        if (isMounted) setIsLoading(false);
-      }
-    }
-
-    loadInitialLedger();
-
-    return () => {
-      isMounted = false;
-    };
+    if (!ledgerResource.data) return;
+    applyLedgerSnapshot(ledgerResource.data);
+    setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tripId]);
+  }, [ledgerResource.data]);
+
+  useEffect(() => {
+    if (!ledgerResource.error || ledgerResource.data) return;
+    setError(getErrorMessage(ledgerResource.error, t("ledger.error.load")));
+  }, [ledgerResource.data, ledgerResource.error, t]);
 
   const expenseCategoryTotals = useMemo(() => {
     const totals = categories.reduce(
@@ -1729,7 +1730,8 @@ function LedgerContent() {
       } else {
         await createLedgerEntry(payload);
       }
-      applyLedgerSnapshot(await loadLedgerSnapshot());
+      const snapshot = await ledgerResource.refresh(true);
+      if (snapshot) applyLedgerSnapshot(snapshot, { resetForm: true });
       setEditingEntryId(null);
       setShowForm(false);
     } catch (submitError) {
@@ -1750,7 +1752,8 @@ function LedgerContent() {
 
     try {
       await deleteLedgerEntry(entry.id);
-      applyLedgerSnapshot(await loadLedgerSnapshot());
+      const snapshot = await ledgerResource.refresh(true);
+      if (snapshot) applyLedgerSnapshot(snapshot, { resetForm: true });
     } catch (deleteError) {
       setSaveError(getErrorMessage(deleteError, t("ledger.error.delete")));
     } finally {
@@ -1758,9 +1761,44 @@ function LedgerContent() {
     }
   }
 
-  if (isLoading) {
+  const ledgerViewTabs = (
+    <div
+      className={`grid grid-cols-4 gap-1 rounded-2xl bg-stone-50 p-1 ${
+        isMobileSearchActive ? "hidden md:grid" : ""
+      }`}
+    >
+      {[
+        ["days", t("ledger.tabs.days")],
+        ["expenses", t("ledger.tabs.expenses")],
+        ["people", t("ledger.tabs.personal")],
+        ["settlement", t("ledger.tabs.settlement")],
+      ].map(([value, label]) => (
+        <button
+          key={value}
+          type="button"
+          onClick={() => setActiveView(value as LedgerView)}
+          className={`rounded-xl px-3 py-3 text-sm font-bold transition ${
+            activeView === value
+              ? "bg-emerald-700 text-white shadow-sm"
+              : "text-stone-600 hover:bg-white hover:text-stone-900"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (!ledgerResource.data && ledgerResource.isLoading) {
     return (
-      <div className="rounded-3xl bg-white p-5">{t("ledger.loading")}</div>
+      <div className="space-y-3 rounded-3xl bg-white p-5">
+        <div className="h-5 w-32 animate-pulse rounded bg-stone-200" />
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="h-24 animate-pulse rounded-2xl bg-stone-100" />
+          <div className="h-24 animate-pulse rounded-2xl bg-stone-100" />
+          <div className="h-24 animate-pulse rounded-2xl bg-stone-100" />
+        </div>
+      </div>
     );
   }
 
@@ -1782,6 +1820,11 @@ function LedgerContent() {
 
   return (
     <div className={isMobileSearchActive ? "space-y-0 md:space-y-5" : "space-y-5"}>
+      {ledgerResource.error && ledgerResource.data ? (
+        <p className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+          {t("ledger.error.load")}
+        </p>
+      ) : null}
       <section
         className={
           isMobileSearchActive
@@ -2283,40 +2326,13 @@ function LedgerContent() {
         </form>
       ) : null}
 
-      <section
-        className={`rounded-3xl border border-stone-200 bg-white p-2 shadow-sm ${
-          isMobileSearchActive ? "hidden md:block" : ""
-        }`}
-      >
-        <div className="grid grid-cols-4 gap-1">
-          {[
-            ["days", t("ledger.tabs.days")],
-            ["expenses", t("ledger.tabs.expenses")],
-            ["people", t("ledger.tabs.personal")],
-            ["settlement", t("ledger.tabs.settlement")],
-          ].map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setActiveView(value as LedgerView)}
-              className={`rounded-2xl px-3 py-3 text-sm font-bold transition ${
-                activeView === value
-                  ? "bg-emerald-700 text-white"
-                  : "text-stone-600 hover:bg-stone-50"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </section>
-
       {activeView === "days" && !isMobileSearchActive ? (
         <DailyLedgerAnalysis
           key={initialLedgerDate ?? "nearest"}
           reports={dailyReports}
           currency={displayCurrency}
           initialDate={initialLedgerDate}
+          header={ledgerViewTabs}
           onEditEntry={startEditExpense}
           onDeleteEntry={removeExpense}
           deletingEntryId={deletingEntryId}
@@ -2324,11 +2340,18 @@ function LedgerContent() {
       ) : null}
 
       {activeView === "expenses" || isMobileSearchActive ? (
-        <section id="ledger-expenses" className="space-y-3 scroll-mt-24">
+        <section
+          id="ledger-expenses"
+          className="space-y-3 rounded-3xl border border-stone-200 bg-white p-3 shadow-sm scroll-mt-24"
+        >
+          {ledgerViewTabs}
+
           <div
-            className={`overflow-x-auto rounded-3xl bg-white p-2 shadow-sm ${
-              isMobileSearchActive ? "hidden md:block" : ""
-            }`}
+            className={
+              isMobileSearchActive
+                ? "hidden overflow-x-auto md:block"
+                : "overflow-x-auto"
+            }
           >
             <div className="flex min-w-max gap-2">
               {(["all", ...categories] as ExpenseCategoryFilter[]).map((category) => {
@@ -2343,10 +2366,10 @@ function LedgerContent() {
                     key={category}
                     type="button"
                     onClick={() => setExpenseCategoryFilter(category)}
-                    className={`rounded-2xl px-3 py-2 text-left text-xs font-bold ${
+                    className={`rounded-2xl border px-3 py-2 text-left text-xs font-bold shadow-sm ${
                       active
-                        ? "bg-emerald-700 text-white"
-                        : "bg-stone-50 text-stone-700"
+                        ? "border-emerald-700 bg-emerald-700 text-white"
+                        : "border-stone-100 bg-white text-stone-700"
                     }`}
                   >
                     <span className="block">
@@ -2366,7 +2389,7 @@ function LedgerContent() {
               })}
             </div>
           </div>
-          <div className="flex items-center gap-2 overflow-x-auto rounded-3xl bg-white px-3 py-2 shadow-sm">
+          <div className="flex items-center gap-2 overflow-x-auto rounded-2xl bg-stone-50 px-3 py-2">
             <label className="flex shrink-0 items-center gap-2">
               <span className="text-xs font-bold text-stone-500">
                 {t("ledger.sort.label")}
@@ -2430,11 +2453,11 @@ function LedgerContent() {
             </div>
           ) : null}
           {ledgerData.entries.length === 0 ? (
-            <div className="rounded-3xl border border-dashed border-stone-200 bg-white p-5 text-stone-500">
+            <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-5 text-stone-500">
               {t("ledger.empty.expenses")}
             </div>
           ) : filteredExpenseEntries.length === 0 ? (
-            <div className="rounded-3xl border border-dashed border-stone-200 bg-white p-5 text-stone-500">
+            <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-5 text-stone-500">
               {trimmedExpenseSearchQuery
                 ? t("ledger.empty.searchExpenses")
                 : t("ledger.empty.filteredExpenses")}
@@ -2443,7 +2466,7 @@ function LedgerContent() {
             expenseSections.map(({ date, entries }) => (
               <section
                 key={date}
-                className="overflow-hidden rounded-3xl border border-stone-200 bg-white shadow-sm"
+                className="overflow-hidden rounded-2xl bg-stone-50"
               >
                 <div className="flex items-center justify-between bg-[#fff8ec] px-4 py-3">
                   <h3 className="font-semibold text-stone-950">
@@ -2553,9 +2576,10 @@ function LedgerContent() {
       ) : null}
 
       {activeView === "people" ? (
-        <section className="space-y-3">
+        <section className="space-y-3 rounded-3xl border border-stone-200 bg-white p-3 shadow-sm">
+          {ledgerViewTabs}
           {memberReports.length === 0 ? (
-            <div className="rounded-3xl border border-dashed border-stone-200 bg-white p-5 text-stone-500">
+            <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-5 text-stone-500">
               {t("ledger.empty.people")}
             </div>
           ) : (
@@ -2573,72 +2597,75 @@ function LedgerContent() {
       ) : null}
 
       {activeView === "settlement" ? (
-        <section className="grid gap-4 lg:grid-cols-[1fr_1fr]">
-          <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
-            <h2 className="text-lg font-semibold text-stone-950">
-              {t("ledger.sharedBalance")}
-            </h2>
-            <div className="mt-3 space-y-3">
-              {ledgerData.summary.balances.map((balance) => (
-                <div
-                  key={balance.member.id}
-                  className="rounded-2xl bg-stone-50 p-3"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="font-semibold text-stone-950">
-                      {balance.member.displayName}
-                    </p>
-                    <p
-                      className={`text-sm font-bold ${
-                        balance.balance >= 0
-                          ? "text-emerald-800"
-                          : "text-amber-800"
-                      }`}
-                    >
-                      {money(balance.balance, displayCurrency, locale)}
-                    </p>
-                  </div>
-                  <p className="mt-1 text-xs text-stone-500">
-                    {t("ledger.balanceLine", {
-                      paid: money(balance.paidTotal, displayCurrency, locale),
-                      owes: money(balance.owedTotal, displayCurrency, locale),
-                    })}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
-            <h2 className="text-lg font-semibold text-stone-950">
-              {t("ledger.suggestedTransfers")}
-            </h2>
-            {ledgerData.summary.settlements.length === 0 ? (
-              <p className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-900">
-                {t("ledger.noSettlementNeeded")}
-              </p>
-            ) : (
-              <div className="mt-3 space-y-2">
-                {ledgerData.summary.settlements.map((settlement) => (
+        <section className="space-y-3 rounded-3xl border border-stone-200 bg-white p-3 shadow-sm">
+          {ledgerViewTabs}
+          <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
+            <section className="rounded-2xl bg-stone-50 p-4">
+              <h2 className="text-lg font-semibold text-stone-950">
+                {t("ledger.sharedBalance")}
+              </h2>
+              <div className="mt-3 space-y-3">
+                {ledgerData.summary.balances.map((balance) => (
                   <div
-                    key={`${settlement.fromMember.id}-${settlement.toMember.id}-${settlement.amount}`}
-                    className="rounded-2xl bg-amber-50 p-3 text-sm"
+                    key={balance.member.id}
+                    className="rounded-2xl bg-white p-3"
                   >
-                    <span className="font-bold text-stone-950">
-                      {settlement.fromMember.displayName}
-                    </span>{" "}
-                    {t("ledger.pays")}{" "}
-                    <span className="font-bold text-stone-950">
-                      {settlement.toMember.displayName}
-                    </span>
-                    <p className="mt-1 font-bold text-amber-900">
-                      {money(settlement.amount, settlement.currency, locale)}
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="font-semibold text-stone-950">
+                        {balance.member.displayName}
+                      </p>
+                      <p
+                        className={`text-sm font-bold ${
+                          balance.balance >= 0
+                            ? "text-emerald-800"
+                            : "text-amber-800"
+                        }`}
+                      >
+                        {money(balance.balance, displayCurrency, locale)}
+                      </p>
+                    </div>
+                    <p className="mt-1 text-xs text-stone-500">
+                      {t("ledger.balanceLine", {
+                        paid: money(balance.paidTotal, displayCurrency, locale),
+                        owes: money(balance.owedTotal, displayCurrency, locale),
+                      })}
                     </p>
                   </div>
                 ))}
               </div>
-            )}
-          </section>
+            </section>
+
+            <section className="rounded-2xl bg-stone-50 p-4">
+              <h2 className="text-lg font-semibold text-stone-950">
+                {t("ledger.suggestedTransfers")}
+              </h2>
+              {ledgerData.summary.settlements.length === 0 ? (
+                <p className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-900">
+                  {t("ledger.noSettlementNeeded")}
+                </p>
+              ) : (
+                <div className="mt-3 space-y-2">
+                  {ledgerData.summary.settlements.map((settlement) => (
+                    <div
+                      key={`${settlement.fromMember.id}-${settlement.toMember.id}-${settlement.amount}`}
+                      className="rounded-2xl bg-amber-50 p-3 text-sm"
+                    >
+                      <span className="font-bold text-stone-950">
+                        {settlement.fromMember.displayName}
+                      </span>{" "}
+                      {t("ledger.pays")}{" "}
+                      <span className="font-bold text-stone-950">
+                        {settlement.toMember.displayName}
+                      </span>
+                      <p className="mt-1 font-bold text-amber-900">
+                        {money(settlement.amount, settlement.currency, locale)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
         </section>
       ) : null}
     </div>

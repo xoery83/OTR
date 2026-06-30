@@ -27,6 +27,9 @@ type ChatMessageRow = {
   updated_at: string;
 };
 
+const CHAT_MESSAGE_SELECT =
+  "id, trip_id, user_id, journey_member_id, message_type, text_content, media_asset_id, memory_entry_id, media_url, voice_duration_ms, transcript_text, transcript_status, source_type, source_id, deleted_at, deleted_by, metadata, created_at, updated_at";
+
 type MemorySyncRow = {
   id: string;
   trip_id: string;
@@ -40,6 +43,14 @@ type MemorySyncRow = {
 
 type ProfileRow = {
   id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+};
+
+type JourneyMemberRow = {
+  id: string;
+  trip_id: string;
+  user_id: string | null;
   display_name: string | null;
   avatar_url: string | null;
 };
@@ -92,6 +103,9 @@ type MediaRow = {
   indexed_at?: string | null;
   created_at: string;
 };
+
+const CHAT_MEDIA_SELECT =
+  "id, trip_id, user_id, memory_entry_id, asset_type, storage_provider, storage_bucket, original_file_path, compressed_file_path, thumbnail_file_path, provider_file_id, provider_drive_id, provider_web_url, provider_thumbnail_url, provider_original_reference, original_drive_file_id, original_drive_web_url, thumbnail_drive_file_id, thumbnail_drive_web_url, thumbnail_url, preview_url, original_file_size, compressed_file_size, thumbnail_size, mime_type, width, height, thumbnail_width, thumbnail_height, storage_tier, is_original_preserved, retention_until, taken_at, gps_latitude, gps_longitude, camera_model, orientation, exif_json, ai_status, ai_metadata, ocr_text, duplicate_score, blur_score, scene_tags, indexed_at, created_at";
 
 type ChatBundle = {
   messages: JourneyChatMessage[];
@@ -266,6 +280,7 @@ async function getCurrentJourneyMemberId(tripId: string, userId: string) {
 
 async function enrichMessages(messages: JourneyChatMessage[]) {
   const userIds = [...new Set(messages.map((message) => message.userId).filter(Boolean))];
+  const tripIds = [...new Set(messages.map((message) => message.tripId).filter(Boolean))];
   const mediaAssetIds = [
     ...new Set(messages.map((message) => message.mediaAssetId).filter(Boolean)),
   ];
@@ -281,11 +296,26 @@ async function enrichMessages(messages: JourneyChatMessage[]) {
     });
   }
 
+  const membersById = new Map<string, JourneyMemberRow>();
+  const membersByTripAndUserId = new Map<string, JourneyMemberRow>();
+  if (tripIds.length > 0) {
+    const { data } = await supabase
+      .from("journey_members")
+      .select("id, trip_id, user_id, display_name, avatar_url")
+      .in("trip_id", tripIds);
+    ((data ?? []) as JourneyMemberRow[]).forEach((member) => {
+      membersById.set(member.id, member);
+      if (member.user_id) {
+        membersByTripAndUserId.set(`${member.trip_id}:${member.user_id}`, member);
+      }
+    });
+  }
+
   const mediaById = new Map<string, MediaRow>();
   if (mediaAssetIds.length > 0) {
     const { data } = await supabase
       .from("media_assets")
-      .select("*")
+      .select(CHAT_MEDIA_SELECT)
       .in("id", mediaAssetIds);
     ((data ?? []) as MediaRow[]).forEach((media) => {
       mediaById.set(media.id, media);
@@ -315,6 +345,11 @@ async function enrichMessages(messages: JourneyChatMessage[]) {
 
   return messages.map((message) => {
     const profile = message.userId ? profilesByUserId.get(message.userId) : null;
+    const journeyMember =
+      (message.journeyMemberId ? membersById.get(message.journeyMemberId) : null) ??
+      (message.userId
+        ? membersByTripAndUserId.get(`${message.tripId}:${message.userId}`)
+        : null);
     const media = message.mediaAssetId ? mediaById.get(message.mediaAssetId) : null;
     const mediaDisplayPath = media?.thumbnail_file_path ?? media?.compressed_file_path;
     const legacyMediaDisplayUrl = mediaDisplayPath
@@ -329,8 +364,8 @@ async function enrichMessages(messages: JourneyChatMessage[]) {
 
     return {
       ...message,
-      senderName: profile?.display_name || "Traveler",
-      senderAvatarUrl: profile?.avatar_url ?? null,
+      senderName: journeyMember?.display_name || profile?.display_name || "Traveler",
+      senderAvatarUrl: profile?.avatar_url || journeyMember?.avatar_url || null,
       mediaDisplayUrl,
       photoAsset:
         media && media.asset_type === "image" ? mapPhotoAsset(media, mediaDisplayUrl) : null,
@@ -428,7 +463,7 @@ export async function getJourneyChatMessages(
 
   let query = supabase
     .from("journey_chat_messages")
-    .select("*")
+    .select(CHAT_MESSAGE_SELECT)
     .eq("trip_id", tripId)
     .order("created_at", { ascending: false })
     .limit(limit + 1);

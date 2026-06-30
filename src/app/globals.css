@@ -453,4 +453,15 @@ input[type="date"] {
   body.otr-chat-emoji-active .otr-chat-message-list {
     padding-bottom: calc(27rem + env(safe-area-inset-bottom, 0px)) !important;
   }
+
+  .otr-chat-voice-guard,
+  .otr-chat-voice-guard * {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+
+  .otr-chat-voice-guard {
+    touch-action: none;
+  }
 }

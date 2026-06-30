@@ -23,11 +23,96 @@ type TranslationResponse = {
   translatedText?: string | null;
 };
 
+const CONTENT_TRANSLATION_CACHE_PREFIX = "otr:content-translation:v1:";
+const CONTENT_TRANSLATION_CACHE_INDEX = "otr:content-translation:index:v1";
+const CONTENT_TRANSLATION_CACHE_LIMIT = 600;
+const memoryTranslationCache = new Map<string, string>();
+
 function detectSimpleLanguage(text: string) {
   if (/[\u4e00-\u9fff]/.test(text)) return "zh-CN";
   if (/[\u3040-\u30ff]/.test(text)) return "ja";
   if (/[\uac00-\ud7af]/.test(text)) return "ko";
   return "en";
+}
+
+function simpleHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function cacheKey(input: {
+  protectedEntityKey: string;
+  sourceField: string;
+  sourceId: string;
+  sourceLanguage: string;
+  sourceText: string;
+  sourceType: string;
+  targetLanguage: string;
+}) {
+  return [
+    input.sourceType,
+    input.sourceId,
+    input.sourceField,
+    input.sourceLanguage,
+    input.targetLanguage,
+    simpleHash(input.sourceText),
+    simpleHash(input.protectedEntityKey),
+  ].join(":");
+}
+
+function readCachedTranslation(key: string) {
+  const memoryValue = memoryTranslationCache.get(key);
+  if (memoryValue) return memoryValue;
+  if (typeof window === "undefined") return null;
+
+  try {
+    const storedValue = window.localStorage.getItem(
+      `${CONTENT_TRANSLATION_CACHE_PREFIX}${key}`,
+    );
+    if (!storedValue) return null;
+    memoryTranslationCache.set(key, storedValue);
+    return storedValue;
+  } catch {
+    return null;
+  }
+}
+
+function rememberCacheKey(key: string) {
+  if (typeof window === "undefined") return;
+
+  try {
+    const rawIndex = window.localStorage.getItem(CONTENT_TRANSLATION_CACHE_INDEX);
+    const index = rawIndex ? (JSON.parse(rawIndex) as string[]) : [];
+    const nextIndex = [key, ...index.filter((value) => value !== key)].slice(
+      0,
+      CONTENT_TRANSLATION_CACHE_LIMIT,
+    );
+    index.slice(CONTENT_TRANSLATION_CACHE_LIMIT).forEach((oldKey) => {
+      window.localStorage.removeItem(`${CONTENT_TRANSLATION_CACHE_PREFIX}${oldKey}`);
+    });
+    window.localStorage.setItem(
+      CONTENT_TRANSLATION_CACHE_INDEX,
+      JSON.stringify(nextIndex),
+    );
+  } catch {
+    return;
+  }
+}
+
+function writeCachedTranslation(key: string, value: string) {
+  memoryTranslationCache.set(key, value);
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(`${CONTENT_TRANSLATION_CACHE_PREFIX}${key}`, value);
+    rememberCacheKey(key);
+  } catch {
+    return;
+  }
 }
 
 export function TranslatedText({
@@ -54,13 +139,43 @@ export function TranslatedText({
     () => sourceLanguage || detectSimpleLanguage(sourceText),
     [sourceLanguage, sourceText],
   );
+  const translationCacheKey = useMemo(
+    () =>
+      cacheKey({
+        protectedEntityKey,
+        sourceField,
+        sourceId,
+        sourceLanguage: detectedSourceLanguage,
+        sourceText,
+        sourceType,
+        targetLanguage: contentLanguage,
+      }),
+    [
+      contentLanguage,
+      detectedSourceLanguage,
+      protectedEntityKey,
+      sourceField,
+      sourceId,
+      sourceText,
+      sourceType,
+    ],
+  );
 
   useEffect(() => {
-    setTranslatedText(null);
     setShowOriginal(false);
 
-    if (!sourceText || !contentLanguage) return;
-    if (detectedSourceLanguage === contentLanguage) return;
+    if (!sourceText || !contentLanguage) {
+      setTranslatedText(null);
+      return;
+    }
+    if (detectedSourceLanguage === contentLanguage) {
+      setTranslatedText(null);
+      return;
+    }
+
+    const cached = readCachedTranslation(translationCacheKey);
+    setTranslatedText(cached);
+    if (cached) return;
 
     let isMounted = true;
 
@@ -90,6 +205,7 @@ export function TranslatedText({
         if (!response.ok) return;
         const payload = (await response.json()) as TranslationResponse;
         if (isMounted && payload.translatedText) {
+          writeCachedTranslation(translationCacheKey, payload.translatedText);
           setTranslatedText(payload.translatedText);
         }
       } catch {
@@ -110,6 +226,7 @@ export function TranslatedText({
     sourceId,
     sourceText,
     sourceType,
+    translationCacheKey,
   ]);
 
   if (!sourceText) return fallback;

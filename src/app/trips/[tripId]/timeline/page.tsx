@@ -14,9 +14,13 @@ import { executeCaptureAction } from "@/lib/capture-ai/actions";
 import { detectCaptureIntent } from "@/lib/capture-ai/client";
 import { getErrorMessage } from "@/lib/errors";
 import { formatDayLabel, formatJourneyTime } from "@/lib/format";
+import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { compressImageFile, type CompressedImage } from "@/lib/images";
-import { getJourneyMembers } from "@/lib/supabase/journey-members";
+import {
+  journeyResourceKey,
+  loadJourneyTimelineResource,
+} from "@/lib/journey-resources";
 import {
   getMediaAssetsByMemoryIds,
   getPhotoFacesForAssets,
@@ -35,8 +39,7 @@ import {
   updateMemoryEntry,
 } from "@/lib/supabase/memories";
 import { supabase } from "@/lib/supabase/client";
-import { getPlannerV2, type PlannerV2Data } from "@/lib/supabase/planner-v2";
-import { getTrip } from "@/lib/supabase/trips";
+import type { PlannerV2Data } from "@/lib/supabase/planner-v2";
 import type {
   JourneyMember,
   MemoryEntry,
@@ -3002,6 +3005,15 @@ function TimelineContent({ user }: { user: User }) {
     setNextMemoryCursor(memoryPage.nextCursor);
   }, [loadMemoryPage, tripId]);
 
+  const timelineResource = useJourneyCachedResource({
+    cacheKey: journeyResourceKey.timeline(tripId),
+    loader: () => loadJourneyTimelineResource(tripId),
+    ttl: 2 * 60_000,
+    staleTime: 20_000,
+    keepPreviousData: true,
+    backgroundRefresh: true,
+  });
+
   useEffect(() => {
     if (!targetAssetId) return;
     setAlbumDeepLink({
@@ -3030,50 +3042,28 @@ function TimelineContent({ user }: { user: User }) {
   }, [pathname, router, searchParams]);
 
   useEffect(() => {
-    let isMounted = true;
+    const data = timelineResource.data;
+    if (!data) return;
+    setMemories(data.memoryPage.memories);
+    setPhotoAssets(data.assetData);
+    setPlannerData(data.plannerData);
+    setFacesByAssetId(data.faceData);
+    setMembers(data.memberData);
+    setImageUrls(data.signedUrls);
+    setNextMemoryCursor(data.memoryPage.nextCursor);
+    setIsLoading(false);
+    setError(null);
+  }, [timelineResource.data]);
 
-    async function loadTimeline() {
-      try {
-        await repairCurrentUserOrphanPhotoMemories(tripId).catch(() => 0);
-        const [tripData, memorySnapshot, memberData] = await Promise.all([
-          getTrip(tripId),
-          loadMemoryPage(),
-          getJourneyMembers(tripId),
-        ]);
-        const [loadedPlannerData] = await Promise.all([
-          getPlannerV2(tripData, { includeMemories: false }),
-        ]);
-
-        if (isMounted) {
-          setMemories(memorySnapshot.memoryPage.memories);
-          setPhotoAssets(memorySnapshot.assetData);
-          setPlannerData(loadedPlannerData);
-          setFacesByAssetId(memorySnapshot.faceData);
-          setMembers(memberData);
-          setImageUrls(memorySnapshot.signedUrls);
-          setNextMemoryCursor(memorySnapshot.memoryPage.nextCursor);
-        }
-      } catch (timelineError) {
-        if (isMounted) {
-          setError(
-            timelineError instanceof Error
-              ? timelineError.message
-              : t("timeline.error.load"),
-          );
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    loadTimeline();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [loadMemoryPage, t, tripId]);
+  useEffect(() => {
+    if (!timelineResource.error || timelineResource.data) return;
+    setError(
+      timelineResource.error instanceof Error
+        ? timelineResource.error.message
+        : t("timeline.error.load"),
+    );
+    setIsLoading(false);
+  }, [timelineResource.data, timelineResource.error, t]);
 
   useEffect(() => {
     let refreshTimer: number | null = null;
@@ -3434,16 +3424,26 @@ function TimelineContent({ user }: { user: User }) {
     }
   }
 
-  if (isLoading) {
+  if (isLoading && !timelineResource.data && memories.length === 0) {
     return (
-      <div className="rounded-2xl border border-stone-200 bg-white p-5 text-sm font-medium text-stone-600 shadow-sm">
-        {t("timeline.loading")}
+      <div className="space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+        <div className="h-5 w-36 animate-pulse rounded bg-stone-200" />
+        <div className="grid grid-cols-3 gap-2">
+          <div className="aspect-square animate-pulse rounded-2xl bg-stone-100" />
+          <div className="aspect-square animate-pulse rounded-2xl bg-stone-100" />
+          <div className="aspect-square animate-pulse rounded-2xl bg-stone-100" />
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-4 sm:space-y-6">
+      {timelineResource.error && timelineResource.data ? (
+        <p className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+          {t("timeline.error.load")}
+        </p>
+      ) : null}
       <section className={isMobileSearchActive ? "hidden md:block" : undefined}>
         <h1 className="text-3xl font-semibold text-stone-950">
           {t("timeline.title")}

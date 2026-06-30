@@ -18,6 +18,9 @@ type TripRow = {
   created_at: string;
 };
 
+const TRIP_SELECT =
+  "id, name, destination, start_date, end_date, cover_image_url, photo_storage_provider, photo_storage_status, photo_storage_root_folder_id, created_by, created_at";
+
 function mapTrip(row: TripRow): Trip {
   return {
     id: row.id,
@@ -47,7 +50,7 @@ export async function getTripsForCurrentUser() {
 
   const { data, error } = await supabase
     .from("trips")
-    .select("*")
+    .select(TRIP_SELECT)
     .order("start_date", { ascending: true, nullsFirst: false })
     .order("created_at", { ascending: false });
 
@@ -61,7 +64,7 @@ export async function getTripsForCurrentUser() {
 export async function getTrip(tripId: string) {
   const { data, error } = await supabase
     .from("trips")
-    .select("*")
+    .select(TRIP_SELECT)
     .eq("id", tripId)
     .single();
 
@@ -168,7 +171,7 @@ export async function updateTripSettings(input: UpdateTripSettingsInput) {
     .from("trips")
     .update(updates)
     .eq("id", input.tripId)
-    .select("*")
+    .select(TRIP_SELECT)
     .single();
 
   if (error) {
