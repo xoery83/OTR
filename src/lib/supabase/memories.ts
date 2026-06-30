@@ -859,18 +859,22 @@ export async function getSignedMemoryImageUrls(memories: MemoryEntry[]) {
       const memoryPath = memory?.mediaUrl;
       if (!memoryPath) return;
 
-      displayPathByMemoryPath.set(
-        memoryPath,
+      const directDisplayUrl =
         asset.thumbnail_url ??
-          asset.preview_url ??
-          asset.provider_thumbnail_url ??
-          asset.thumbnail_drive_web_url ??
-          `/api/media/assets/${asset.id}/thumbnail`,
-      );
+        asset.preview_url ??
+        asset.provider_thumbnail_url ??
+        asset.thumbnail_drive_web_url;
 
       const legacyPath = asset.thumbnail_file_path ?? asset.compressed_file_path;
-      if (!displayPathByMemoryPath.has(memoryPath) && legacyPath) {
+      if (directDisplayUrl) {
+        displayPathByMemoryPath.set(memoryPath, directDisplayUrl);
+      } else if (legacyPath) {
         displayPathByMemoryPath.set(memoryPath, legacyPath);
+      } else {
+        displayPathByMemoryPath.set(
+          memoryPath,
+          `/api/media/assets/${asset.id}/thumbnail`,
+        );
       }
     });
   }

@@ -280,6 +280,98 @@ export async function repairCurrentUserOrphanPhotoMemories(tripId: string) {
   return repaired;
 }
 
+type MediaAssetDisplayFields = Pick<
+  MediaAsset,
+  | "id"
+  | "compressedFilePath"
+  | "thumbnailFilePath"
+  | "legacySupabasePath"
+  | "legacyThumbnailPath"
+  | "thumbnailUrl"
+  | "previewUrl"
+  | "providerThumbnailUrl"
+  | "thumbnailDriveWebUrl"
+>;
+
+type MediaAssetDriveLinkFields = Pick<
+  MediaAsset,
+  "providerWebUrl" | "originalDriveWebUrl" | "providerOriginalReference"
+>;
+
+export function getMediaAssetDriveUrl(asset: MediaAssetDriveLinkFields) {
+  return (
+    asset.providerWebUrl ??
+    asset.originalDriveWebUrl ??
+    asset.providerOriginalReference ??
+    null
+  );
+}
+
+export function getMediaAssetDisplayUrl(asset: MediaAssetDisplayFields) {
+  return (
+    asset.thumbnailUrl ??
+    asset.previewUrl ??
+    asset.providerThumbnailUrl ??
+    asset.thumbnailDriveWebUrl ??
+    `/api/media/assets/${asset.id}/thumbnail`
+  );
+}
+
+export function getMediaAssetPreviewUrl(asset: MediaAssetDisplayFields) {
+  return asset.previewUrl ?? `/api/media/assets/${asset.id}/preview`;
+}
+
+export function getMediaAssetLegacyDisplayPath(asset: MediaAssetDisplayFields) {
+  return (
+    asset.thumbnailFilePath ??
+    asset.legacyThumbnailPath ??
+    asset.compressedFilePath ??
+    asset.legacySupabasePath ??
+    null
+  );
+}
+
+export async function getMediaAssetLegacySignedUrlById(
+  assets: MediaAssetDisplayFields[],
+) {
+  const pathByAssetId = new Map<string, string>();
+  const paths = [
+    ...new Set(
+      assets
+        .map((asset) => {
+          const path = getMediaAssetLegacyDisplayPath(asset);
+          if (path) pathByAssetId.set(asset.id, path);
+          return path;
+        })
+        .filter((path): path is string => Boolean(path)),
+    ),
+  ];
+
+  if (paths.length === 0) return {};
+
+  const { data, error } = await supabase.storage
+    .from("trip-media")
+    .createSignedUrls(paths, 60 * 60);
+
+  if (error) {
+    throw error;
+  }
+
+  const signedByPath = new Map<string, string>();
+  for (const item of data ?? []) {
+    if (item.path && item.signedUrl) {
+      signedByPath.set(item.path, item.signedUrl);
+    }
+  }
+
+  return assets.reduce<Record<string, string>>((urls, asset) => {
+    const path = pathByAssetId.get(asset.id);
+    const signedUrl = path ? signedByPath.get(path) : undefined;
+    if (signedUrl) urls[asset.id] = signedUrl;
+    return urls;
+  }, {});
+}
+
 export async function getTripPhotoAssets(
   tripId: string,
 ): Promise<PhotoAssetWithMemory[]> {
@@ -315,40 +407,15 @@ export async function getTripPhotoAssets(
     }
   }
 
-  const compressedPaths = [
-    ...new Set(
-      assets
-      .map((asset) => asset.thumbnailFilePath ?? asset.compressedFilePath)
-      .filter((path): path is string => Boolean(path)),
-    ),
-  ];
-  const signedUrls = new Map<string, string>();
-
-  if (compressedPaths.length > 0) {
-    const { data: signedData, error: signedError } = await supabase.storage
-      .from("trip-media")
-      .createSignedUrls(compressedPaths, 60 * 60);
-
-    if (signedError) {
-      throw signedError;
-    }
-
-    for (const item of signedData ?? []) {
-      if (item.path && item.signedUrl) {
-        signedUrls.set(item.path, item.signedUrl);
-      }
-    }
-  }
+  const legacyUrlsByAssetId = await getMediaAssetLegacySignedUrlById(assets);
 
   return assets.map((asset) => {
-    const legacyPath = asset.thumbnailFilePath ?? asset.compressedFilePath;
-    const legacyUrl = legacyPath ? signedUrls.get(legacyPath) : undefined;
     return {
       ...asset,
       memory: memoriesById.get(asset.memoryEntryId) ?? null,
-      displayUrl: asset.thumbnailUrl ?? `/api/media/assets/${asset.id}/thumbnail`,
-      displayPreviewUrl: asset.previewUrl ?? `/api/media/assets/${asset.id}/preview`,
-      displayFallbackUrl: legacyUrl,
+      displayUrl: getMediaAssetDisplayUrl(asset),
+      displayPreviewUrl: getMediaAssetPreviewUrl(asset),
+      displayFallbackUrl: legacyUrlsByAssetId[asset.id],
     };
   });
 }

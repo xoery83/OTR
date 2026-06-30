@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { AiRouteRecommendationPanel } from "@/components/AiRouteRecommendationPanel";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
@@ -56,6 +57,10 @@ import {
   type MemoryEngagement,
 } from "@/lib/supabase/memories";
 import {
+  getMediaAssetDisplayUrl,
+  getMediaAssetDriveUrl,
+  getMediaAssetLegacySignedUrlById,
+  getMediaAssetPreviewUrl,
   getMediaAssetsByMemoryIds,
   getPhotoFacesForAssets,
   requestFaceConfirmation,
@@ -1598,7 +1603,10 @@ export function PlannerDayCard({
 
     getMediaAssetsByMemoryIds(photoMemoryIds)
       .then(async (assets) => {
-        const faces = await getPhotoFacesForAssets(assets.map((asset) => asset.id));
+        const [faces, legacyUrlsByAssetId] = await Promise.all([
+          getPhotoFacesForAssets(assets.map((asset) => asset.id)),
+          getMediaAssetLegacySignedUrlById(assets),
+        ]);
         if (!isMounted) return;
         setPhotoAssetsByMemoryId(
           assets.reduce<Record<string, PhotoAssetWithMemory>>((groups, asset) => {
@@ -1606,9 +1614,10 @@ export function PlannerDayCard({
               groups[asset.memoryEntryId] = {
                 ...asset,
                 memory: memories.find((memory) => memory.id === asset.memoryEntryId) ?? null,
-                displayUrl:
-                  asset.thumbnailDriveWebUrl ??
-                  asset.providerThumbnailUrl ??
+                displayUrl: getMediaAssetDisplayUrl(asset),
+                displayPreviewUrl: getMediaAssetPreviewUrl(asset),
+                displayFallbackUrl:
+                  legacyUrlsByAssetId[asset.id] ??
                   (asset.compressedFilePath
                     ? imageUrlByMemoryPath[asset.compressedFilePath]
                     : undefined),
@@ -2632,7 +2641,13 @@ export function PlannerDayCard({
     activePreviewFaces.find((face) => face.recognitionStatus !== "confirmed") ??
     null;
   const activePreviewImageSrc =
-    activePreviewPhoto?.displayUrl ?? imagePreview?.src ?? "";
+    activePreviewPhoto?.displayPreviewUrl ??
+    activePreviewPhoto?.displayUrl ??
+    imagePreview?.src ??
+    "";
+  const activePreviewDriveUrl = activePreviewPhoto
+    ? getMediaAssetDriveUrl(activePreviewPhoto)
+    : null;
 
   useEffect(() => {
     setPreviewImageSize(null);
@@ -3079,6 +3094,9 @@ export function PlannerDayCard({
                           src={imageUrlByMemoryPath[memory.mediaUrl]}
                           alt=""
                           className="max-h-56 w-full object-cover transition hover:opacity-90"
+                          onError={(event) => {
+                            event.currentTarget.style.display = "none";
+                          }}
                         />
                       </button>
                     ) : null}
@@ -3487,6 +3505,9 @@ export function PlannerDayCard({
                                     src={imageUrlByMemoryPath[memory.mediaUrl]}
                                     alt=""
                                     className="max-h-56 w-full object-cover transition hover:opacity-90"
+                                    onError={(event) => {
+                                      event.currentTarget.style.display = "none";
+                                    }}
                                   />
                                 </button>
                               ) : null}
@@ -5096,8 +5117,8 @@ export function PlannerDayCard({
           </section>
         </div>
       ) : null}
-      {imagePreview ? (
-        <div className="fixed inset-0 z-[2147482500] bg-stone-950/92 p-3 backdrop-blur-sm sm:p-6">
+      {imagePreview && typeof document !== "undefined" ? createPortal((
+        <div className="fixed inset-0 z-[2147482500] bg-stone-950/92 p-2 backdrop-blur-sm sm:p-6">
           <button
             type="button"
             aria-label={t("common.close")}
@@ -5108,8 +5129,8 @@ export function PlannerDayCard({
               setPreviewFaceError(null);
             }}
           />
-          <div className="relative z-[1] mx-auto flex h-full max-w-6xl flex-col gap-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="relative z-[1] mx-auto flex h-full max-h-full max-w-6xl flex-col gap-2 overflow-hidden sm:gap-3">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 {activePreviewMemory ? (
                   <MemoryEngagementActions
@@ -5118,9 +5139,9 @@ export function PlannerDayCard({
                     compact
                   />
                 ) : null}
-                {activePreviewPhoto?.providerWebUrl ? (
+                {activePreviewDriveUrl ? (
                   <a
-                    href={activePreviewPhoto.providerWebUrl}
+                    href={activePreviewDriveUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="rounded-full bg-white px-3 py-2 text-xs font-black text-stone-950"
@@ -5156,7 +5177,7 @@ export function PlannerDayCard({
               </button>
             </div>
 
-            <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-2 lg:grid-cols-[minmax(0,1fr)_320px] lg:grid-rows-none lg:gap-3">
               <div className="grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black p-2">
                 <div
                   className="relative max-h-full max-w-full overflow-hidden rounded-2xl"
@@ -5171,9 +5192,24 @@ export function PlannerDayCard({
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
+                    key={activePreviewImageSrc}
                     src={activePreviewImageSrc}
                     alt={imagePreview.alt}
-                    className="h-full max-h-[78vh] w-full object-contain shadow-2xl"
+                    className="h-full max-h-full w-full object-contain shadow-2xl"
+                    onError={(event) => {
+                      const fallbacks = [
+                        activePreviewPhoto?.displayUrl,
+                        activePreviewPhoto?.displayFallbackUrl,
+                      ].filter((value): value is string => Boolean(value));
+                      const index = Number(
+                        event.currentTarget.dataset.fallbackIndex ?? "0",
+                      );
+                      const next = fallbacks[index];
+                      if (next) {
+                        event.currentTarget.dataset.fallbackIndex = String(index + 1);
+                        event.currentTarget.src = next;
+                      }
+                    }}
                     onLoad={(event) =>
                       setPreviewImageSize({
                         width: event.currentTarget.naturalWidth,
@@ -5235,8 +5271,8 @@ export function PlannerDayCard({
                 </div>
               </div>
 
-              <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-4">
-                <div className="space-y-4">
+              <aside className="max-h-[26dvh] min-h-0 overflow-y-auto rounded-3xl bg-white p-3 sm:max-h-none sm:p-4">
+                <div className="space-y-3 sm:space-y-4">
                   <div>
                     <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
                       {t("timeline.album.people")}
@@ -5277,7 +5313,7 @@ export function PlannerDayCard({
                   </div>
 
                   {activePreviewMemory?.content ? (
-                    <p className="whitespace-pre-wrap rounded-2xl bg-stone-50 p-3 text-sm leading-6 text-stone-700">
+                    <p className="line-clamp-3 whitespace-pre-wrap rounded-2xl bg-stone-50 p-3 text-sm leading-6 text-stone-700 sm:line-clamp-none">
                       {activePreviewMemory.content}
                     </p>
                   ) : null}
@@ -5387,7 +5423,7 @@ export function PlannerDayCard({
                           face: firstUnconfirmedPreviewFace,
                         })
                       }
-                      className="w-full rounded-full bg-amber-300 px-4 py-3 text-sm font-black text-stone-950"
+                      className="rounded-full bg-amber-300 px-3 py-1.5 text-xs font-black text-stone-950"
                     >
                       {t("timeline.album.assignFaces")}
                     </button>
@@ -5397,7 +5433,7 @@ export function PlannerDayCard({
             </div>
           </div>
         </div>
-      ) : null}
+      ), document.body) : null}
     </article>
   );
 }

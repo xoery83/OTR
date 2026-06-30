@@ -317,6 +317,18 @@ function PlannerContent() {
     : "transform 180ms ease";
 
   function plannerSwipePanelStyle(position: -1 | 0 | 1): CSSProperties {
+    if (
+      position === 0 &&
+      plannerSwipeOffset === 0 &&
+      !isPlannerSwipeDragging &&
+      !isPlannerSwipeSettling
+    ) {
+      return {
+        transition: plannerSwipeTransition,
+        touchAction: "pan-y",
+      };
+    }
+
     const baseOffset =
       position === 0
         ? `${plannerSwipeOffset}px`

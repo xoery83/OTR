@@ -22,6 +22,10 @@ import {
   loadJourneyTimelineResource,
 } from "@/lib/journey-resources";
 import {
+  getMediaAssetDisplayUrl,
+  getMediaAssetDriveUrl,
+  getMediaAssetLegacySignedUrlById,
+  getMediaAssetPreviewUrl,
   getMediaAssetsByMemoryIds,
   getPhotoFacesForAssets,
   repairCurrentUserOrphanPhotoMemories,
@@ -35,6 +39,7 @@ import {
   deleteMemoryEntry,
   getSignedMemoryImageUrls,
   getTripMemoriesPage,
+  type TripMemorySummary,
   type MemoryEngagement,
   updateMemoryEntry,
 } from "@/lib/supabase/memories";
@@ -100,31 +105,6 @@ function writeTimelineSession(tripId: string, state: TimelineSessionState) {
           : undefined,
     }),
   );
-}
-
-async function getLegacyAssetSignedUrls(
-  assets: { thumbnailFilePath: string | null; compressedFilePath: string | null }[],
-) {
-  const paths = [
-    ...new Set(
-      assets
-        .map((asset) => asset.thumbnailFilePath ?? asset.compressedFilePath)
-        .filter((path): path is string => Boolean(path)),
-    ),
-  ];
-
-  if (paths.length === 0) return {};
-
-  const { data, error } = await supabase.storage
-    .from("trip-media")
-    .createSignedUrls(paths, 60 * 60);
-
-  if (error) throw error;
-
-  return (data ?? []).reduce<Record<string, string>>((urls, item) => {
-    if (item.path && item.signedUrl) urls[item.path] = item.signedUrl;
-    return urls;
-  }, {});
 }
 
 function parseTimelineView(value: string | null): TimelineView {
@@ -1150,6 +1130,8 @@ function TimelinePhotoLightbox({
 
   if (!item?.photo?.displayUrl) return null;
 
+  const driveUrl = getMediaAssetDriveUrl(item.photo);
+
   function openFaceAssignment() {
     if (!item?.photo) return;
     const unassignedFace = item.faces.find(
@@ -1248,9 +1230,9 @@ function TimelinePhotoLightbox({
               compact
               className="rounded-full bg-white/10 px-1 py-1 text-white"
             />
-            {item.photo.providerWebUrl ? (
+            {driveUrl ? (
               <a
-                href={item.photo.providerWebUrl}
+                href={driveUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="rounded-full bg-white px-3 py-2 text-xs font-black text-stone-950"
@@ -1275,7 +1257,7 @@ function TimelinePhotoLightbox({
           >
             <FallbackPhotoImage
               src={item.photo.displayPreviewUrl ?? item.photo.displayUrl}
-              fallbackSrc={item.photo.displayUrl ?? item.photo.displayFallbackUrl}
+              fallbackSrc={[item.photo.displayUrl, item.photo.displayFallbackUrl]}
               alt={item.memory.content || t("timeline.photo.alt")}
               className="h-full w-full object-contain"
               onPrimaryError={() => requestRepair(item.photo)}
@@ -1807,6 +1789,9 @@ function AlbumView({
         new Date(left.uploadedAt).getTime(),
     );
   const activeItem = photoItems.find((item) => item.id === activeItemId) ?? null;
+  const activeDriveUrl = activeItem?.photo
+    ? getMediaAssetDriveUrl(activeItem.photo)
+    : null;
   const openedInitialAssetIdRef = useRef<string | null>(null);
   const returnToRef = useRef(returnTo);
   const initialViewerOpenRef = useRef(false);
@@ -1955,7 +1940,7 @@ function AlbumView({
   return (
     <>
       <section className="-mx-4 grid grid-cols-3 gap-0.5 sm:mx-0 sm:grid-cols-4 sm:gap-1 lg:grid-cols-6">
-        {photoItems.map((item) => (
+        {photoItems.map((item, index) => (
           <button
             type="button"
             key={item.id}
@@ -1972,6 +1957,8 @@ function AlbumView({
               fallbackSrc={item.photo!.displayFallbackUrl}
               alt={item.memory.content || t("timeline.photo.alt")}
               className="h-full w-full object-cover"
+              loading={index < 12 ? "eager" : "lazy"}
+              fetchPriority={index < 12 ? "high" : "auto"}
               onPrimaryError={() => requestRepair(item.photo)}
             />
             <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-stone-950/80 via-stone-950/20 to-transparent p-2 text-white opacity-0 transition group-hover:opacity-100">
@@ -2021,9 +2008,9 @@ function AlbumView({
                   compact
                   className="rounded-full bg-white/10 px-1 py-1 text-white"
                 />
-                {activeItem.photo.providerWebUrl ? (
+                {activeDriveUrl ? (
                   <a
-                    href={activeItem.photo.providerWebUrl}
+                    href={activeDriveUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="rounded-full bg-white px-3 py-2 text-xs font-black text-stone-950"
@@ -2048,9 +2035,10 @@ function AlbumView({
               >
                 <FallbackPhotoImage
                   src={activeItem.photo.displayPreviewUrl ?? activeItem.photo.displayUrl}
-                  fallbackSrc={
-                    activeItem.photo.displayUrl ?? activeItem.photo.displayFallbackUrl
-                  }
+                  fallbackSrc={[
+                    activeItem.photo.displayUrl,
+                    activeItem.photo.displayFallbackUrl,
+                  ]}
                   alt={activeItem.memory.content || t("timeline.photo.alt")}
                   className="h-full w-full object-contain"
                   onPrimaryError={() => requestRepair(activeItem.photo)}
@@ -2327,25 +2315,38 @@ function FallbackPhotoImage({
   fallbackSrc,
   alt,
   className,
+  loading = "lazy",
+  fetchPriority,
   onPrimaryError,
   onLoad,
 }: {
   src: string;
-  fallbackSrc?: string;
+  fallbackSrc?: string | (string | null | undefined)[];
   alt: string;
   className?: string;
+  loading?: "eager" | "lazy";
+  fetchPriority?: "high" | "low" | "auto";
   onPrimaryError?: () => void;
   onLoad?: (event: SyntheticEvent<HTMLImageElement>) => void;
 }) {
-  const [currentSrc, setCurrentSrc] = useState(src);
-  const [failed, setFailed] = useState(false);
+  const sources = useMemo(
+    () =>
+      [
+        src,
+        ...(Array.isArray(fallbackSrc) ? fallbackSrc : [fallbackSrc]),
+      ].filter((value, index, values): value is string =>
+        Boolean(value) && values.indexOf(value) === index,
+      ),
+    [fallbackSrc, src],
+  );
+  const sourceKey = sources.join("\n");
+  const [sourceIndex, setSourceIndex] = useState(0);
 
   useEffect(() => {
-    setCurrentSrc(src);
-    setFailed(false);
-  }, [src, fallbackSrc]);
+    setSourceIndex(0);
+  }, [sourceKey]);
 
-  if (failed) {
+  if (!sources[sourceIndex]) {
     return (
       <div className="grid h-full w-full place-items-center bg-stone-100 text-sm font-semibold text-stone-400">
         No preview
@@ -2353,21 +2354,23 @@ function FallbackPhotoImage({
     );
   }
 
+  const currentSrc = sources[sourceIndex];
+
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
       src={currentSrc}
       alt={alt}
-      loading="lazy"
+      loading={loading}
+      fetchPriority={fetchPriority}
+      decoding="async"
       className={className}
       onLoad={onLoad}
       onError={() => {
-        if (fallbackSrc && currentSrc !== fallbackSrc) {
+        if (sourceIndex === 0) {
           onPrimaryError?.();
-          setCurrentSrc(fallbackSrc);
-          return;
         }
-        setFailed(true);
+        setSourceIndex((index) => index + 1);
       }}
     />
   );
@@ -2551,12 +2554,13 @@ function PhotoGalleryView({
       ) : null}
 
       <div className="grid gap-4 md:grid-cols-2">
-        {photos.map((photo) => {
+        {photos.map((photo, index) => {
             const summary = getAiSummary(photo);
             const aiError = getAiError(photo);
             const locationHints = getLocationHints(photo);
             const modelInfo = getAiModelInfo(photo);
             const faces = facesByAssetId[photo.id] ?? [];
+            const driveUrl = getMediaAssetDriveUrl(photo);
           const capturedAt = photo.memory?.capturedAt
             ? new Date(photo.memory.capturedAt)
             : new Date(photo.createdAt);
@@ -2587,6 +2591,8 @@ function PhotoGalleryView({
                     fallbackSrc={photo.displayFallbackUrl}
                     alt={photo.memory?.content || t("timeline.photo.alt")}
                     className="h-full w-full object-cover"
+                    loading={index < 12 ? "eager" : "lazy"}
+                    fetchPriority={index < 12 ? "high" : "auto"}
                     onPrimaryError={() => requestRepair(photo)}
                   />
                 ) : (
@@ -2895,9 +2901,9 @@ function PhotoGalleryView({
                         ? t("timeline.debug.refreshFaces")
                         : t("timeline.debug.detectFaces")}
                   </button>
-                  {photo.providerWebUrl ? (
+                  {driveUrl ? (
                     <a
-                      href={photo.providerWebUrl}
+                      href={driveUrl}
                       target="_blank"
                       rel="noreferrer"
                       className="rounded-full bg-stone-100 px-4 py-2 text-sm font-bold text-stone-800"
@@ -2944,6 +2950,7 @@ function TimelineContent({ user }: { user: User }) {
   const [facesByAssetId, setFacesByAssetId] = useState<Record<string, PhotoFace[]>>(
     {},
   );
+  const [memorySummary, setMemorySummary] = useState<TripMemorySummary | null>(null);
   const [members, setMembers] = useState<JourneyMember[]>([]);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const [view, setView] = useState<TimelineView>(
@@ -2971,23 +2978,21 @@ function TimelineContent({ user }: { user: User }) {
       });
       const memoryIds = memoryPage.memories.map((memory) => memory.id);
       const assetData = await getMediaAssetsByMemoryIds(memoryIds);
-      const [signedUrls, legacyAssetUrls, faceData] = await Promise.all([
+      const [signedUrls, legacyUrlsByAssetId, faceData] = await Promise.all([
         getSignedMemoryImageUrls(memoryPage.memories),
-        getLegacyAssetSignedUrls(assetData),
+        getMediaAssetLegacySignedUrlById(assetData),
         getPhotoFacesForAssets(assetData.map((asset) => asset.id)),
       ]);
       const memoryById = new Map(
         memoryPage.memories.map((memory) => [memory.id, memory]),
       );
       const photoAssetsForPage: PhotoAssetWithMemory[] = assetData.map((asset) => {
-        const legacyPath = asset.thumbnailFilePath ?? asset.compressedFilePath;
-        const legacyUrl = legacyPath ? legacyAssetUrls[legacyPath] : undefined;
         return {
           ...asset,
           memory: memoryById.get(asset.memoryEntryId) ?? null,
-          displayUrl: asset.thumbnailUrl ?? `/api/media/assets/${asset.id}/thumbnail`,
-          displayPreviewUrl: asset.previewUrl ?? `/api/media/assets/${asset.id}/preview`,
-          displayFallbackUrl: legacyUrl,
+          displayUrl: getMediaAssetDisplayUrl(asset),
+          displayPreviewUrl: getMediaAssetPreviewUrl(asset),
+          displayFallbackUrl: legacyUrlsByAssetId[asset.id],
         };
       });
       return { memoryPage, assetData: photoAssetsForPage, signedUrls, faceData };
@@ -3048,6 +3053,7 @@ function TimelineContent({ user }: { user: User }) {
     setPhotoAssets(data.assetData);
     setPlannerData(data.plannerData);
     setFacesByAssetId(data.faceData);
+    setMemorySummary(data.memorySummary);
     setMembers(data.memberData);
     setImageUrls(data.signedUrls);
     setNextMemoryCursor(data.memoryPage.nextCursor);
@@ -3223,6 +3229,17 @@ function TimelineContent({ user }: { user: User }) {
     const allowedMemoryIds = new Set(filteredItems.map((item) => item.id));
     return photoAssets.filter((photo) => allowedMemoryIds.has(photo.memoryEntryId));
   }, [filteredItems, photoAssets]);
+  const loadedPhotoMemoryCount = useMemo(
+    () =>
+      new Set(
+        photoAssets
+          .map((photo) => photo.memoryEntryId)
+          .filter((memoryId): memoryId is string => Boolean(memoryId)),
+      ).size,
+    [photoAssets],
+  );
+  const hasLoadedAllAlbumPhotos =
+    memorySummary !== null && loadedPhotoMemoryCount >= memorySummary.photos;
   const favoriteItems = useMemo(
     () => filteredItems.filter((item) => item.memory.isFavorited),
     [filteredItems],
@@ -3400,23 +3417,34 @@ function TimelineContent({ user }: { user: User }) {
     try {
       const { memoryPage, assetData, signedUrls, faceData } =
         await loadMemoryPage(nextMemoryCursor);
+      const existingMemoryIds = new Set(memories.map((memory) => memory.id));
+      const nextMemories = memoryPage.memories.filter(
+        (memory) => !existingMemoryIds.has(memory.id),
+      );
+      const existingAssetIds = new Set(photoAssets.map((asset) => asset.id));
+      const nextAssets = assetData.filter((asset) => !existingAssetIds.has(asset.id));
       setMemories((current) => {
-        const existingIds = new Set(current.map((memory) => memory.id));
+        const currentIds = new Set(current.map((memory) => memory.id));
         return [
           ...current,
-          ...memoryPage.memories.filter((memory) => !existingIds.has(memory.id)),
+          ...nextMemories.filter((memory) => !currentIds.has(memory.id)),
         ];
       });
       setPhotoAssets((current) => {
-        const existingIds = new Set(current.map((asset) => asset.id));
+        const currentIds = new Set(current.map((asset) => asset.id));
         return [
           ...current,
-          ...assetData.filter((asset) => !existingIds.has(asset.id)),
+          ...nextAssets.filter((asset) => !currentIds.has(asset.id)),
         ];
       });
       setFacesByAssetId((current) => ({ ...current, ...faceData }));
       setImageUrls((current) => ({ ...current, ...signedUrls }));
-      setNextMemoryCursor(memoryPage.nextCursor);
+      setNextMemoryCursor(
+        memoryPage.nextCursor &&
+          (nextMemories.length > 0 || nextAssets.length > 0)
+          ? memoryPage.nextCursor
+          : null,
+      );
     } catch (loadMoreError) {
       setError(getErrorMessage(loadMoreError, t("timeline.error.load")));
     } finally {
@@ -3636,7 +3664,9 @@ function TimelineContent({ user }: { user: User }) {
         />
       ) : null}
 
-      {!error && nextMemoryCursor ? (
+      {!error &&
+      nextMemoryCursor &&
+      !(view === "album" && hasLoadedAllAlbumPhotos) ? (
         <div className="flex justify-center py-4">
           <button
             type="button"
@@ -3644,7 +3674,11 @@ function TimelineContent({ user }: { user: User }) {
             disabled={isLoadingMoreMemories}
             className="rounded-full bg-white px-5 py-3 text-sm font-black text-emerald-800 shadow-sm ring-1 ring-emerald-100 disabled:opacity-50"
           >
-            {isLoadingMoreMemories ? "Loading..." : "Load older memories"}
+            {isLoadingMoreMemories
+              ? "Loading..."
+              : view === "album"
+                ? "Load older photos"
+                : "Load older memories"}
           </button>
         </div>
       ) : null}

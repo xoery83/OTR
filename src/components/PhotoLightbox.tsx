@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { PhotoAssetWithMemory, PhotoFace } from "@/types";
+import { getMediaAssetDriveUrl } from "@/lib/supabase/media-assets";
 
 function formatBytes(value: number | null | undefined) {
   if (!value || value <= 0) return "未知";
@@ -40,6 +41,7 @@ export function PhotoLightbox({
 }) {
   const isMinimal = variant === "minimal";
   const [showInfo, setShowInfo] = useState(!isMinimal);
+  const driveUrl = photo ? getMediaAssetDriveUrl(photo) : null;
   const summary = metadataText(photo?.aiMetadata?.summary);
   const locationHints = Array.isArray(photo?.aiMetadata?.locationHints)
     ? photo.aiMetadata.locationHints.filter(
@@ -73,9 +75,9 @@ export function PhotoLightbox({
           关闭
         </button>
         <div className="flex items-center gap-2">
-          {isMinimal && photo?.providerWebUrl ? (
+          {isMinimal && driveUrl ? (
             <a
-              href={photo.providerWebUrl}
+              href={driveUrl}
               target="_blank"
               rel="noreferrer"
               className="rounded-full bg-white px-4 py-2 text-sm font-black text-stone-950 shadow-lg"
@@ -140,9 +142,9 @@ export function PhotoLightbox({
                 ) : null}
               </div>
               <div className="flex shrink-0 gap-2">
-                {photo?.providerWebUrl ? (
+                {driveUrl ? (
                   <a
-                    href={photo.providerWebUrl}
+                    href={driveUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="rounded-full bg-emerald-700 px-3 py-1.5 text-xs font-black text-white"

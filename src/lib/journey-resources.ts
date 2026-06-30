@@ -11,6 +11,9 @@ import {
   getJourneyMapObjects,
 } from "@/lib/supabase/map";
 import {
+  getMediaAssetDisplayUrl,
+  getMediaAssetLegacySignedUrlById,
+  getMediaAssetPreviewUrl,
   getMediaAssetsByMemoryIds,
   getPhotoFacesForAssets,
   getTripFaceTagCountsByMember,
@@ -131,10 +134,11 @@ export async function loadJourneyChatResource(tripId: string) {
 }
 
 export async function loadJourneyTimelineResource(tripId: string) {
-  const [tripData, memoryPage, memberData] = await Promise.all([
+  const [tripData, memoryPage, memberData, memorySummary] = await Promise.all([
     getTrip(tripId),
     getTripMemoriesPage(tripId, { limit: 60 }),
     getJourneyMembers(tripId),
+    getTripMemorySummary(tripId),
   ]);
   const memoryIds = memoryPage.memories.map((memory) => memory.id);
   const [plannerData, assetRows, signedUrls] = await Promise.all([
@@ -143,17 +147,27 @@ export async function loadJourneyTimelineResource(tripId: string) {
     getSignedMemoryImageUrls(memoryPage.memories),
   ]);
   const memoryById = new Map(memoryPage.memories.map((memory) => [memory.id, memory]));
+  const legacyUrlsByAssetId = await getMediaAssetLegacySignedUrlById(assetRows);
   const assetData: PhotoAssetWithMemory[] = assetRows.map((asset) => ({
     ...asset,
     memory: memoryById.get(asset.memoryEntryId) ?? null,
-    displayUrl: asset.thumbnailUrl ?? `/api/media/assets/${asset.id}/thumbnail`,
-    displayPreviewUrl: asset.previewUrl ?? `/api/media/assets/${asset.id}/preview`,
-    displayFallbackUrl: undefined,
+    displayUrl: getMediaAssetDisplayUrl(asset),
+    displayPreviewUrl: getMediaAssetPreviewUrl(asset),
+    displayFallbackUrl: legacyUrlsByAssetId[asset.id],
   }));
   const faceData = await getPhotoFacesForAssets(assetData.map((asset) => asset.id)).catch(
     () => ({}),
   );
-  return { tripData, memoryPage, memberData, plannerData, assetData, signedUrls, faceData };
+  return {
+    tripData,
+    memoryPage,
+    memberData,
+    memorySummary,
+    plannerData,
+    assetData,
+    signedUrls,
+    faceData,
+  };
 }
 
 export async function loadJourneyPeopleResource(tripId: string) {

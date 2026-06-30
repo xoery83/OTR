@@ -108,6 +108,9 @@ export function DayMemoryPreview({
                           src={imageUrl}
                           alt=""
                           className="h-full w-full object-cover"
+                          onError={(event) => {
+                            event.currentTarget.style.display = "none";
+                          }}
                         />
                       </button>
                     );
@@ -154,6 +157,9 @@ export function DayMemoryPreview({
                         src={imageUrl}
                         alt=""
                         className="size-full object-cover"
+                        onError={(event) => {
+                          event.currentTarget.style.display = "none";
+                        }}
                       />
                     </button>
                   ) : null}

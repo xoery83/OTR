@@ -27,6 +27,10 @@ type MediaAssetRow = {
   compressed_file_path: string | null;
   thumbnail_file_path: string | null;
   thumbnail_drive_file_id: string | null;
+  provider_web_url: string | null;
+  original_drive_file_id: string | null;
+  original_drive_web_url: string | null;
+  mime_type: string | null;
 };
 
 type StorageConnectionRow = {
@@ -34,6 +38,7 @@ type StorageConnectionRow = {
   journey_folder_id: string | null;
   metadata: {
     mediaFolders?: {
+      originals?: { id?: string; folderId?: string; name?: string };
       thumbnails?: { id?: string; folderId?: string; name?: string };
     };
   } | null;
@@ -126,12 +131,14 @@ async function loadCandidates(input: {
   let query = input.supabase
     .from("media_assets")
     .select(
-      "id, trip_id, user_id, compressed_file_path, thumbnail_file_path, thumbnail_drive_file_id",
+      "id, trip_id, user_id, compressed_file_path, thumbnail_file_path, thumbnail_drive_file_id, provider_web_url, original_drive_file_id, original_drive_web_url, mime_type",
     )
     .eq("trip_id", input.tripId)
     .eq("asset_type", "image")
-    .is("thumbnail_drive_file_id", null)
     .not("compressed_file_path", "is", null)
+    .or(
+      "thumbnail_drive_file_id.is.null,provider_web_url.is.null,original_drive_web_url.is.null,original_drive_file_id.is.null",
+    )
     .order("created_at", { ascending: true })
     .limit(input.limit);
 
@@ -141,14 +148,17 @@ async function loadCandidates(input: {
   return (data ?? []) as MediaAssetRow[];
 }
 
-async function ensureThumbnailFolder(input: {
+async function ensureMediaFolders(input: {
   supabase: SupabaseClient;
   connection: StorageConnectionRow;
   tripId: string;
   accessToken: string;
 }) {
-  const existing = folderId(input.connection.metadata?.mediaFolders?.thumbnails);
-  if (existing) return existing;
+  const existingOriginals = folderId(input.connection.metadata?.mediaFolders?.originals);
+  const existingThumbnails = folderId(input.connection.metadata?.mediaFolders?.thumbnails);
+  if (existingOriginals && existingThumbnails) {
+    return { originalsFolderId: existingOriginals, thumbnailsFolderId: existingThumbnails };
+  }
   if (!input.connection.journey_folder_id) {
     throw new Error("Google Drive journey folder was not found.");
   }
@@ -174,7 +184,15 @@ async function ensureThumbnailFolder(input: {
     .eq("provider", "google_drive")
     .eq("status", "connected");
   if (error) throw error;
-  return folders.thumbnails.id;
+  return {
+    originalsFolderId: folders.originals.id,
+    thumbnailsFolderId: folders.thumbnails.id,
+  };
+}
+
+function filenameFromStoragePath(pathValue: string, fallback: string) {
+  const name = pathValue.split("/").pop()?.trim();
+  return name || fallback;
 }
 
 export async function POST(request: Request) {
@@ -225,6 +243,11 @@ export async function POST(request: Request) {
         candidates: candidates.map((asset) => ({
           assetId: asset.id,
           sourcePath: asset.thumbnail_file_path ?? asset.compressed_file_path,
+          needsOriginal:
+            !asset.provider_web_url ||
+            !asset.original_drive_web_url ||
+            !asset.original_drive_file_id,
+          needsThumbnail: !asset.thumbnail_drive_file_id,
         })),
       });
     }
@@ -232,7 +255,7 @@ export async function POST(request: Request) {
     const accessToken = await refreshGoogleDriveAccessToken(
       decryptGoogleToken(connection.token_reference),
     );
-    const thumbnailFolderId = await ensureThumbnailFolder({
+    const { originalsFolderId, thumbnailsFolderId } = await ensureMediaFolders({
       supabase: serviceSupabase,
       connection: connection as StorageConnectionRow,
       tripId,
@@ -241,49 +264,102 @@ export async function POST(request: Request) {
 
     const results = [];
     for (const asset of candidates) {
-      const sourcePath = asset.thumbnail_file_path ?? asset.compressed_file_path;
-      if (!sourcePath) {
+      const originalSourcePath = asset.compressed_file_path;
+      const thumbnailSourcePath = asset.thumbnail_file_path ?? asset.compressed_file_path;
+      if (!originalSourcePath || !thumbnailSourcePath) {
         results.push({ assetId: asset.id, status: "skipped", error: "Missing source path." });
         continue;
       }
 
       try {
-        const { data: blob, error: downloadError } = await serviceSupabase.storage
+        const { data: originalBlob, error: originalDownloadError } = await serviceSupabase.storage
           .from(bucketName)
-          .download(sourcePath);
-        if (downloadError || !blob) throw downloadError || new Error("Download failed.");
-        const sourceBuffer = Buffer.from(await blob.arrayBuffer());
-        const thumbnailBuffer = await sharp(sourceBuffer, { failOn: "none" })
-          .rotate()
-          .resize({ width: 960, height: 960, fit: "inside", withoutEnlargement: true })
-          .webp({ quality: 78 })
-          .toBuffer();
-        const metadata = await sharp(thumbnailBuffer).metadata();
-        const uploaded = await uploadBufferToGoogleDrive({
-          accessToken,
-          folderId: thumbnailFolderId,
-          buffer: thumbnailBuffer,
-          filename: `${Date.now()}-${asset.id}-thumbnail.webp`,
-          mimeType: "image/webp",
-        });
-        await makeGoogleDriveFileReadableByLink({ accessToken, fileId: uploaded.id });
-        const thumbnailUrl = googleDriveImageViewUrl(uploaded.id);
+          .download(originalSourcePath);
+        if (originalDownloadError || !originalBlob) {
+          throw originalDownloadError || new Error("Download failed.");
+        }
+        const originalBuffer = Buffer.from(await originalBlob.arrayBuffer());
+        const update: Record<string, unknown> = {
+          storage_provider: "google_drive",
+          storage_bucket: "google-drive",
+          legacy_supabase_path: asset.compressed_file_path,
+          legacy_thumbnail_path: asset.thumbnail_file_path,
+          processing_status: "legacy",
+        };
+        const result: Record<string, unknown> = {
+          assetId: asset.id,
+          status: "processed",
+        };
+
+        if (
+          !asset.provider_web_url ||
+          !asset.original_drive_web_url ||
+          !asset.original_drive_file_id
+        ) {
+          const uploadedOriginal = await uploadBufferToGoogleDrive({
+            accessToken,
+            folderId: originalsFolderId,
+            buffer: originalBuffer,
+            filename: `${Date.now()}-${asset.id}-${filenameFromStoragePath(
+              originalSourcePath,
+              "legacy-photo.jpg",
+            )}`,
+            mimeType: asset.mime_type || originalBlob.type || "image/jpeg",
+          });
+          update.provider_file_id = uploadedOriginal.id;
+          update.provider_web_url = uploadedOriginal.webViewLink ?? null;
+          update.provider_original_reference = uploadedOriginal.webContentLink ?? null;
+          update.original_drive_file_id = uploadedOriginal.id;
+          update.original_drive_web_url = uploadedOriginal.webViewLink ?? null;
+          update.original_file_path = uploadedOriginal.name;
+          update.original_file_size = Number(uploadedOriginal.size) || originalBuffer.length;
+          update.is_original_preserved = true;
+          result.originalDriveWebUrl = uploadedOriginal.webViewLink ?? null;
+        }
+
+        if (!asset.thumbnail_drive_file_id) {
+          const { data: thumbnailBlob } =
+            asset.thumbnail_file_path && asset.thumbnail_file_path !== asset.compressed_file_path
+              ? await serviceSupabase.storage
+                  .from(bucketName)
+                  .download(asset.thumbnail_file_path)
+              : { data: null };
+          const thumbnailSourceBuffer = thumbnailBlob
+            ? Buffer.from(await thumbnailBlob.arrayBuffer())
+            : originalBuffer;
+          const thumbnailBuffer = await sharp(thumbnailSourceBuffer, { failOn: "none" })
+            .rotate()
+            .resize({ width: 960, height: 960, fit: "inside", withoutEnlargement: true })
+            .webp({ quality: 78 })
+            .toBuffer();
+          const metadata = await sharp(thumbnailBuffer).metadata();
+          const uploadedThumbnail = await uploadBufferToGoogleDrive({
+            accessToken,
+            folderId: thumbnailsFolderId,
+            buffer: thumbnailBuffer,
+            filename: `${Date.now()}-${asset.id}-thumbnail.webp`,
+            mimeType: "image/webp",
+          });
+          await makeGoogleDriveFileReadableByLink({
+            accessToken,
+            fileId: uploadedThumbnail.id,
+          });
+          const thumbnailUrl = googleDriveImageViewUrl(uploadedThumbnail.id);
+          update.thumbnail_drive_file_id = uploadedThumbnail.id;
+          update.thumbnail_drive_web_url = thumbnailUrl;
+          update.provider_thumbnail_url = thumbnailUrl;
+          update.thumbnail_size = thumbnailBuffer.length;
+          update.thumbnail_width = metadata.width ?? null;
+          update.thumbnail_height = metadata.height ?? null;
+          result.thumbnailDriveWebUrl = thumbnailUrl;
+        }
+
         const { error: updateError } = await serviceSupabase
           .from("media_assets")
-          .update({
-            thumbnail_drive_file_id: uploaded.id,
-            thumbnail_drive_web_url: thumbnailUrl,
-            provider_thumbnail_url: thumbnailUrl,
-            thumbnail_size: thumbnailBuffer.length,
-            thumbnail_width: metadata.width ?? null,
-            thumbnail_height: metadata.height ?? null,
-            legacy_supabase_path: asset.compressed_file_path,
-            legacy_thumbnail_path: asset.thumbnail_file_path,
-            processing_status: "legacy",
-          })
+          .update(update)
           .eq("id", asset.id);
         if (updateError) throw updateError;
-        results.push({ assetId: asset.id, status: "processed", thumbnailDriveWebUrl: thumbnailUrl });
+        results.push(result);
       } catch (error) {
         results.push({
           assetId: asset.id,
