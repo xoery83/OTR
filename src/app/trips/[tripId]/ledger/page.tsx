@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { useParams, useSearchParams } from "next/navigation";
+import { flushSync } from "react-dom";
 import { AuthGate } from "@/components/AuthGate";
 import { CurrencyCombobox } from "@/components/CurrencyCombobox";
 import { useI18n } from "@/components/I18nProvider";
@@ -1372,12 +1373,8 @@ function LedgerContent() {
     if (!isMobileSearchActive) return;
 
     document.body.classList.add("otr-mobile-search-active");
-    const focusFrame = window.requestAnimationFrame(() => {
-      expenseSearchInputRef.current?.focus({ preventScroll: true });
-    });
 
     return () => {
-      window.cancelAnimationFrame(focusFrame);
       document.body.classList.remove("otr-mobile-search-active");
     };
   }, [isMobileSearchActive]);
@@ -1413,7 +1410,8 @@ function LedgerContent() {
       return;
     }
     event.preventDefault();
-    setIsMobileSearchActive(true);
+    flushSync(() => setIsMobileSearchActive(true));
+    expenseSearchInputRef.current?.focus({ preventScroll: true });
   }
 
   function openNeedsReviewEntries() {

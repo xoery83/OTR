@@ -62,7 +62,19 @@ function getFaceReviewHref(job: BackgroundJob) {
   const mediaAssetId = payloadString(job, "mediaAssetId");
   if (!tripId || !mediaAssetId) return null;
 
-  return `/trips/${tripId}/timeline?view=debug&asset=${mediaAssetId}`;
+  return `/trips/${tripId}/timeline?view=album&asset=${mediaAssetId}&review=faces`;
+}
+
+function getCurrentReturnPath() {
+  if (typeof window === "undefined") return "";
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+function withReturnPath(href: string) {
+  const returnPath = getCurrentReturnPath();
+  if (!returnPath) return href;
+  const separator = href.includes("?") ? "&" : "?";
+  return `${href}${separator}returnTo=${encodeURIComponent(returnPath)}`;
 }
 
 type Translate = (
@@ -304,7 +316,7 @@ export function ActivityCenter() {
     }
   }, []);
 
-  const dismissActivities = useCallback((activities: DismissibleActivity[]) => {
+  const dismissActivities = useCallback(async (activities: DismissibleActivity[]) => {
     if (activities.length === 0) return;
 
     setLocallyDismissedActivityKeys((current) => {
@@ -320,19 +332,20 @@ export function ActivityCenter() {
     );
     if (persistedActivities.length === 0) return;
 
-    dismissBackgroundActivity(persistedActivities)
-      .then(() => refreshJobs())
-      .catch((error) => {
-        setNotice(
-          error instanceof Error
-            ? error.message
-            : "Could not dismiss background activity.",
-        );
-      });
+    try {
+      await dismissBackgroundActivity(persistedActivities);
+      await refreshJobs();
+    } catch (error) {
+      setNotice(
+        error instanceof Error
+          ? error.message
+          : "Could not dismiss background activity.",
+      );
+    }
   }, [refreshJobs]);
 
   const acknowledgeCurrentFailures = useCallback(() => {
-    dismissActivities(currentFailureActivities);
+    void dismissActivities(currentFailureActivities);
   }, [currentFailureActivities, dismissActivities]);
 
   const closePanel = useCallback(() => {
@@ -341,7 +354,7 @@ export function ActivityCenter() {
   }, [acknowledgeCurrentFailures]);
 
   const dismissCurrentActivity = useCallback(() => {
-    dismissActivities(currentActivities);
+    void dismissActivities(currentActivities);
     setNotice(null);
     setIsOpen(false);
   }, [currentActivities, dismissActivities]);
@@ -609,7 +622,23 @@ export function ActivityCenter() {
                         {shouldShowFaceReview ? (
                           <a
                             href={faceReviewHref}
-                            onClick={closePanel}
+                            onClick={async (event) => {
+                              event.preventDefault();
+                              const reviewHrefWithReturn = withReturnPath(faceReviewHref);
+                              setNotice(null);
+                              setIsOpen(false);
+                              try {
+                                await dismissActivities([
+                                  {
+                                    type: "job",
+                                    id: job.id,
+                                    status: job.status,
+                                  },
+                                ]);
+                              } finally {
+                                window.location.assign(reviewHrefWithReturn);
+                              }
+                            }}
                             className="mt-3 inline-flex rounded-full bg-emerald-700 px-3 py-2 text-xs font-black text-white shadow-sm"
                           >
                             {t("activity.action.reviewFaces")}

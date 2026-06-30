@@ -55,6 +55,33 @@ function getLocalPendingStatus(message: JourneyChatMessage) {
   return value === "uploading" || value === "failed" ? value : null;
 }
 
+function getClientUploadId(message: JourneyChatMessage) {
+  const value = message.metadata?.clientUploadId;
+  return typeof value === "string" && value ? value : null;
+}
+
+function isLocalPendingMessage(message: JourneyChatMessage) {
+  return getLocalPendingStatus(message) !== null;
+}
+
+function mergeLoadedMessages(
+  current: JourneyChatMessage[],
+  loaded: JourneyChatMessage[],
+) {
+  const loadedUploadIds = new Set(
+    loaded.map(getClientUploadId).filter((value): value is string => Boolean(value)),
+  );
+  const pendingToKeep = current.filter((message) => {
+    if (!isLocalPendingMessage(message)) return false;
+    const clientUploadId = getClientUploadId(message);
+    return !clientUploadId || !loadedUploadIds.has(clientUploadId);
+  });
+
+  return [...loaded, ...pendingToKeep].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
+}
+
 function isSafariBrowser() {
   if (typeof navigator === "undefined") return false;
   const ua = navigator.userAgent;
@@ -157,6 +184,11 @@ function MessageBubble({
               />
             </button>
           ) : null}
+          {message.messageType === "image" && pendingStatus ? (
+            <div className="mt-2 text-xs font-black text-stone-500">
+              {pendingStatus === "failed" ? "图片发送失败" : "图片上传中..."}
+            </div>
+          ) : null}
 
           {message.messageType === "voice" ? (
             <div className="min-w-44">
@@ -257,6 +289,7 @@ function ChatContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [uploadingImageCount, setUploadingImageCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [voiceMode, setVoiceMode] = useState(false);
   const [isPrimingMicrophone, setIsPrimingMicrophone] = useState(false);
@@ -285,7 +318,7 @@ function ChatContent() {
       getJourneyChatMessages(tripId),
     ]);
     setTrip(tripData);
-    setMessages(bundle.messages);
+    setMessages((current) => mergeLoadedMessages(current, bundle.messages));
     setCurrentUserId(bundle.currentUserId);
     setFirstUnreadMessageId(
       bundle.firstUnreadMessageId &&
@@ -592,23 +625,112 @@ function ChatContent() {
     [currentUserId, isSending, scheduleBottomLock, tripId],
   );
 
-  async function sendImage(file: File | null) {
-    if (!file || isSending) return;
-    setIsSending(true);
+  async function sendImages(fileList: FileList | null) {
+    const files = Array.from(fileList ?? []).filter((file) =>
+      file.type.startsWith("image/"),
+    );
+    if (files.length === 0) return;
+
+    const caption = text.trim();
+    const now = Date.now();
+    const pendingMessages = files.map((file, index) => {
+      const clientUploadId = crypto.randomUUID();
+      const previewUrl = URL.createObjectURL(file);
+      const createdAt = new Date(now + index).toISOString();
+      return {
+        id: `pending-image-${clientUploadId}`,
+        clientUploadId,
+        file,
+        previewUrl,
+        caption: index === 0 ? caption : "",
+        message: {
+          id: `pending-image-${clientUploadId}`,
+          tripId,
+          userId: currentUserId,
+          journeyMemberId: null,
+          messageType: "image" as const,
+          textContent: index === 0 ? caption || "图片" : "图片",
+          mediaAssetId: null,
+          memoryEntryId: null,
+          mediaUrl: null,
+          voiceDurationMs: null,
+          transcriptText: null,
+          transcriptStatus: null,
+          sourceType: "chat" as const,
+          sourceId: null,
+          deletedAt: null,
+          deletedBy: null,
+          metadata: {
+            pendingStatus: "uploading" satisfies LocalChatPendingStatus,
+            clientUploadId,
+          },
+          createdAt,
+          updatedAt: createdAt,
+          senderName: "我",
+          senderAvatarUrl: null,
+          mediaDisplayUrl: previewUrl,
+          photoAsset: null,
+        } satisfies JourneyChatMessage,
+      };
+    });
+
     setError(null);
-    try {
-      const message = await sendImageChatMessage(tripId, file, text);
-      setMessages((current) => [...current, message]);
-      setText("");
-      setShowEmoji(false);
-      scrollToBottom();
-      window.dispatchEvent(new CustomEvent("otr:chat-changed"));
-    } catch (sendError) {
-      setError(getErrorMessage(sendError, "图片发送失败。"));
-    } finally {
-      setIsSending(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
+    setText("");
+    setShowEmoji(false);
+    setUploadingImageCount((current) => current + pendingMessages.length);
+    setMessages((current) => [
+      ...current,
+      ...pendingMessages.map((pending) => pending.message),
+    ]);
+    scheduleBottomLock();
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    pendingMessages.forEach((pending) => {
+      void (async () => {
+        try {
+          const message = await sendImageChatMessage(
+            tripId,
+            pending.file,
+            pending.caption,
+            pending.clientUploadId,
+          );
+          setMessages((current) => {
+            const withoutSameUpload = current.filter(
+              (item) =>
+                item.id === pending.message.id ||
+                getClientUploadId(item) !== pending.clientUploadId,
+            );
+            if (!withoutSameUpload.some((item) => item.id === pending.message.id)) {
+              return [...withoutSameUpload, message].sort(
+                (a, b) =>
+                  new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+              );
+            }
+            return withoutSameUpload.map((item) =>
+              item.id === pending.message.id ? message : item,
+            );
+          });
+          window.dispatchEvent(new CustomEvent("otr:chat-changed"));
+        } catch (sendError) {
+          setMessages((current) =>
+            current.map((item) =>
+              item.id === pending.message.id
+                ? {
+                    ...item,
+                    metadata: { ...item.metadata, pendingStatus: "failed" },
+                    textContent: item.textContent || "图片发送失败",
+                  }
+                : item,
+            ),
+          );
+          setError(getErrorMessage(sendError, "图片发送失败。"));
+        } finally {
+          URL.revokeObjectURL(pending.previewUrl);
+          setUploadingImageCount((current) => Math.max(0, current - 1));
+          scheduleBottomLock();
+        }
+      })();
+    });
   }
 
   async function revoke(message: JourneyChatMessage) {
@@ -870,7 +992,7 @@ function ChatContent() {
             type="button"
             onClick={() => fileInputRef.current?.click()}
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-3xl font-black text-emerald-800 shadow-sm transition active:scale-95"
-            aria-label="添加图片"
+            aria-label={uploadingImageCount > 0 ? "图片上传中" : "添加图片"}
           >
             +
           </button>
@@ -886,8 +1008,9 @@ function ChatContent() {
             ref={fileInputRef}
             type="file"
             accept="image/*"
+            multiple
             className="hidden"
-            onChange={(event) => void sendImage(event.target.files?.[0] ?? null)}
+            onChange={(event) => void sendImages(event.target.files)}
           />
         </div>
       </div>

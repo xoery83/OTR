@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
+import { flushSync } from "react-dom";
 import type { User } from "@supabase/supabase-js";
 import type { CSSProperties, PointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -97,6 +98,12 @@ function parseTimelineView(value: string | null): TimelineView {
   }
 
   return "album";
+}
+
+function normalizeReturnPath(value: string | null) {
+  if (!value) return null;
+  if (!value.startsWith("/") || value.startsWith("//")) return null;
+  return value;
 }
 
 type TimelineItem = {
@@ -1127,7 +1134,7 @@ function TimelinePhotoLightbox({
       onClick={onClose}
     >
       <div
-        className="mx-auto flex h-full max-w-6xl flex-col gap-3 overflow-y-auto md:overflow-hidden"
+        className="mx-auto flex h-full max-w-6xl flex-col gap-3 overflow-hidden"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-3">
@@ -1167,9 +1174,9 @@ function TimelinePhotoLightbox({
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(15rem,36svh)] gap-3 lg:grid-cols-[minmax(0,1fr)_320px] lg:grid-rows-[minmax(0,1fr)]">
           <div
-            className="otr-photo-viewer-frame relative mx-auto grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black"
+            className="otr-photo-viewer-frame relative mx-auto grid min-h-0 max-h-full max-w-full place-items-center overflow-hidden rounded-3xl bg-black"
             style={getPhotoViewerFrameStyle(item.photo)}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1225,7 +1232,7 @@ function TimelinePhotoLightbox({
             })}
           </div>
 
-          <aside className="min-h-0 max-h-[34svh] overflow-y-auto rounded-3xl bg-white p-3 md:max-h-none md:p-4">
+          <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-3 md:p-4">
             <div className="space-y-4">
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
@@ -1389,6 +1396,7 @@ function TrueTimelineView({
   onReplyCreated,
   onEngagementChange,
   onOpenPhoto,
+  isSearchActive,
 }: {
   items: TimelineItem[];
   tripId: string;
@@ -1402,6 +1410,7 @@ function TrueTimelineView({
   onReplyCreated: () => Promise<void>;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
   onOpenPhoto?: (item: TimelineItem) => void;
+  isSearchActive?: boolean;
 }) {
   const { t } = useI18n();
   const dates = useMemo(
@@ -1416,6 +1425,7 @@ function TrueTimelineView({
     [initialDate, items],
   );
   const [selectedDate, setSelectedDate] = useState<string | null>(initialDate ?? null);
+  const dateStripRef = useRef<HTMLDivElement | null>(null);
   const dateSectionRefs = useRef<Record<string, HTMLElement | null>>({});
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const [visibleGroupCount, setVisibleGroupCount] = useState(() => {
@@ -1478,7 +1488,12 @@ function TrueTimelineView({
     if (!target) return;
 
     const timer = window.setTimeout(() => {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      const stripBottom = dateStripRef.current?.getBoundingClientRect().bottom ?? 0;
+      const targetTop = target.getBoundingClientRect().top + window.scrollY;
+      window.scrollTo({
+        top: Math.max(0, targetTop - stripBottom - 8),
+        behavior: "smooth",
+      });
     }, 80);
 
     return () => window.clearTimeout(timer);
@@ -1498,7 +1513,14 @@ function TrueTimelineView({
 
   return (
     <section className="space-y-4">
-      <div className="otr-timeline-date-strip sticky top-[9.75rem] z-20 -mx-4 overflow-x-auto border-y border-emerald-100 bg-stone-50/95 px-4 py-3 shadow-sm backdrop-blur md:top-[8.25rem]">
+      <div
+        ref={dateStripRef}
+        className={`otr-timeline-date-strip -mx-4 overflow-x-auto border-y border-emerald-100 bg-stone-50/95 px-4 py-3 shadow-sm backdrop-blur ${
+          isSearchActive
+            ? "fixed inset-x-0 top-[7.75rem] z-[2147482500] md:sticky md:top-[8.25rem]"
+            : "sticky top-[9.75rem] z-20 md:top-[8.25rem]"
+        }`}
+      >
         <div className="flex gap-2">
           {dates.map((date) => {
             const active = activeDate === date;
@@ -1526,6 +1548,7 @@ function TrueTimelineView({
           })}
         </div>
       </div>
+      {isSearchActive ? <div className="h-[4.5rem] md:hidden" /> : null}
 
       <div className="space-y-7">
         {visibleGroups.map((group) => (
@@ -1534,7 +1557,7 @@ function TrueTimelineView({
             ref={(element) => {
               dateSectionRefs.current[group.date] = element;
             }}
-            className="scroll-mt-72 space-y-3 md:scroll-mt-56"
+            className="space-y-3"
           >
             <div className="rounded-3xl bg-white p-4 shadow-sm">
               <h2 className="text-2xl font-semibold text-stone-950">
@@ -1580,12 +1603,18 @@ function AlbumView({
   items,
   members,
   tripId,
+  initialAssetId,
+  autoOpenFaceAssignment,
+  returnTo,
   onFaceConfirmed,
   onEngagementChange,
 }: {
   items: TimelineItem[];
   members: JourneyMember[];
   tripId: string;
+  initialAssetId?: string | null;
+  autoOpenFaceAssignment?: boolean;
+  returnTo?: string | null;
   onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
@@ -1598,12 +1627,56 @@ function AlbumView({
   } | null>(null);
   const [confirmingFaceId, setConfirmingFaceId] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
-  const photoItems = items.filter(
-    (item) => item.memory.type === "photo" && item.photo?.displayUrl,
-  );
+  const photoItems = items
+    .filter((item) => item.memory.type === "photo" && item.photo?.displayUrl)
+    .sort(
+      (left, right) =>
+        new Date(right.uploadedAt).getTime() -
+        new Date(left.uploadedAt).getTime(),
+    );
   const activeItem = photoItems.find((item) => item.id === activeItemId) ?? null;
+  const openedInitialAssetIdRef = useRef<string | null>(null);
+  const returnToRef = useRef(returnTo);
+
+  useEffect(() => {
+    returnToRef.current = returnTo;
+  }, [returnTo]);
+
+  useEffect(() => {
+    if (!initialAssetId) return;
+    if (openedInitialAssetIdRef.current === initialAssetId) return;
+
+    const targetItem = photoItems.find((item) => item.photo?.id === initialAssetId);
+    if (!targetItem?.photo) return;
+
+    openedInitialAssetIdRef.current = initialAssetId;
+    setActiveItemId(targetItem.id);
+    setSelectedPersonName(null);
+    setConfirmError(null);
+
+    if (autoOpenFaceAssignment) {
+      const unassignedFace = targetItem.faces.find(
+        (face) => face.recognitionStatus !== "confirmed",
+      );
+      setSelectedFace(
+        unassignedFace
+          ? {
+              assetId: targetItem.photo.id,
+              face: unassignedFace,
+            }
+          : null,
+      );
+    } else {
+      setSelectedFace(null);
+    }
+  }, [autoOpenFaceAssignment, initialAssetId, photoItems]);
 
   function closeViewer() {
+    if (initialAssetId && returnToRef.current) {
+      window.location.assign(returnToRef.current);
+      return;
+    }
+
     setActiveItemId(null);
     setSelectedPersonName(null);
     setSelectedFace(null);
@@ -1701,7 +1774,7 @@ function AlbumView({
           onClick={closeViewer}
         >
           <div
-            className="mx-auto flex h-full max-w-6xl flex-col gap-3 overflow-y-auto md:overflow-hidden"
+            className="mx-auto flex h-full max-w-6xl flex-col gap-3 overflow-hidden"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-3">
@@ -1743,9 +1816,9 @@ function AlbumView({
               </div>
             </div>
 
-            <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(15rem,36svh)] gap-3 lg:grid-cols-[minmax(0,1fr)_320px] lg:grid-rows-[minmax(0,1fr)]">
               <div
-                className="otr-photo-viewer-frame relative mx-auto grid min-h-0 place-items-center overflow-hidden rounded-3xl bg-black"
+                className="otr-photo-viewer-frame relative mx-auto grid min-h-0 max-h-full max-w-full place-items-center overflow-hidden rounded-3xl bg-black"
                 style={getPhotoViewerFrameStyle(activeItem.photo)}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1805,7 +1878,7 @@ function AlbumView({
                     })}
               </div>
 
-              <aside className="min-h-0 max-h-[34svh] overflow-y-auto rounded-3xl bg-white p-3 md:max-h-none md:p-4">
+              <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-3 md:p-4">
                 <div className="space-y-4">
                   <div>
                     <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
@@ -2491,6 +2564,8 @@ function TimelineContent({ user }: { user: User }) {
   const requestedView = searchParams.get("view");
   const initialView = parseTimelineView(searchParams.get("view"));
   const targetAssetId = searchParams.get("asset");
+  const shouldReviewFaces = searchParams.get("review") === "faces";
+  const returnTo = normalizeReturnPath(searchParams.get("returnTo"));
   const initialSession = readTimelineSession(tripId);
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [photoAssets, setPhotoAssets] = useState<PhotoAssetWithMemory[]>([]);
@@ -2501,7 +2576,7 @@ function TimelineContent({ user }: { user: User }) {
   const [members, setMembers] = useState<JourneyMember[]>([]);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const [view, setView] = useState<TimelineView>(
-    targetAssetId ? "debug" : requestedView ? initialView : "album",
+    targetAssetId ? "album" : requestedView ? initialView : "album",
   );
   const [query, setQuery] = useState(initialSession?.query ?? "");
   const mineOnly = false;
@@ -2751,12 +2826,8 @@ function TimelineContent({ user }: { user: User }) {
     if (!isMobileSearchActive) return;
 
     document.body.classList.add("otr-mobile-search-active");
-    const focusFrame = window.requestAnimationFrame(() => {
-      searchInputRef.current?.focus({ preventScroll: true });
-    });
 
     return () => {
-      window.cancelAnimationFrame(focusFrame);
       document.body.classList.remove("otr-mobile-search-active");
     };
   }, [isMobileSearchActive]);
@@ -2768,7 +2839,8 @@ function TimelineContent({ user }: { user: User }) {
   function openMobileSearchFromPointer(event: PointerEvent<HTMLInputElement>) {
     if (!isMobileViewport() || isMobileSearchActive) return;
     event.preventDefault();
-    setIsMobileSearchActive(true);
+    flushSync(() => setIsMobileSearchActive(true));
+    searchInputRef.current?.focus({ preventScroll: true });
   }
 
   function openMobileSearchFromFocus() {
@@ -3066,6 +3138,7 @@ function TimelineContent({ user }: { user: User }) {
           onReplyCreated={refreshMemorySnapshot}
           onEngagementChange={handleMemoryEngagementChange}
           onOpenPhoto={(item) => setActivePhotoItemId(item.id)}
+          isSearchActive={isMobileSearchActive}
         />
       ) : null}
 
@@ -3084,9 +3157,12 @@ function TimelineContent({ user }: { user: User }) {
 
       {view === "album" ? (
         <AlbumView
-          items={filteredItems}
+          items={targetAssetId ? timelineItems : filteredItems}
           members={members}
           tripId={tripId}
+          initialAssetId={targetAssetId}
+          autoOpenFaceAssignment={shouldReviewFaces}
+          returnTo={returnTo}
           onFaceConfirmed={handleFaceConfirmed}
           onEngagementChange={handleMemoryEngagementChange}
         />

@@ -185,6 +185,7 @@ function PlannerContent() {
   const [error, setError] = useState<string | null>(null);
   const dateStripRef = useRef<HTMLDivElement | null>(null);
   const selectedDayCardRef = useRef<HTMLElement | null>(null);
+  const pendingDayScrollResetRef = useRef(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -306,7 +307,28 @@ function PlannerContent() {
       ? `/trips/${tripId}/map?date=${selectedDay.day.dayDate}`
       : `/trips/${tripId}/map`;
 
-  function chooseDay(dayId: string) {
+  function scrollSelectedDayToTop() {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const target = selectedDayCardRef.current;
+        if (!target) return;
+
+        const dateStripBottom =
+          dateStripRef.current?.closest("section")?.getBoundingClientRect().bottom ??
+          0;
+        const targetTop = target.getBoundingClientRect().top + window.scrollY;
+        window.scrollTo({
+          top: Math.max(0, targetTop - dateStripBottom - 12),
+          behavior: "instant",
+        });
+      });
+    });
+  }
+
+  function chooseDay(dayId: string, options?: { resetScroll?: boolean }) {
+    if (options?.resetScroll) {
+      pendingDayScrollResetRef.current = true;
+    }
     setSelectedDayId(dayId);
     const day = planner.days.find((plannerDay) => plannerDay.day.id === dayId);
     if (day) {
@@ -368,6 +390,65 @@ function PlannerContent() {
     });
   }, [selectedDayId]);
 
+  useEffect(() => {
+    if (!selectedDayId || !pendingDayScrollResetRef.current) return;
+    pendingDayScrollResetRef.current = false;
+    scrollSelectedDayToTop();
+  }, [selectedDayId]);
+
+  useEffect(() => {
+    document.body.classList.remove("otr-planner-immersive");
+
+    let previousY = window.scrollY;
+    let isImmersive = false;
+    let scrollIntent = 0;
+
+    const setImmersive = (enabled: boolean) => {
+      if (isImmersive === enabled) return;
+      isImmersive = enabled;
+      document.body.classList.toggle("otr-planner-immersive", enabled);
+    };
+
+    const handleScroll = () => {
+      if (window.innerWidth >= 768) {
+        setImmersive(false);
+        previousY = window.scrollY;
+        return;
+      }
+
+      const currentY = window.scrollY;
+      const delta = currentY - previousY;
+      if (Math.abs(delta) < 3) return;
+
+      if (currentY < 80) {
+        setImmersive(false);
+        scrollIntent = 0;
+      } else if (delta > 0) {
+        scrollIntent = Math.min(80, Math.max(0, scrollIntent) + delta);
+        if (scrollIntent > 28) {
+          setImmersive(true);
+        }
+      } else {
+        scrollIntent = Math.max(-80, Math.min(0, scrollIntent) + delta);
+        if (scrollIntent < -42) {
+          setImmersive(false);
+        }
+      }
+
+      previousY = currentY;
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("resize", handleScroll);
+    handleScroll();
+
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("resize", handleScroll);
+      document.body.classList.remove("otr-planner-immersive");
+    };
+  }, []);
+
   if (isLoading) {
     return (
       <div className="rounded-2xl bg-white p-5">
@@ -377,7 +458,7 @@ function PlannerContent() {
   }
 
   return (
-    <div className="space-y-4 overflow-x-hidden">
+    <div className="space-y-4">
       <section className="rounded-3xl border border-stone-200 bg-white px-4 py-3 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
@@ -520,7 +601,7 @@ function PlannerContent() {
       ) : null}
 
       {planner.days.length > 0 ? (
-        <section className="sticky top-16 z-10 border-y border-stone-200 bg-[#f7f3ea]/95 py-1.5 backdrop-blur md:top-0">
+        <section className="otr-planner-date-strip sticky top-16 z-10 border-y border-stone-200 bg-[#f7f3ea]/95 py-1.5 backdrop-blur md:top-0">
           <div ref={dateStripRef} className="flex gap-2 overflow-x-auto">
             {planner.days.map((plannerDay) => {
               const selected = plannerDay.day.id === selectedDay?.day.id;
@@ -534,7 +615,9 @@ function PlannerContent() {
                   key={plannerDay.day.id}
                   data-day-id={plannerDay.day.id}
                   type="button"
-                  onClick={() => chooseDay(plannerDay.day.id)}
+                  onClick={() =>
+                    chooseDay(plannerDay.day.id, { resetScroll: true })
+                  }
                   className={`min-w-12 rounded-xl border px-2 py-1 text-center transition ${
                     selected
                       ? official

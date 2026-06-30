@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import type { User } from "@supabase/supabase-js";
 import { AuthGate } from "@/components/AuthGate";
 import { CurrencyCombobox } from "@/components/CurrencyCombobox";
@@ -529,12 +530,8 @@ function ProfileContent({ user }: { user: User }) {
     if (!isLedgerSearchActive) return;
 
     document.body.classList.add("otr-mobile-search-active");
-    const focusFrame = window.requestAnimationFrame(() => {
-      ledgerSearchInputRef.current?.focus({ preventScroll: true });
-    });
 
     return () => {
-      window.cancelAnimationFrame(focusFrame);
       document.body.classList.remove("otr-mobile-search-active");
     };
   }, [isLedgerSearchActive]);
@@ -553,7 +550,8 @@ function ProfileContent({ user }: { user: User }) {
       return;
     }
     event.preventDefault();
-    setIsLedgerSearchActive(true);
+    flushSync(() => setIsLedgerSearchActive(true));
+    ledgerSearchInputRef.current?.focus({ preventScroll: true });
   }
 
   function closeLedgerSearch() {

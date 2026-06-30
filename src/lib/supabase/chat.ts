@@ -480,6 +480,7 @@ export async function sendImageChatMessage(
   tripId: string,
   file: File,
   caption: string,
+  clientUploadId?: string | null,
 ) {
   const compressedImage = await compressImageFile(file);
   const memory = await createPhotoMemory(
@@ -519,6 +520,7 @@ export async function sendImageChatMessage(
       source_id: null,
       metadata: {
         originalFileName: file.name,
+        ...(clientUploadId ? { clientUploadId } : {}),
       },
     };
 
