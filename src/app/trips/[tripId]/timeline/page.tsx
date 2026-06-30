@@ -541,6 +541,36 @@ function ItemMeta({
   );
 }
 
+function PhotoPlainMeta({ item }: { item: TimelineItem }) {
+  const plannerLabel = item.linkedPlannerItem
+    ? [
+        item.linkedPlannerItem.dayLabel,
+        item.linkedPlannerItem.timeLabel,
+        item.linkedPlannerItem.title,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
+
+  return (
+    <div className="mt-1 flex min-w-0 flex-wrap justify-end gap-x-2 gap-y-1 text-right text-xs font-semibold leading-5 text-stone-600">
+      <span>{formatShortDateTime(item.capturedAt)}</span>
+      {item.memory.contributorName ? (
+        <span>By {item.memory.contributorName}</span>
+      ) : null}
+      {item.linkedPlannerItem ? (
+        <Link
+          href={item.linkedPlannerItem.href}
+          title={plannerLabel}
+          className="max-w-full truncate text-emerald-800 underline decoration-emerald-200 underline-offset-2"
+        >
+          {plannerLabel}
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
 function MicrophoneIcon({ className = "size-4" }: { className?: string }) {
   return (
     <svg
@@ -843,27 +873,40 @@ function CompactMemoryCard({
   return (
     <article className="overflow-hidden rounded-2xl bg-white shadow-sm">
       {isPhoto ? (
-        <button
-          type="button"
-          onClick={() => onOpenPhoto?.(item)}
-          className="block w-full overflow-hidden text-left"
-          aria-label={t("planner.memory.openImage")}
-        >
-          <FallbackPhotoImage
-            src={item.photo!.displayUrl!}
-            fallbackSrc={item.photo!.displayFallbackUrl}
-            alt={item.memory.content || t("timeline.photo.alt")}
-            className="h-auto w-full cursor-zoom-in object-cover transition duration-200 hover:scale-[1.01]"
-            onPrimaryError={() => requestRepair(item.photo)}
-          />
-        </button>
+        <div className="relative overflow-hidden">
+          <button
+            type="button"
+            onClick={() => onOpenPhoto?.(item)}
+            className="block w-full overflow-hidden text-left"
+            aria-label={t("planner.memory.openImage")}
+          >
+            <FallbackPhotoImage
+              src={item.photo!.displayUrl!}
+              fallbackSrc={item.photo!.displayFallbackUrl}
+              alt={item.memory.content || t("timeline.photo.alt")}
+              className="h-auto w-full cursor-zoom-in object-cover transition duration-200 hover:scale-[1.01]"
+              onPrimaryError={() => requestRepair(item.photo)}
+            />
+          </button>
+          <div className="pointer-events-auto absolute bottom-2 right-2 z-10">
+            <MemoryEngagementActions
+              memory={item.memory}
+              onChange={onEngagementChange}
+              compact
+              variant="overlay"
+            />
+          </div>
+        </div>
       ) : (
         <div className="px-4 pt-4 sm:px-5">
-          <div className="flex min-w-0 items-center gap-2">
-            <p className="shrink-0 text-sm font-black text-stone-900">
+          <div className="min-w-0">
+            <p className="text-sm font-black text-stone-900">
               {t("timeline.memory.said", {
                 name: item.memory.contributorName || t("timeline.traveler"),
               })}
+            </p>
+            <p className="mt-1 text-xs font-black text-stone-600">
+              {formatShortDateTime(item.capturedAt)}
             </p>
             {item.linkedPlannerItem ? (
               <Link
@@ -875,7 +918,7 @@ function CompactMemoryCard({
                 ]
                   .filter(Boolean)
                   .join(" · ")}
-                className="min-w-0 truncate rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-black text-emerald-900 underline decoration-emerald-200 underline-offset-2"
+                className="mt-2 inline-block max-w-full truncate rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-black text-emerald-900 underline decoration-emerald-200 underline-offset-2"
               >
                 {[
                   item.linkedPlannerItem.dayLabel,
@@ -887,48 +930,21 @@ function CompactMemoryCard({
               </Link>
             ) : null}
           </div>
-          <p className="mt-2 whitespace-pre-wrap text-base font-medium leading-7 text-stone-950">
+          <p className="mt-4 whitespace-pre-wrap text-xl font-black leading-9 tracking-normal text-stone-950">
             {item.memory.content || t("timeline.memory.textFallback")}
           </p>
         </div>
       )}
-      <div className="p-4">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-          <div className="min-w-0">
-            {!["text", "photo", "voice", "location"].includes(item.memory.type) ? (
-              <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">
-                {item.memory.type}
-              </p>
-            ) : null}
-          </div>
-          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+      <div className="p-3 sm:p-4">
+        {!isPhoto ? (
+          <div className="flex justify-end">
             <MemoryEngagementActions
               memory={item.memory}
               onChange={onEngagementChange}
               compact
             />
-            {canManage ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setIsEditing((current) => !current)}
-                  disabled={isWorking}
-                  className="rounded-full bg-stone-100 px-2 py-1 text-[11px] font-black text-stone-700 disabled:opacity-50"
-                >
-                  {isEditing ? "取消" : "修改"}
-                </button>
-                <button
-                  type="button"
-                  onClick={deleteItem}
-                  disabled={isWorking}
-                  className="rounded-full bg-red-50 px-2 py-1 text-[11px] font-black text-red-700 disabled:opacity-50"
-                >
-                  删除
-                </button>
-              </>
-            ) : null}
           </div>
-        </div>
+        ) : null}
         {isEditing ? (
           <div className="mt-3 space-y-2">
             <textarea
@@ -978,7 +994,25 @@ function CompactMemoryCard({
         {cardError ? (
           <p className="mt-2 text-xs font-semibold text-red-600">{cardError}</p>
         ) : null}
-        <ItemMeta item={item} hidePlannerLink={!isPhoto} />
+        {isPhoto ? (
+          <PhotoPlainMeta item={item} />
+        ) : (
+          <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold text-stone-600">
+            {item.memory.locationName ? (
+              <span className="rounded-full bg-stone-100 px-2 py-1">
+                {item.memory.locationName}
+              </span>
+            ) : null}
+            {item.peopleNames.slice(0, 4).map((name) => (
+              <span
+                key={name}
+                className="rounded-full bg-emerald-100 px-2 py-1 text-emerald-900"
+              >
+                {name}
+              </span>
+            ))}
+          </div>
+        )}
         {item.replies.length > 0 ? (
           <div className="mt-4 space-y-3 rounded-2xl bg-stone-50 p-3">
             {item.replies.map((reply) => (
@@ -992,11 +1026,33 @@ function CompactMemoryCard({
             ))}
           </div>
         ) : null}
-        <div className="mt-3 flex justify-end">
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            {canManage ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsEditing((current) => !current)}
+                  disabled={isWorking}
+                  className="rounded-full bg-stone-100 px-3 py-2 text-xs font-black text-stone-700 disabled:opacity-50"
+                >
+                  {isEditing ? "取消" : "修改"}
+                </button>
+                <button
+                  type="button"
+                  onClick={deleteItem}
+                  disabled={isWorking}
+                  className="rounded-full bg-red-50 px-3 py-2 text-xs font-black text-red-700 disabled:opacity-50"
+                >
+                  删除
+                </button>
+              </>
+            ) : null}
+          </div>
           <button
             type="button"
             onClick={() => setIsReplying((current) => !current)}
-            className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-800"
+            className="rounded-full bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-800"
           >
             {isReplying ? "取消回复" : "回复"}
           </button>

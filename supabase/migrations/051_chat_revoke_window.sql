@@ -50,6 +50,13 @@ begin
       using errcode = '22023';
   end if;
 
+  if message_row.memory_entry_id is not null then
+    delete from public.memory_entries
+    where id = message_row.memory_entry_id
+      and trip_id = message_row.trip_id
+      and user_id = current_user_id;
+  end if;
+
   update public.journey_chat_messages
     set
       deleted_at = now(),
@@ -58,18 +65,6 @@ begin
       transcript_text = null
     where id = target_message_id
     returning * into updated_row;
-
-  if message_row.memory_entry_id is not null then
-    delete from public.memory_entries
-    where id = message_row.memory_entry_id
-      and trip_id = message_row.trip_id
-      and user_id = current_user_id;
-  end if;
-
-  select *
-    into updated_row
-  from public.journey_chat_messages
-  where id = target_message_id;
 
   return updated_row;
 end;
