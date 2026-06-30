@@ -9,6 +9,18 @@ import { logout } from "@/lib/supabase/auth";
 import { getTrip, getTripsForCurrentUser } from "@/lib/supabase/trips";
 import type { Trip } from "@/types";
 
+const languageOptions = [
+  { value: "en", label: "English" },
+  { value: "zh-CN", label: "简体中文" },
+  { value: "fr", label: "Français" },
+  { value: "de", label: "Deutsch" },
+  { value: "es", label: "Español" },
+  { value: "ja", label: "日本語" },
+  { value: "ko", label: "한국어" },
+  { value: "it", label: "Italiano" },
+  { value: "pt", label: "Português" },
+];
+
 function getActiveTripId(pathname: string) {
   const segment = pathname.match(/^\/trips\/([^/]+)/)?.[1] ?? null;
   return segment && segment !== "new" ? segment : null;
@@ -23,7 +35,7 @@ function getJourneySwitchHref(pathname: string, tripId: string) {
 export function AppHeader() {
   const pathname = usePathname();
   const router = useRouter();
-  const { locale, setLocale, t } = useI18n();
+  const { contentLanguage, setLocale, t } = useI18n();
   const { openCapture } = useCaptureModal();
   const tripId = getActiveTripId(pathname);
   const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
@@ -285,29 +297,25 @@ export function AppHeader() {
                 </p>
               </div>
             </div>
-            <div className="mt-6 rounded-2xl bg-white p-2 shadow-sm">
-              <p className="px-2 pb-2 text-[11px] font-black uppercase tracking-[0.16em] text-stone-400">
+            <div className="mt-6 rounded-2xl bg-white p-3 shadow-sm">
+              <label
+                htmlFor="app-header-language"
+                className="block px-1 pb-2 text-[11px] font-black uppercase tracking-[0.16em] text-stone-400"
+              >
                 {t("app.language")}
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                {[
-                  ["en", "English"],
-                  ["zh-CN", "简体中文"],
-                ].map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setLocale(value === "zh-CN" ? "zh-CN" : "en")}
-                    className={`rounded-xl px-3 py-2 text-xs font-bold ${
-                      locale === value
-                        ? "bg-emerald-700 text-white"
-                        : "bg-stone-50 text-stone-600"
-                    }`}
-                  >
-                    {label}
-                  </button>
+              </label>
+              <select
+                id="app-header-language"
+                value={contentLanguage}
+                onChange={(event) => setLocale(event.target.value)}
+                className="min-h-11 w-full rounded-xl border border-stone-200 bg-[#fffdf8] px-3 text-sm font-bold text-stone-800 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
+              >
+                {languageOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
                 ))}
-              </div>
+              </select>
             </div>
             <nav className="mt-7 grid gap-2">
               {(

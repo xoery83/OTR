@@ -34,8 +34,16 @@ type BackgroundJobRow = {
 };
 
 type SummaryPayload = {
+  advancement?: {
+    complete: boolean;
+    error?: string;
+    languageCode: string;
+    translatedKeyCount: number;
+    totalKeyCount: number;
+  } | null;
   bundles: LocaleBundleRow[];
   jobs: BackgroundJobRow[];
+  totalKeyCount?: number;
 };
 
 function countKeys(bundle: LocaleBundleRow) {
@@ -78,6 +86,16 @@ function AdminLocalizationContent({ user }: { user: User }) {
       ).length,
     [summary.jobs],
   );
+  const incompletePrewarmCount = useMemo(() => {
+    const total = summary.totalKeyCount ?? 0;
+    if (!total) return 0;
+    return i18nPrewarmLanguageCodes.filter((languageCode) => {
+      const bundle = summary.bundles.find(
+        (item) => item.language_code === languageCode,
+      );
+      return !bundle || countKeys(bundle) < total;
+    }).length;
+  }, [summary.bundles, summary.totalKeyCount]);
 
   const loadSummary = useCallback(async () => {
     setError(null);
@@ -90,7 +108,12 @@ function AdminLocalizationContent({ user }: { user: User }) {
     });
     const payload = (await response.json()) as SummaryPayload & { error?: string };
     if (!response.ok) throw new Error(payload.error || "Could not load localization.");
-    setSummary({ bundles: payload.bundles ?? [], jobs: payload.jobs ?? [] });
+    setSummary({
+      advancement: payload.advancement ?? null,
+      bundles: payload.bundles ?? [],
+      jobs: payload.jobs ?? [],
+      totalKeyCount: payload.totalKeyCount,
+    });
   }, []);
 
   useEffect(() => {
@@ -118,6 +141,16 @@ function AdminLocalizationContent({ user }: { user: User }) {
       isMounted = false;
     };
   }, [loadSummary, user.id]);
+
+  useEffect(() => {
+    if (!isAdmin || incompletePrewarmCount === 0 || isWorking) return;
+
+    const timer = window.setTimeout(() => {
+      void loadSummary();
+    }, summary.advancement?.error ? 30000 : 3500);
+
+    return () => window.clearTimeout(timer);
+  }, [incompletePrewarmCount, isAdmin, isWorking, loadSummary, summary]);
 
   async function postWorker(path: string, body: Record<string, unknown>) {
     setIsWorking(true);
@@ -199,6 +232,26 @@ function AdminLocalizationContent({ user }: { user: User }) {
               Base version {i18nBaseVersion}. Prewarm languages:{" "}
               {i18nPrewarmLanguageCodes.join(", ")}.
             </p>
+            {incompletePrewarmCount > 0 ? (
+              <p className="mt-1 text-sm font-semibold text-emerald-700">
+                Auto prewarming {incompletePrewarmCount} language bundle
+                {incompletePrewarmCount === 1 ? "" : "s"}...
+              </p>
+            ) : null}
+            {summary.advancement ? (
+              summary.advancement.error ? (
+                <p className="mt-1 text-xs font-semibold text-red-600">
+                  Latest batch paused: {summary.advancement.languageCode} ·{" "}
+                  {summary.advancement.error}
+                </p>
+              ) : (
+                <p className="mt-1 text-xs font-semibold text-stone-500">
+                  Latest batch: {summary.advancement.languageCode}{" "}
+                  {summary.advancement.translatedKeyCount}/
+                  {summary.advancement.totalKeyCount}
+                </p>
+              )
+            ) : null}
           </div>
           <button
             type="button"

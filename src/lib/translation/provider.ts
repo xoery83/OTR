@@ -35,6 +35,11 @@ type LibreTranslateBatchResponse = {
   error?: string;
 };
 
+type FetchErrorCause = {
+  code?: string;
+  message?: string;
+};
+
 function configuredProvider(): TranslationEngine {
   const provider = process.env.TRANSLATION_PROVIDER?.toLowerCase();
   if (
@@ -47,6 +52,35 @@ function configuredProvider(): TranslationEngine {
   }
 
   return "libretranslate";
+}
+
+function describeNetworkError(error: unknown) {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const cause =
+    error instanceof Error
+      ? ((error as Error & { cause?: FetchErrorCause }).cause ?? null)
+      : null;
+  const details = [errorMessage, cause?.code, cause?.message]
+    .filter(Boolean)
+    .join(" · ");
+  return details || "fetch failed";
+}
+
+async function postLibreTranslate(
+  baseUrl: string,
+  body: Record<string, unknown>,
+) {
+  try {
+    return await fetch(`${baseUrl}/translate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    throw new Error(
+      `LibreTranslate network request failed: ${describeNetworkError(error)}`,
+    );
+  }
 }
 
 async function translateWithLibreTranslate(
@@ -62,16 +96,12 @@ async function translateWithLibreTranslate(
   const sourceLanguage = toLibreTranslateLanguageCode(input.sourceLanguage);
   const targetLanguage = toLibreTranslateLanguageCode(input.targetLanguage);
 
-  const response = await fetch(`${baseUrl}/translate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      q: input.text,
-      source: sourceLanguage,
-      target: targetLanguage,
-      format: "text",
-      api_key: apiKey,
-    }),
+  const response = await postLibreTranslate(baseUrl, {
+    q: input.text,
+    source: sourceLanguage,
+    target: targetLanguage,
+    format: "text",
+    api_key: apiKey,
   });
   const payload = (await response.json().catch(() => ({}))) as
     | LibreTranslateResponse
@@ -106,16 +136,12 @@ async function translateBatchWithLibreTranslate(
   const sourceLanguage = toLibreTranslateLanguageCode(input.sourceLanguage);
   const targetLanguage = toLibreTranslateLanguageCode(input.targetLanguage);
 
-  const response = await fetch(`${baseUrl}/translate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      q: input.texts,
-      source: sourceLanguage,
-      target: targetLanguage,
-      format: "text",
-      api_key: apiKey,
-    }),
+  const response = await postLibreTranslate(baseUrl, {
+    q: input.texts,
+    source: sourceLanguage,
+    target: targetLanguage,
+    format: "text",
+    api_key: apiKey,
   });
   const payload = (await response.json().catch(() => ({}))) as
     | LibreTranslateBatchResponse

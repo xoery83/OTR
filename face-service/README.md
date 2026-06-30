@@ -57,7 +57,14 @@ Response:
   "embedding_version": "insightface-buffalo_l-512",
   "faces": [
     {
-      "bounding_box": { "x": 10, "y": 20, "width": 120, "height": 140 },
+      "bounding_box": {
+        "x": 10,
+        "y": 20,
+        "width": 120,
+        "height": 140,
+        "source_width": 1600,
+        "source_height": 1200
+      },
       "embedding": [0.01, -0.02],
       "confidence": 0.98,
       "quality_score": 0.78

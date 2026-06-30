@@ -34,9 +34,22 @@ function payloadString(payload: Record<string, unknown> | null, key: string) {
   return typeof value === "string" ? value : null;
 }
 
-function isRateLimitError(error: unknown) {
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isTransientTranslationError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  return /slowdown|rate|limit|too many/i.test(message);
+  return /slowdown|rate|limit|too many|network|fetch failed|econnreset|etimedout|enotfound|eai_again|socket|tls|timeout/i.test(
+    message,
+  );
+}
+
+function retryStep(error: unknown) {
+  const message = errorMessage(error);
+  return /slowdown|rate|limit|too many/i.test(message)
+    ? "Rate limited; retry queued"
+    : "Translation service unavailable; retry queued";
 }
 
 function secondsFromNow(seconds: number) {
@@ -238,21 +251,20 @@ export async function POST(request: Request) {
       try {
         results.push(await processJob(supabase, job));
       } catch (jobError) {
-        if (isRateLimitError(jobError)) {
+        if (isTransientTranslationError(jobError)) {
+          const message = errorMessage(jobError);
           await markJob(supabase, job.id, {
             status: "queued",
             progress: Math.max(1, Math.min(99, job.progress || 1)),
-            current_step: "Rate limited; retry queued",
-            error_message:
-              jobError instanceof Error ? jobError.message : "Rate limited.",
+            current_step: retryStep(jobError),
+            error_message: message,
             available_at: secondsFromNow(75),
           });
           results.push({
             jobId: job.id,
             status: "queued",
             retryAfterSeconds: 75,
-            error:
-              jobError instanceof Error ? jobError.message : "Rate limited.",
+            error: message,
           });
           continue;
         }

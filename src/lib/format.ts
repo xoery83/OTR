@@ -103,7 +103,7 @@ function formatFloatingDateTime(
 }
 
 export function formatJourneyTime(value: string, locale = "en") {
-  return formatFloatingDateTime(value, locale === "zh-CN" ? "zh-CN" : "en", {
+  return formatFloatingDateTime(value, locale || "en", {
     hour: "numeric",
     minute: "2-digit",
   });

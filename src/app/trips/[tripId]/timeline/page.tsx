@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { flushSync } from "react-dom";
 import type { User } from "@supabase/supabase-js";
-import type { CSSProperties, FormEvent, PointerEvent } from "react";
+import type { CSSProperties, FormEvent, PointerEvent, SyntheticEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
@@ -58,6 +58,11 @@ type AlbumDeepLink = {
   assetId: string;
   reviewFaces: boolean;
   returnTo: string | null;
+};
+
+type ImagePixelSize = {
+  width: number;
+  height: number;
 };
 
 function getTimelineSessionKey(tripId: string) {
@@ -1128,12 +1133,16 @@ function TimelinePhotoLightbox({
   } | null>(null);
   const [confirmingFaceId, setConfirmingFaceId] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [viewerImageSize, setViewerImageSize] = useState<ImagePixelSize | null>(
+    null,
+  );
   const requestRepair = useDriveThumbnailRepair(tripId);
 
   useEffect(() => {
     setSelectedPersonName(null);
     setSelectedFace(null);
     setConfirmError(null);
+    setViewerImageSize(null);
   }, [item?.id]);
 
   if (!item?.photo?.displayUrl) return null;
@@ -1259,7 +1268,7 @@ function TimelinePhotoLightbox({
         <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(15rem,36svh)] gap-3 lg:grid-cols-[minmax(0,1fr)_320px] lg:grid-rows-[minmax(0,1fr)]">
           <div
             className="otr-photo-viewer-frame relative mx-auto grid min-h-0 max-h-full max-w-full place-items-center overflow-hidden rounded-3xl bg-black"
-            style={getPhotoViewerFrameStyle(item.photo)}
+            style={getPhotoViewerFrameStyle(item.photo, viewerImageSize)}
           >
             <FallbackPhotoImage
               src={item.photo.displayPreviewUrl ?? item.photo.displayUrl}
@@ -1267,9 +1276,15 @@ function TimelinePhotoLightbox({
               alt={item.memory.content || t("timeline.photo.alt")}
               className="h-full w-full object-contain"
               onPrimaryError={() => requestRepair(item.photo)}
+              onLoad={(event) =>
+                setViewerImageSize({
+                  width: event.currentTarget.naturalWidth,
+                  height: event.currentTarget.naturalHeight,
+                })
+              }
             />
             {item.faces.map((face) => {
-              const boxStyle = getFaceBoxStyle(face, item.photo!);
+              const boxStyle = getFaceBoxStyle(face, item.photo!, viewerImageSize);
               if (!boxStyle) return null;
 
               const isSelected =
@@ -1777,6 +1792,9 @@ function AlbumView({
   } | null>(null);
   const [confirmingFaceId, setConfirmingFaceId] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [activeImageSize, setActiveImageSize] = useState<ImagePixelSize | null>(
+    null,
+  );
   const requestRepair = useDriveThumbnailRepair(tripId);
   const photoItems = items
     .filter((item) => item.memory.type === "photo" && item.photo?.displayUrl)
@@ -1793,6 +1811,10 @@ function AlbumView({
   useEffect(() => {
     returnToRef.current = returnTo;
   }, [returnTo]);
+
+  useEffect(() => {
+    setActiveImageSize(null);
+  }, [activeItem?.photo?.id]);
 
   useEffect(() => {
     if (!initialAssetId) return;
@@ -2019,7 +2041,7 @@ function AlbumView({
             <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(15rem,36svh)] gap-3 lg:grid-cols-[minmax(0,1fr)_320px] lg:grid-rows-[minmax(0,1fr)]">
               <div
                 className="otr-photo-viewer-frame relative mx-auto grid min-h-0 max-h-full max-w-full place-items-center overflow-hidden rounded-3xl bg-black"
-                style={getPhotoViewerFrameStyle(activeItem.photo)}
+                style={getPhotoViewerFrameStyle(activeItem.photo, activeImageSize)}
               >
                 <FallbackPhotoImage
                   src={activeItem.photo.displayPreviewUrl ?? activeItem.photo.displayUrl}
@@ -2029,9 +2051,19 @@ function AlbumView({
                   alt={activeItem.memory.content || t("timeline.photo.alt")}
                   className="h-full w-full object-contain"
                   onPrimaryError={() => requestRepair(activeItem.photo)}
+                  onLoad={(event) =>
+                    setActiveImageSize({
+                      width: event.currentTarget.naturalWidth,
+                      height: event.currentTarget.naturalHeight,
+                    })
+                  }
                 />
                 {activeItem.faces.map((face) => {
-                      const boxStyle = getFaceBoxStyle(face, activeItem.photo!);
+                      const boxStyle = getFaceBoxStyle(
+                        face,
+                        activeItem.photo!,
+                        activeImageSize,
+                      );
                       if (!boxStyle) return null;
 
                       const isSelected =
@@ -2198,38 +2230,88 @@ function AlbumView({
 function getFaceBoxStyle(
   face: PhotoFace,
   photo: PhotoAssetWithMemory,
+  loadedImageSize?: ImagePixelSize | null,
 ): CSSProperties | null {
-  const imageWidth = photo.width ?? 0;
-  const imageHeight = photo.height ?? 0;
-  const x = Number(face.boundingBox.x);
-  const y = Number(face.boundingBox.y);
-  const width = Number(face.boundingBox.width);
-  const height = Number(face.boundingBox.height);
+  const sourceWidth =
+    getBoundingBoxNumber(face.boundingBox, "sourceWidth", "source_width") ??
+    loadedImageSize?.width ??
+    photo.width ??
+    0;
+  const sourceHeight =
+    getBoundingBoxNumber(face.boundingBox, "sourceHeight", "source_height") ??
+    loadedImageSize?.height ??
+    photo.height ??
+    0;
+  const x = getBoundingBoxNumber(face.boundingBox, "x");
+  const y = getBoundingBoxNumber(face.boundingBox, "y");
+  const width = getBoundingBoxNumber(face.boundingBox, "width");
+  const height = getBoundingBoxNumber(face.boundingBox, "height");
 
   if (
-    !imageWidth ||
-    !imageHeight ||
-    !Number.isFinite(x) ||
-    !Number.isFinite(y) ||
-    !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
+    !sourceWidth ||
+    !sourceHeight ||
+    x === null ||
+    y === null ||
+    width === null ||
+    height === null ||
     width <= 0 ||
     height <= 0
   ) {
     return null;
   }
 
+  const left = clampPercent((x / sourceWidth) * 100);
+  const top = clampPercent((y / sourceHeight) * 100);
+  const boxWidth = Math.max(0, Math.min(100 - left, (width / sourceWidth) * 100));
+  const boxHeight = Math.max(
+    0,
+    Math.min(100 - top, (height / sourceHeight) * 100),
+  );
+
   return {
-    left: `${Math.max(0, (x / imageWidth) * 100)}%`,
-    top: `${Math.max(0, (y / imageHeight) * 100)}%`,
-    width: `${Math.min(100, (width / imageWidth) * 100)}%`,
-    height: `${Math.min(100, (height / imageHeight) * 100)}%`,
+    left: `${left}%`,
+    top: `${top}%`,
+    width: `${boxWidth}%`,
+    height: `${boxHeight}%`,
   };
 }
 
-function getPhotoViewerFrameStyle(photo: PhotoAssetWithMemory): CSSProperties {
-  const width = photo.width && photo.width > 0 ? photo.width : 4;
-  const height = photo.height && photo.height > 0 ? photo.height : 3;
+function getBoundingBoxNumber(
+  boundingBox: Record<string, unknown>,
+  ...keys: string[]
+) {
+  for (const key of keys) {
+    const value = boundingBox[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+}
+
+function clampPercent(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+function getPhotoViewerFrameStyle(
+  photo: PhotoAssetWithMemory,
+  loadedImageSize?: ImagePixelSize | null,
+): CSSProperties {
+  const width =
+    loadedImageSize?.width && loadedImageSize.width > 0
+      ? loadedImageSize.width
+      : photo.width && photo.width > 0
+        ? photo.width
+        : 4;
+  const height =
+    loadedImageSize?.height && loadedImageSize.height > 0
+      ? loadedImageSize.height
+      : photo.height && photo.height > 0
+        ? photo.height
+        : 3;
 
   return {
     aspectRatio: `${width} / ${height}`,
@@ -2243,12 +2325,14 @@ function FallbackPhotoImage({
   alt,
   className,
   onPrimaryError,
+  onLoad,
 }: {
   src: string;
   fallbackSrc?: string;
   alt: string;
   className?: string;
   onPrimaryError?: () => void;
+  onLoad?: (event: SyntheticEvent<HTMLImageElement>) => void;
 }) {
   const [currentSrc, setCurrentSrc] = useState(src);
   const [failed, setFailed] = useState(false);
@@ -2273,6 +2357,7 @@ function FallbackPhotoImage({
       alt={alt}
       loading="lazy"
       className={className}
+      onLoad={onLoad}
       onError={() => {
         if (fallbackSrc && currentSrc !== fallbackSrc) {
           onPrimaryError?.();

@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
@@ -197,7 +197,6 @@ function CaptureIcon() {
 
 export function BottomNav() {
   const pathname = usePathname();
-  const router = useRouter();
   const { t } = useI18n();
   const { openCapture } = useCaptureModal();
   const activeTripId = getActiveTripId(pathname);
@@ -205,9 +204,6 @@ export function BottomNav() {
   const isChatPage = Boolean(pathname.match(/^\/trips\/[^/]+\/chat$/));
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
   const [exploringHref, setExploringHref] = useState<string | null>(null);
-  const pointerNavHrefRef = useRef<string | null>(null);
-  const pointerNavIdRef = useRef<number | null>(null);
-  const suppressNextNavClickRef = useRef(false);
   const globalItems: MobileNavItem[] = [
     { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
     { labelKey: "nav.discover", href: "/discover", icon: "discover" },
@@ -220,12 +216,6 @@ export function BottomNav() {
     return pathname === href || pathname.startsWith(`${href}/`);
   }
 
-  function findNavHrefAtPoint(clientX: number, clientY: number) {
-    const element = document.elementFromPoint(clientX, clientY);
-    const target = element?.closest("[data-bottom-nav-href]");
-    return target instanceof HTMLElement ? target.dataset.bottomNavHref ?? null : null;
-  }
-
   function vibrateNavTick() {
     if (typeof navigator === "undefined" || !("vibrate" in navigator)) return;
     navigator.vibrate(8);
@@ -236,49 +226,12 @@ export function BottomNav() {
     href: string,
   ) {
     if (event.pointerType === "mouse") return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    pointerNavIdRef.current = event.pointerId;
-    pointerNavHrefRef.current = href;
     setExploringHref(href);
     vibrateNavTick();
   }
 
-  function updateNavExploration(event: ReactPointerEvent<HTMLAnchorElement>) {
-    if (pointerNavIdRef.current !== event.pointerId) return;
-    event.preventDefault();
-    const nextHref = findNavHrefAtPoint(event.clientX, event.clientY);
-    if (!nextHref || nextHref === pointerNavHrefRef.current) return;
-    pointerNavHrefRef.current = nextHref;
-    setExploringHref(nextHref);
-    vibrateNavTick();
-  }
-
-  function finishNavExploration(event: ReactPointerEvent<HTMLAnchorElement>) {
-    if (pointerNavIdRef.current !== event.pointerId) return;
-    event.preventDefault();
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    const targetHref =
-      findNavHrefAtPoint(event.clientX, event.clientY) ?? pointerNavHrefRef.current;
-    pointerNavIdRef.current = null;
-    pointerNavHrefRef.current = null;
-    suppressNextNavClickRef.current = true;
-    setExploringHref(null);
-    if (targetHref && targetHref !== pathname) {
-      router.push(targetHref);
-    }
-  }
-
-  function cancelNavExploration(event: ReactPointerEvent<HTMLAnchorElement>) {
-    if (pointerNavIdRef.current !== event.pointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    pointerNavIdRef.current = null;
-    pointerNavHrefRef.current = null;
-    suppressNextNavClickRef.current = true;
+  function endNavExploration(event: ReactPointerEvent<HTMLAnchorElement>) {
+    if (event.pointerType === "mouse") return;
     setExploringHref(null);
   }
 
@@ -331,21 +284,11 @@ export function BottomNav() {
                   href={item.href}
                   data-bottom-nav-href={item.href}
                   onPointerDown={(event) => beginNavExploration(event, item.href)}
-                  onPointerMove={updateNavExploration}
-                  onPointerUp={finishNavExploration}
-                  onPointerCancel={cancelNavExploration}
+                  onPointerUp={endNavExploration}
+                  onPointerCancel={endNavExploration}
+                  onPointerLeave={endNavExploration}
                   onContextMenu={(event) => event.preventDefault()}
                   onDragStart={(event) => event.preventDefault()}
-                  onClick={(event) => {
-                    if (
-                      suppressNextNavClickRef.current ||
-                      pointerNavIdRef.current !== null ||
-                      exploringHref
-                    ) {
-                      event.preventDefault();
-                      suppressNextNavClickRef.current = false;
-                    }
-                  }}
                   className={`${navItemClass(active, isMapPage, isExploring)} relative`}
                   aria-label={t(item.labelKey)}
                   draggable={false}

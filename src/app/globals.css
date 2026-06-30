@@ -370,10 +370,6 @@ input[type="date"] {
     user-select: none;
   }
 
-  [data-mobile-bottom-nav] a {
-    touch-action: none;
-  }
-
   body.otr-mobile-search-active [data-mobile-app-header],
   body.otr-mobile-search-active [data-mobile-bottom-nav],
   body.otr-chat-keyboard-active [data-mobile-bottom-nav],

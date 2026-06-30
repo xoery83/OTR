@@ -101,6 +101,11 @@ type StoryItem = {
 
 type InlineMemoryState = Record<string, MemoryEntry[]>;
 
+type ImagePixelSize = {
+  width: number;
+  height: number;
+};
+
 type InlineAttachmentState = {
   file: File;
   compressedImage: CompressedImage;
@@ -619,8 +624,8 @@ function RatingButton({
   );
 }
 
-function money(amount: number, currency: string, locale: Locale) {
-  return new Intl.NumberFormat(locale === "zh-CN" ? "zh-CN" : "en", {
+function money(amount: number, currency: string, locale: string) {
+  return new Intl.NumberFormat(locale || "en", {
     style: "currency",
     currency,
     maximumFractionDigits: 0,
@@ -630,36 +635,73 @@ function money(amount: number, currency: string, locale: Locale) {
 function getFaceBoxStyle(
   face: PhotoFace,
   photo: PhotoAssetWithMemory,
+  loadedImageSize?: ImagePixelSize | null,
 ): CSSProperties | null {
-  const imageWidth = photo.width ?? 0;
-  const imageHeight = photo.height ?? 0;
-  const x = Number(face.boundingBox.x);
-  const y = Number(face.boundingBox.y);
-  const width = Number(face.boundingBox.width);
-  const height = Number(face.boundingBox.height);
+  const sourceWidth =
+    getBoundingBoxNumber(face.boundingBox, "sourceWidth", "source_width") ??
+    loadedImageSize?.width ??
+    photo.width ??
+    0;
+  const sourceHeight =
+    getBoundingBoxNumber(face.boundingBox, "sourceHeight", "source_height") ??
+    loadedImageSize?.height ??
+    photo.height ??
+    0;
+  const x = getBoundingBoxNumber(face.boundingBox, "x");
+  const y = getBoundingBoxNumber(face.boundingBox, "y");
+  const width = getBoundingBoxNumber(face.boundingBox, "width");
+  const height = getBoundingBoxNumber(face.boundingBox, "height");
 
   if (
-    !imageWidth ||
-    !imageHeight ||
-    !Number.isFinite(x) ||
-    !Number.isFinite(y) ||
-    !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
+    !sourceWidth ||
+    !sourceHeight ||
+    x === null ||
+    y === null ||
+    width === null ||
+    height === null ||
     width <= 0 ||
     height <= 0
   ) {
     return null;
   }
 
+  const left = clampPercent((x / sourceWidth) * 100);
+  const top = clampPercent((y / sourceHeight) * 100);
+  const boxWidth = Math.max(0, Math.min(100 - left, (width / sourceWidth) * 100));
+  const boxHeight = Math.max(
+    0,
+    Math.min(100 - top, (height / sourceHeight) * 100),
+  );
+
   return {
-    left: `${Math.max(0, (x / imageWidth) * 100)}%`,
-    top: `${Math.max(0, (y / imageHeight) * 100)}%`,
-    width: `${Math.min(100, (width / imageWidth) * 100)}%`,
-    height: `${Math.min(100, (height / imageHeight) * 100)}%`,
+    left: `${left}%`,
+    top: `${top}%`,
+    width: `${boxWidth}%`,
+    height: `${boxHeight}%`,
   };
 }
 
-function formatPlannerDayLabel(value: string, locale: Locale) {
+function getBoundingBoxNumber(
+  boundingBox: Record<string, unknown>,
+  ...keys: string[]
+) {
+  for (const key of keys) {
+    const value = boundingBox[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+}
+
+function clampPercent(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+function formatPlannerDayLabel(value: string, locale: string) {
   const date = new Date(`${value}T00:00:00`);
   const today = new Date();
   const yesterday = new Date();
@@ -670,7 +712,7 @@ function formatPlannerDayLabel(value: string, locale: Locale) {
     a.getMonth() === b.getMonth() &&
     a.getDate() === b.getDate();
 
-  const formatted = new Intl.DateTimeFormat(locale === "zh-CN" ? "zh-CN" : "en", {
+  const formatted = new Intl.DateTimeFormat(locale || "en", {
     month: "short",
     day: "numeric",
   }).format(date);
@@ -1207,13 +1249,14 @@ export function PlannerDayCard({
   onLedgerEntryCreated?: () => void;
   onPlannerChanged?: () => void;
 }) {
-  const { locale, t } = useI18n();
+  const { contentLanguage, locale, t } = useI18n();
+  const displayLocale = contentLanguage || locale;
   const { openCapture } = useCaptureModal();
   const { day, dayNumber, dayTag, memories } = plannerDay;
   const dayLabel =
     day.dayDate === "unscheduled"
       ? t("planner.day.unscheduled")
-      : formatPlannerDayLabel(day.dayDate, locale);
+      : formatPlannerDayLabel(day.dayDate, displayLocale);
   const stayItems = tonightStays(plannerDay).map((stay) => ({
     stay,
     stayItem: {
@@ -1321,6 +1364,9 @@ export function PlannerDayCard({
     alt: string;
     memoryId: string;
   } | null>(null);
+  const [previewImageSize, setPreviewImageSize] = useState<ImagePixelSize | null>(
+    null,
+  );
   const [photoAssetsByMemoryId, setPhotoAssetsByMemoryId] = useState<
     Record<string, PhotoAssetWithMemory>
   >({});
@@ -2588,6 +2634,10 @@ export function PlannerDayCard({
   const activePreviewImageSrc =
     activePreviewPhoto?.displayUrl ?? imagePreview?.src ?? "";
 
+  useEffect(() => {
+    setPreviewImageSize(null);
+  }, [activePreviewPhoto?.id, imagePreview?.memoryId]);
+
   return (
     <article className="overflow-hidden border-y border-stone-200 bg-white shadow-none md:rounded-[28px] md:border md:shadow-sm">
       <header className="bg-[#fff8ec] px-3 py-4 sm:p-5">
@@ -2608,13 +2658,13 @@ export function PlannerDayCard({
                   className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-900 transition hover:bg-emerald-100"
                 >
                   {t("planner.day.cost", {
-                    amount: money(ledgerTotal, ledgerCurrency, locale),
+                    amount: money(ledgerTotal, ledgerCurrency, displayLocale),
                   })}
                 </Link>
               ) : ledgerTotal > 0 ? (
                 <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-900">
                   {t("planner.day.cost", {
-                    amount: money(ledgerTotal, ledgerCurrency, locale),
+                    amount: money(ledgerTotal, ledgerCurrency, displayLocale),
                   })}
                 </span>
               ) : null}
@@ -2658,7 +2708,19 @@ export function PlannerDayCard({
             ) : (
               <div className="mt-1 flex min-w-0 items-center gap-2">
                 <h2 className="truncate text-xl font-semibold leading-tight text-stone-950">
-                  {day.title || t("planner.day.open")}
+                  {day.title ? (
+                    <TranslatedText
+                      as="span"
+                      protectedEntities={[dayLocation(plannerDay)]}
+                      showToggle={false}
+                      sourceField="title"
+                      sourceId={day.id}
+                      sourceType="summary"
+                      text={day.title}
+                    />
+                  ) : (
+                    t("planner.day.open")
+                  )}
                 </h2>
                 {canManagePlans && day.dayDate !== "unscheduled" ? (
                   <button
@@ -2741,14 +2803,22 @@ export function PlannerDayCard({
                   </p>
                   {stayTotal > 0 ? (
                     <ExpenseLinkPill
-                      amount={money(stayTotal, ledgerCurrency, locale)}
+                      amount={money(stayTotal, ledgerCurrency, displayLocale)}
                       tone="amber"
                       onClick={() => openExpenseModalForItem(stayItem)}
                     />
                   ) : null}
                 </div>
                 <h3 className="mt-1 truncate text-base font-semibold text-stone-950">
-                  {stay.title}
+                  <TranslatedText
+                    as="span"
+                    protectedEntities={[stay.locationName]}
+                    showToggle={false}
+                    sourceField="title"
+                    sourceId={stay.id}
+                    sourceType="plan_item"
+                    text={stay.title}
+                  />
                 </h3>
                 {stay.locationName ? (
                   <p className="mt-1 truncate text-sm text-stone-600">
@@ -2981,7 +3051,7 @@ export function PlannerDayCard({
                     <div className="flex items-center justify-between gap-2">
                       <p className="min-w-0 truncate text-xs font-semibold text-emerald-800">
                         {memory.contributorName || t("planner.traveler")} ·{" "}
-                        {formatJourneyTime(memory.capturedAt, locale)}
+                        {formatJourneyTime(memory.capturedAt, displayLocale)}
                       </p>
                       <MemoryEngagementActions
                         memory={memory}
@@ -3013,9 +3083,17 @@ export function PlannerDayCard({
                       </button>
                     ) : null}
                     {memory.content ? (
-                      <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
-                        {memory.content}
-                      </p>
+                      <TranslatedText
+                        className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700"
+                        protectedEntities={[
+                          memory.locationName,
+                          memory.contributorName,
+                        ]}
+                        sourceField="content"
+                        sourceId={memory.id}
+                        sourceType="memory"
+                        text={memory.content}
+                      />
                     ) : null}
                   </div>
                 ))}
@@ -3272,7 +3350,9 @@ export function PlannerDayCard({
                           isFlightItem ? "text-sky-800" : "text-emerald-800"
                         }`}
                       >
-                        {item.time ? formatJourneyTime(item.time) : t("planner.anytime")}
+                        {item.time
+                          ? formatJourneyTime(item.time, displayLocale)
+                          : t("planner.anytime")}
                       </span>
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-semibold text-stone-950">
@@ -3286,7 +3366,15 @@ export function PlannerDayCard({
                               AI推荐
                             </span>
                           ) : null}
-                          <HighlightedText text={item.title} aliases={aliases} />
+                          <TranslatedText
+                            as="span"
+                            protectedEntities={[item.location]}
+                            showToggle={false}
+                            sourceField="title"
+                            sourceId={item.id}
+                            sourceType="plan_item"
+                            text={item.title}
+                          />
                           {item.status !== "planned" ? (
                             <span className="ml-2 rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-bold uppercase text-stone-600">
                               {labelForStatus(item.status)}
@@ -3296,7 +3384,7 @@ export function PlannerDayCard({
                         {itemTotal > 0 ? (
                           <span className="mt-1 block">
                             <ExpenseLinkPill
-                              amount={money(itemTotal, ledgerCurrency, locale)}
+                              amount={money(itemTotal, ledgerCurrency, displayLocale)}
                               tone={isFlightItem ? "sky" : "emerald"}
                               onClick={() => openExpenseModalForItem(item)}
                             />
@@ -3369,7 +3457,7 @@ export function PlannerDayCard({
                                 <p className="min-w-0 truncate text-xs font-semibold text-emerald-800">
                                   {memory.contributorName ||
                                     t("planner.traveler")}{" "}
-                                  · {formatJourneyTime(memory.capturedAt, locale)}
+                                  · {formatJourneyTime(memory.capturedAt, displayLocale)}
                                 </p>
                                 <MemoryEngagementActions
                                   memory={memory}
@@ -3403,9 +3491,17 @@ export function PlannerDayCard({
                                 </button>
                               ) : null}
                               {memory.content ? (
-                                <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
-                                  {memory.content}
-                                </p>
+                                <TranslatedText
+                                  className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700"
+                                  protectedEntities={[
+                                    memory.locationName,
+                                    memory.contributorName,
+                                  ]}
+                                  sourceField="content"
+                                  sourceId={memory.id}
+                                  sourceType="memory"
+                                  text={memory.content}
+                                />
                               ) : null}
                             </div>
                           ))}
@@ -3839,14 +3935,22 @@ export function PlannerDayCard({
                         </p>
                         {itemTotal > 0 ? (
                           <ExpenseLinkPill
-                            amount={money(itemTotal, ledgerCurrency, locale)}
+                            amount={money(itemTotal, ledgerCurrency, displayLocale)}
                             tone="sky"
                             onClick={() => openExpenseModalForItem(item)}
                           />
                         ) : null}
                       </div>
                       <h3 className="mt-1 truncate text-sm font-semibold text-stone-950">
-                        {item.title}
+                        <TranslatedText
+                          as="span"
+                          protectedEntities={[item.location]}
+                          showToggle={false}
+                          sourceField="title"
+                          sourceId={item.id}
+                          sourceType="plan_item"
+                          text={item.title}
+                        />
                       </h3>
                       <p className="mt-1 truncate text-xs text-stone-500">
                         {[item.location, startDate && endDate ? `${startDate} → ${endDate}` : null]
@@ -3963,7 +4067,7 @@ export function PlannerDayCard({
                             <div className="flex items-center justify-between gap-2">
                               <p className="min-w-0 truncate text-xs font-semibold text-sky-800">
                                 {memory.contributorName || t("planner.traveler")}{" "}
-                                · {formatJourneyTime(memory.capturedAt, locale)}
+                                · {formatJourneyTime(memory.capturedAt, displayLocale)}
                               </p>
                               <MemoryEngagementActions
                                 memory={memory}
@@ -3972,9 +4076,17 @@ export function PlannerDayCard({
                               />
                             </div>
                             {memory.content ? (
-                              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">
-                                {memory.content}
-                              </p>
+                              <TranslatedText
+                                className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700"
+                                protectedEntities={[
+                                  memory.locationName,
+                                  memory.contributorName,
+                                ]}
+                                sourceField="content"
+                                sourceId={memory.id}
+                                sourceType="memory"
+                                text={memory.content}
+                              />
                             ) : null}
                           </div>
                         ))}
@@ -4155,7 +4267,14 @@ export function PlannerDayCard({
         {day.notes ? (
           <section className="space-y-2 rounded-3xl bg-[#fff8ec] p-4">
             <SectionTitle title={t("planner.section.dayNotes")} />
-            <p className="text-sm leading-6 text-stone-700">{day.notes}</p>
+            <TranslatedText
+              className="text-sm leading-6 text-stone-700"
+              protectedEntities={[dayLocation(plannerDay), day.title]}
+              sourceField="notes"
+              sourceId={day.id}
+              sourceType="summary"
+              text={day.notes}
+            />
           </section>
         ) : null}
 
@@ -4184,7 +4303,7 @@ export function PlannerDayCard({
                   {t("ledger.totalCost")}
                 </p>
                 <p className="mt-1 text-xl font-semibold text-emerald-950">
-                  {money(ledgerTotal, ledgerCurrency, locale)}
+                  {money(ledgerTotal, ledgerCurrency, displayLocale)}
                 </p>
               </div>
               {ledgerCategoryTotals.length > 0 ? (
@@ -4199,7 +4318,7 @@ export function PlannerDayCard({
                       />
                       <span>{t(expenseCategoryLabelKeys[category])}</span>
                       <span className="text-stone-950">
-                        {money(amount, ledgerCurrency, locale)}
+                        {money(amount, ledgerCurrency, displayLocale)}
                       </span>
                     </div>
                   ))}
@@ -5043,8 +5162,10 @@ export function PlannerDayCard({
                   className="relative max-h-full max-w-full overflow-hidden rounded-2xl"
                   style={{
                     aspectRatio:
-                      activePreviewPhoto?.width && activePreviewPhoto.height
-                        ? `${activePreviewPhoto.width} / ${activePreviewPhoto.height}`
+                      previewImageSize?.width && previewImageSize.height
+                        ? `${previewImageSize.width} / ${previewImageSize.height}`
+                        : activePreviewPhoto?.width && activePreviewPhoto.height
+                          ? `${activePreviewPhoto.width} / ${activePreviewPhoto.height}`
                         : undefined,
                   }}
                 >
@@ -5053,10 +5174,20 @@ export function PlannerDayCard({
                     src={activePreviewImageSrc}
                     alt={imagePreview.alt}
                     className="h-full max-h-[78vh] w-full object-contain shadow-2xl"
+                    onLoad={(event) =>
+                      setPreviewImageSize({
+                        width: event.currentTarget.naturalWidth,
+                        height: event.currentTarget.naturalHeight,
+                      })
+                    }
                   />
                   {activePreviewPhoto && selectedPreviewFaceOnActivePhoto
                     ? [selectedPreviewFaceOnActivePhoto.face].map((face) => {
-                        const boxStyle = getFaceBoxStyle(face, activePreviewPhoto);
+                        const boxStyle = getFaceBoxStyle(
+                          face,
+                          activePreviewPhoto,
+                          previewImageSize,
+                        );
                         if (!boxStyle) return null;
 
                         const faceName =

@@ -31,6 +31,8 @@ class BoundingBox(BaseModel):
     y: float
     width: float
     height: float
+    source_width: float | None = None
+    source_height: float | None = None
 
 
 class FaceResult(BaseModel):
@@ -143,6 +145,7 @@ def face_quality(face) -> float | None:
 
 def analyze_faces(image_url: str) -> list[FaceResult]:
     image = fetch_image(image_url)
+    image_height, image_width = image.shape[:2]
     faces = get_face_app().get(image)
 
     results: list[FaceResult] = []
@@ -161,6 +164,8 @@ def analyze_faces(image_url: str) -> list[FaceResult]:
                     y=round(bbox[1], 2),
                     width=round(max(bbox[2] - bbox[0], 0.0), 2),
                     height=round(max(bbox[3] - bbox[1], 0.0), 2),
+                    source_width=round(float(image_width), 2),
+                    source_height=round(float(image_height), 2),
                 ),
                 embedding=[round(float(value), 8) for value in embedding.tolist()],
                 confidence=round(float(getattr(face, "det_score", 0.0)), 4),

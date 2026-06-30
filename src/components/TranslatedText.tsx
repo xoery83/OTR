@@ -10,6 +10,7 @@ type TranslatedTextProps = {
   className?: string;
   fallback?: React.ReactNode;
   protectedEntities?: Array<string | null | undefined>;
+  showToggle?: boolean;
   sourceField: string;
   sourceId: string;
   sourceLanguage?: string | null;
@@ -34,6 +35,7 @@ export function TranslatedText({
   className,
   fallback = null,
   protectedEntities = [],
+  showToggle = true,
   sourceField,
   sourceId,
   sourceLanguage,
@@ -117,7 +119,7 @@ export function TranslatedText({
   return (
     <>
       <Element className={className}>{displayText}</Element>
-      {translatedText ? (
+      {translatedText && showToggle ? (
         <button
           type="button"
           onClick={() => setShowOriginal((current) => !current)}

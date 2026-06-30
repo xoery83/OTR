@@ -57,6 +57,11 @@ function isPlaceholderProcessingJob(job: BackgroundJob) {
   );
 }
 
+function isUserVisibleJob(job: BackgroundJob) {
+  if (isPlaceholderProcessingJob(job)) return false;
+  return job.jobType !== "image_indexing";
+}
+
 function getFaceReviewHref(job: BackgroundJob) {
   if (!["face_detection", "face_recognition"].includes(job.jobType)) return null;
 
@@ -272,7 +277,7 @@ export function ActivityCenter() {
   const currentActivities = useMemo<DismissibleActivity[]>(
     () => [
       ...jobs
-        .filter((job) => !isPlaceholderProcessingJob(job))
+        .filter(isUserVisibleJob)
         .filter((job) => activeJob(job) || job.status === "failed")
         .map((job) => ({
           type: "job" as const,
@@ -299,13 +304,13 @@ export function ActivityCenter() {
   const visibleJobs = useMemo(
     () =>
       jobs
-        .filter((job) => !isPlaceholderProcessingJob(job))
+        .filter(isUserVisibleJob)
         .filter((job) => activeJob(job) || job.status === "failed")
         .filter((job) => !dismissedActivityKeys.has(jobActivityKey(job))),
     [dismissedActivityKeys, jobs],
   );
   const countableJobs = useMemo(
-    () => jobs.filter((job) => !isPlaceholderProcessingJob(job)),
+    () => jobs.filter(isUserVisibleJob),
     [jobs],
   );
   const activeCount =
@@ -354,7 +359,7 @@ export function ActivityCenter() {
       ];
       const activityKeys = [
         ...nextJobs
-          .filter((job) => !isPlaceholderProcessingJob(job))
+          .filter(isUserVisibleJob)
           .filter((job) => activeJob(job) || job.status === "failed")
           .map(jobActivityKey),
         ...mergedBatches

@@ -17,6 +17,7 @@ export const i18nPrewarmLanguageCodes = [
 export type LocaleBundleStatus = "machine" | "reviewed" | "builtin";
 
 export type LocaleBundleResponse = {
+  complete?: boolean;
   languageCode: string;
   namespace: string;
   baseVersion: string;

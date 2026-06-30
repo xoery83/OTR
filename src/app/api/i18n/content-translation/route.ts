@@ -3,6 +3,7 @@ import {
   type ContentTranslationSourceType,
   detectSourceLanguage,
   hashSourceText,
+  translateUserContent,
 } from "@/lib/i18n/content-translation";
 import {
   getRequestSupabase,
@@ -94,36 +95,42 @@ export async function POST(request: Request) {
       });
     }
 
-    const { error: enqueueError } = await serviceSupabase
-      .from("background_jobs")
-      .insert({
-        journey_id: null,
-        user_id: userData.user.id,
-        job_type: "translate_user_content",
-        title: `Translate ${sourceType}.${sourceField}`,
-        current_step: "Queued",
-        payload: {
+    const translated = await translateUserContent({
+      text,
+      sourceLanguage,
+      targetLanguage,
+      protectedEntities: Array.isArray(body.protectedEntities)
+        ? body.protectedEntities
+        : [],
+    });
+
+    const { error: upsertError } = await serviceSupabase
+      .from("content_translations")
+      .upsert(
+        {
           source_type: sourceType,
           source_id: sourceId,
           source_field: sourceField,
           source_lang: sourceLanguage,
           target_lang: targetLanguage,
           source_hash: sourceHash,
-          source_text: text,
-          protected_entities: Array.isArray(body.protectedEntities)
-            ? body.protectedEntities
-            : [],
-          requested_by: userData.user.id,
+          translated_text: translated.translatedText,
+          engine: translated.engine,
+          status: "machine",
+          updated_at: new Date().toISOString(),
         },
-      });
+        {
+          onConflict:
+            "source_type,source_id,source_field,target_lang,source_hash",
+        },
+      );
 
-    if (enqueueError && (enqueueError as { code?: string }).code !== "23505") {
-      throw enqueueError;
-    }
+    if (upsertError) throw upsertError;
 
     return NextResponse.json({
-      status: "queued",
-      translatedText: null,
+      status: "machine",
+      translatedText: translated.translatedText,
+      engine: translated.engine,
       sourceLanguage,
       targetLanguage,
     });

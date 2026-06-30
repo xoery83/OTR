@@ -28,11 +28,12 @@ type I18nContextValue = {
   contentLanguage: string;
   locale: Locale;
   localePreference: string;
-  setLocale: (locale: Locale) => void;
+  setLocale: (locale: string) => void;
   t: (key: TranslationKey, values?: Record<string, string | number>) => string;
 };
 
 type LocaleBundlePayload = {
+  complete?: boolean;
   languageCode?: string;
   translations?: PartialTranslationDictionary;
   fallback?: boolean;
@@ -114,6 +115,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let isMounted = true;
     const bundleLanguage = resolveBundleLanguage(localePreference);
+    let retryTimer: number | null = null;
 
     if (isLocale(bundleLanguage)) {
       setDynamicTranslations(null);
@@ -140,6 +142,12 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
         }
 
         setDynamicTranslations(payload.translations);
+
+        if (!payload.complete) {
+          retryTimer = window.setTimeout(() => {
+            if (isMounted) void loadBundle();
+          }, 2500);
+        }
       } catch {
         if (isMounted) setDynamicTranslations(null);
       }
@@ -149,17 +157,19 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       isMounted = false;
+      if (retryTimer) window.clearTimeout(retryTimer);
     };
   }, [localePreference]);
 
-  const setLocale = useCallback((nextLocale: Locale) => {
-    setLocaleState(nextLocale);
-    setLocalePreference(nextLocale);
+  const setLocale = useCallback((nextLocale: string) => {
+    const normalizedLanguage = normalizeLanguageCode(nextLocale);
+    setLocaleState(resolveLocalePreference(normalizedLanguage));
+    setLocalePreference(normalizedLanguage);
     setDynamicTranslations(null);
-    window.localStorage.setItem(LOCALE_STORAGE_KEY, nextLocale);
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, normalizedLanguage);
     window.dispatchEvent(
       new CustomEvent(LOCALE_PREFERENCE_CHANGED_EVENT, {
-        detail: { language: nextLocale },
+        detail: { language: normalizedLanguage },
       }),
     );
 
@@ -169,7 +179,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
         if (!data.user) return null;
         return supabase
           .from("profiles")
-          .update({ preferred_language: nextLocale })
+          .update({ preferred_language: normalizedLanguage })
           .eq("id", data.user.id);
       })
       .catch(() => null);

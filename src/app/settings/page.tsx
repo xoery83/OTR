@@ -257,8 +257,8 @@ function SettingsContent({ user }: { user: User }) {
             Display language
           </h2>
           <p className="mt-2 text-sm leading-6 text-stone-600">
-            Auto follows your browser language. Languages without a reviewed
-            bundle fall back to English until generated.
+            Auto follows your browser language. Languages without a generated
+            bundle will be created automatically.
           </p>
         </div>
 

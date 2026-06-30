@@ -7,11 +7,12 @@ import {
   type LocaleBundleResponse,
   type LocaleBundleStatus,
 } from "@/lib/i18n/bundles";
+import { generateLocaleBundleBatch } from "@/lib/i18n/generate-locale-bundle";
 import { defaultLocale, normalizeLanguageCode } from "@/lib/i18n/dictionaries";
 import {
   enqueueCommonLocaleGenerationJobs,
-  enqueueLocaleGenerationJob,
   getRequestSupabase,
+  getServiceSupabase,
 } from "@/lib/i18n/server";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +24,10 @@ type LocaleBundleRow = {
   translations_json: Record<string, string> | null;
   status: Exclude<LocaleBundleStatus, "builtin">;
 };
+
+function keyCount(translations: Record<string, string> | null | undefined) {
+  return Object.keys(translations ?? {}).length;
+}
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
@@ -69,6 +74,7 @@ export async function GET(
         status: "builtin",
         fallback: false,
         jobQueued: false,
+        complete: true,
       });
     }
 
@@ -81,6 +87,7 @@ export async function GET(
         status: "builtin",
         fallback: true,
         jobQueued: false,
+        complete: true,
       });
     }
 
@@ -92,6 +99,7 @@ export async function GET(
         status: "builtin",
         fallback: true,
         jobQueued: false,
+        complete: true,
       });
     }
 
@@ -105,22 +113,69 @@ export async function GET(
 
     if (error) throw error;
 
+    const serviceSupabase = getServiceSupabase();
+
     if (data) {
       const bundle = data as LocaleBundleRow;
+      const existingTranslations = bundle.translations_json ?? {};
+      const generated = await generateLocaleBundleBatch({
+        targetLanguage: languageCode,
+        existingTranslations,
+      });
+
+      if (generated.translatedThisBatch > 0) {
+        const { error: upsertError } = await serviceSupabase
+          .from("i18n_locale_bundles")
+          .upsert(
+            {
+              language_code: languageCode,
+              namespace: i18nDefaultNamespace,
+              base_version: i18nBaseVersion,
+              translations_json: generated.translations,
+              status: bundle.status,
+              engine: process.env.TRANSLATION_PROVIDER || "libretranslate",
+              created_by: "auto",
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "language_code,namespace,base_version" },
+          );
+
+        if (upsertError) throw upsertError;
+      }
+
       return responsePayload({
         languageCode,
-        translations: bundle.translations_json ?? {},
+        translations: generated.translations,
         status: bundle.status,
         fallback: false,
         jobQueued: false,
+        complete: generated.complete,
       });
     }
 
-    const jobQueued = await enqueueLocaleGenerationJob(supabase, {
-      languageCode,
-      requestedBy: userData.user.id,
-      userId: userData.user.id,
+    const generated = await generateLocaleBundleBatch({
+      targetLanguage: languageCode,
+      existingTranslations: null,
     });
+
+    const { error: upsertError } = await serviceSupabase
+      .from("i18n_locale_bundles")
+      .upsert(
+        {
+          language_code: languageCode,
+          namespace: i18nDefaultNamespace,
+          base_version: i18nBaseVersion,
+          translations_json: generated.translations,
+          status: "machine",
+          engine: process.env.TRANSLATION_PROVIDER || "libretranslate",
+          created_by: "auto",
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "language_code,namespace,base_version" },
+      );
+
+    if (upsertError) throw upsertError;
+
     const prewarmLanguages = i18nPrewarmLanguageCodes.filter(
       (prewarmLanguage) => prewarmLanguage !== languageCode,
     );
@@ -132,10 +187,13 @@ export async function GET(
 
     return responsePayload({
       languageCode,
-      translations: fallbackBundle,
-      status: "builtin",
-      fallback: true,
-      jobQueued,
+      translations: keyCount(generated.translations) > 0
+        ? generated.translations
+        : fallbackBundle,
+      status: "machine",
+      fallback: false,
+      jobQueued: !generated.complete,
+      complete: generated.complete,
     });
   } catch (error) {
     return jsonError(errorMessage(error, "Could not load language bundle."), 500);
