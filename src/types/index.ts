@@ -292,6 +292,7 @@ export type Profile = {
   displayName: string;
   globalAka?: string | null;
   globalBaseCurrency?: string;
+  preferredLanguage: string;
   avatarUrl: string | null;
   accountRole: AccountRole;
   createdAt: string;

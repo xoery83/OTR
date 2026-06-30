@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { flushSync } from "react-dom";
 import type { User } from "@supabase/supabase-js";
-import type { CSSProperties, PointerEvent } from "react";
+import type { CSSProperties, FormEvent, PointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { useI18n } from "@/components/I18nProvider";
@@ -320,18 +320,32 @@ function getTimelineItems(input: {
   function toTimelineItem(memory: MemoryEntry): TimelineItem {
     const photo = photoByMemoryId.get(memory.id) ?? null;
     const faces = photo ? input.facesByAssetId[photo.id] ?? [] : [];
-    const faceNames = faces
+    const memberFaceNames = faces
+      .filter((face) => face.journeyMemberId)
+      .map((face) => face.recognizedName)
+      .filter((name): name is string => Boolean(name));
+    const guestFaceNames = faces
+      .filter((face) => !face.journeyMemberId)
       .map((face) => face.recognizedName)
       .filter((name): name is string => Boolean(name));
     const memberNames = input.members
       .filter((member) => {
-        const haystack = `${memory.content} ${memory.locationName ?? ""} ${faceNames.join(
-          " ",
-        )}`.toLowerCase();
-        return haystack.includes(member.displayName.toLowerCase());
+        const haystack = `${memory.content} ${memory.locationName ?? ""}`.toLowerCase();
+        const displayName = member.displayName.toLowerCase();
+        return (
+          haystack.includes(displayName) ||
+          faces.some((face) => face.journeyMemberId === member.id) ||
+          memberFaceNames.some((name) => name.toLowerCase() === displayName)
+        );
       })
       .map((member) => member.displayName);
-    const peopleNames = [...new Set([...faceNames, ...memberNames])];
+    const normalizedMemberNames = new Set(
+      memberNames.map((name) => name.trim().toLowerCase()),
+    );
+    const displayGuestFaceNames = guestFaceNames.map((name) =>
+      normalizedMemberNames.has(name.trim().toLowerCase()) ? `${name} (guest)` : name,
+    );
+    const peopleNames = [...new Set([...memberNames, ...displayGuestFaceNames])];
     const sceneTags = photo?.sceneTags ?? [];
     const locationHints = photo ? getLocationHints(photo) : [];
     const summary = photo ? getAiSummary(photo) : null;
@@ -1134,6 +1148,33 @@ function TimelinePhotoLightbox({
     }
   }
 
+  async function confirmGuestFace(name: string) {
+    if (!selectedFace) return false;
+
+    setConfirmingFaceId(selectedFace.face.id);
+    setConfirmError(null);
+
+    try {
+      const updated = await requestFaceConfirmation({
+        faceId: selectedFace.face.id,
+        tripId,
+        recognizedName: name,
+      });
+      onFaceConfirmed(selectedFace.assetId, updated);
+      setSelectedFace(null);
+      return true;
+    } catch (error) {
+      setConfirmError(
+        error instanceof Error
+          ? error.message
+          : t("timeline.debug.error.confirmFace"),
+      );
+      return false;
+    } finally {
+      setConfirmingFaceId(null);
+    }
+  }
+
   return (
     <div
       className="fixed inset-0 z-[2147482400] bg-stone-950/92 p-3 backdrop-blur-sm sm:p-6"
@@ -1327,6 +1368,11 @@ function TimelinePhotoLightbox({
                       </button>
                     ))}
                   </div>
+                  <GuestFaceNameForm
+                    faceId={selectedFace.face.id}
+                    confirmingFaceId={confirmingFaceId}
+                    onSubmit={confirmGuestFace}
+                  />
                 </div>
               ) : item.hasUnassignedFaces ? (
                 <button
@@ -1342,6 +1388,64 @@ function TimelinePhotoLightbox({
         </div>
       </div>
     </div>
+  );
+}
+
+function GuestFaceNameForm({
+  faceId,
+  confirmingFaceId,
+  onSubmit,
+}: {
+  faceId: string;
+  confirmingFaceId: string | null;
+  onSubmit: (name: string) => Promise<boolean>;
+}) {
+  const { t } = useI18n();
+  const [name, setName] = useState("");
+  const isSaving = confirmingFaceId === faceId;
+  const trimmedName = name.trim();
+
+  useEffect(() => {
+    setName("");
+  }, [faceId]);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!trimmedName || isSaving) return;
+
+    const didSave = await onSubmit(trimmedName);
+    if (didSave) {
+      setName("");
+    }
+  }
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="mt-4 rounded-2xl border border-dashed border-emerald-200 bg-white/70 p-3"
+    >
+      <p className="text-xs font-black uppercase tracking-[0.12em] text-emerald-800">
+        {t("timeline.debug.nonMemberTitle")}
+      </p>
+      <p className="mt-1 text-xs font-semibold leading-5 text-stone-600">
+        {t("timeline.debug.nonMemberHelp")}
+      </p>
+      <div className="mt-3 flex gap-2">
+        <input
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder={t("timeline.debug.nonMemberPlaceholder")}
+          className="min-w-0 flex-1 rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-950 outline-none focus:border-emerald-500"
+        />
+        <button
+          type="submit"
+          disabled={!trimmedName || isSaving}
+          className="shrink-0 rounded-2xl bg-emerald-700 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
+        >
+          {isSaving ? t("common.saving") : t("timeline.debug.saveNonMember")}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -1759,6 +1863,33 @@ function AlbumView({
     }
   }
 
+  async function confirmGuestFace(name: string) {
+    if (!selectedFace) return false;
+
+    setConfirmingFaceId(selectedFace.face.id);
+    setConfirmError(null);
+
+    try {
+      const updated = await requestFaceConfirmation({
+        faceId: selectedFace.face.id,
+        tripId,
+        recognizedName: name,
+      });
+      onFaceConfirmed(selectedFace.assetId, updated);
+      setSelectedFace(null);
+      return true;
+    } catch (error) {
+      setConfirmError(
+        error instanceof Error
+          ? error.message
+          : t("timeline.debug.error.confirmFace"),
+      );
+      return false;
+    } finally {
+      setConfirmingFaceId(null);
+    }
+  }
+
   return (
     <>
       <section className="-mx-4 grid grid-cols-3 gap-0.5 sm:mx-0 sm:grid-cols-4 sm:gap-1 lg:grid-cols-6">
@@ -1998,6 +2129,11 @@ function AlbumView({
                             </button>
                           ))}
                         </div>
+                        <GuestFaceNameForm
+                          faceId={selectedFace.face.id}
+                          confirmingFaceId={confirmingFaceId}
+                          onSubmit={confirmGuestFace}
+                        />
                       </div>
                     ) : activeItem.hasUnassignedFaces ? (
                       <button

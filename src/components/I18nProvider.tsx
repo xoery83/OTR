@@ -12,12 +12,13 @@ import {
   type Locale,
   type TranslationKey,
   defaultLocale,
-  isLocale,
   normalizeLocale,
   translate,
 } from "@/lib/i18n/dictionaries";
+import { supabase } from "@/lib/supabase/client";
 
-const STORAGE_KEY = "otr:locale";
+export const LOCALE_STORAGE_KEY = "otr:locale";
+export const LOCALE_PREFERENCE_CHANGED_EVENT = "otr:locale-preference-changed";
 
 type I18nContextValue = {
   locale: Locale;
@@ -27,13 +28,25 @@ type I18nContextValue = {
 
 const I18nContext = createContext<I18nContextValue | null>(null);
 
+function resolveLocalePreference(preference: string | null | undefined) {
+  if (!preference || preference === "auto") {
+    return normalizeLocale(
+      typeof window === "undefined" ? null : window.navigator.language,
+    );
+  }
+
+  return normalizeLocale(preference);
+}
+
+function getStoredPreference() {
+  if (typeof window === "undefined") return "auto";
+  return window.localStorage.getItem(LOCALE_STORAGE_KEY) || "auto";
+}
+
 function getInitialLocale() {
   if (typeof window === "undefined") return defaultLocale;
 
-  const storedLocale = window.localStorage.getItem(STORAGE_KEY);
-  if (isLocale(storedLocale)) return storedLocale;
-
-  return normalizeLocale(window.navigator.language);
+  return resolveLocalePreference(getStoredPreference());
 }
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
@@ -48,12 +61,48 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    function handleLocalePreferenceChanged(event: Event) {
+      const customEvent = event as CustomEvent<{ language?: string }>;
+      const preference = customEvent.detail?.language ?? getStoredPreference();
+      setLocaleState(resolveLocalePreference(preference));
+    }
+
+    window.addEventListener(
+      LOCALE_PREFERENCE_CHANGED_EVENT,
+      handleLocalePreferenceChanged,
+    );
+
+    return () => {
+      window.removeEventListener(
+        LOCALE_PREFERENCE_CHANGED_EVENT,
+        handleLocalePreferenceChanged,
+      );
+    };
+  }, []);
+
+  useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
 
   const setLocale = useCallback((nextLocale: Locale) => {
     setLocaleState(nextLocale);
-    window.localStorage.setItem(STORAGE_KEY, nextLocale);
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, nextLocale);
+    window.dispatchEvent(
+      new CustomEvent(LOCALE_PREFERENCE_CHANGED_EVENT, {
+        detail: { language: nextLocale },
+      }),
+    );
+
+    supabase.auth
+      .getUser()
+      .then(({ data }) => {
+        if (!data.user) return null;
+        return supabase
+          .from("profiles")
+          .update({ preferred_language: nextLocale })
+          .eq("id", data.user.id);
+      })
+      .catch(() => null);
   }, []);
 
   const t = useCallback(

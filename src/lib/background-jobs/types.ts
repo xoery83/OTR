@@ -12,6 +12,8 @@ export type BackgroundJobType =
   | "image_indexing"
   | "face_detection"
   | "face_recognition"
+  | "generate_locale_bundle"
+  | "translate_user_content"
   | string;
 
 export type BackgroundJobBatch = {

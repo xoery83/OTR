@@ -6,6 +6,7 @@ type ConfirmFaceRequest = {
   faceId?: string;
   tripId?: string;
   journeyMemberId?: string;
+  recognizedName?: string;
 };
 
 type PhotoFaceRow = {
@@ -84,9 +85,13 @@ export async function POST(request: Request) {
     const faceId = body.faceId;
     const tripId = body.tripId;
     const journeyMemberId = body.journeyMemberId;
+    const recognizedName = body.recognizedName?.trim();
 
-    if (!faceId || !tripId || !journeyMemberId) {
-      return jsonError("faceId, tripId, and journeyMemberId are required.", 400);
+    if (!faceId || !tripId || (!journeyMemberId && !recognizedName)) {
+      return jsonError(
+        "faceId, tripId, and either journeyMemberId or recognizedName are required.",
+        400,
+      );
     }
 
     const supabase = getSupabaseForRequest(request);
@@ -96,31 +101,62 @@ export async function POST(request: Request) {
       return jsonError("You must be logged in.", 401);
     }
 
-    const [{ data: face, error: faceError }, { data: member, error: memberError }] =
-      await Promise.all([
-        supabase
-          .from("photo_faces")
-          .select("*")
-          .eq("id", faceId)
-          .eq("trip_id", tripId)
-          .single(),
-        supabase
-          .from("journey_members")
-          .select("id, trip_id, display_name")
-          .eq("id", journeyMemberId)
-          .eq("trip_id", tripId)
-          .single(),
-      ]);
+    const { data: face, error: faceError } = await supabase
+      .from("photo_faces")
+      .select("*")
+      .eq("id", faceId)
+      .eq("trip_id", tripId)
+      .single();
 
     if (faceError || !face) {
       return jsonError("Face was not found.", 404);
     }
 
+    const faceRow = face as PhotoFaceRow;
+
+    if (!journeyMemberId) {
+      const { data: updatedFace, error: updateFaceError } = await supabase
+        .from("photo_faces")
+        .update({
+          journey_member_id: null,
+          recognition_status: "confirmed",
+          recognized_name: recognizedName,
+        })
+        .eq("id", faceId)
+        .eq("trip_id", tripId)
+        .select("*")
+        .single();
+
+      if (updateFaceError || !updatedFace) {
+        throw updateFaceError || new Error("Could not confirm face.");
+      }
+
+      const { error: deleteEmbeddingError } = await supabase
+        .from("journey_member_face_embeddings")
+        .delete()
+        .eq("face_id", faceId)
+        .eq("trip_id", tripId);
+
+      if (deleteEmbeddingError) {
+        throw deleteEmbeddingError;
+      }
+
+      return NextResponse.json({
+        face: mapFace(updatedFace as PhotoFaceRow),
+      });
+    }
+
+    const { data: member, error: memberError } = await supabase
+      .from("journey_members")
+      .select("id, trip_id, display_name")
+      .eq("id", journeyMemberId)
+      .eq("trip_id", tripId)
+      .single();
+
     if (memberError || !member) {
       return jsonError("Journey member was not found.", 404);
     }
 
-    const faceRow = face as PhotoFaceRow;
     const memberRow = member as JourneyMemberRow;
 
     if (!faceRow.embedding || faceRow.embedding.length === 0) {

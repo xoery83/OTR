@@ -425,7 +425,8 @@ export async function requestFaceDetection(assetId: string, tripId: string) {
 export async function requestFaceConfirmation(input: {
   faceId: string;
   tripId: string;
-  journeyMemberId: string;
+  journeyMemberId?: string;
+  recognizedName?: string;
 }) {
   const { data } = await supabase.auth.getSession();
   const accessToken = data.session?.access_token;

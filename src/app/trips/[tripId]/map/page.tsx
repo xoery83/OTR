@@ -720,22 +720,25 @@ function JourneyMapContent() {
   }, [tripId]);
 
   const runLocationRepair = useCallback(
-    async (force = false) => {
+    async (force = false, options: { silent?: boolean } = {}) => {
+      const silent = Boolean(options.silent);
       const scopedDay =
         force && selectedDayId !== "journey"
           ? days.find((plannerDay) => plannerDay.day.id === selectedDayId) ?? null
           : null;
       const resolvingTotal = scopedDay ? dayLocationTargets(scopedDay).length : 0;
-      setLocationRepair((current) => ({
-        total: resolvingTotal,
-        attempted: 0,
-        resolved: 0,
-        failed: 0,
-        ambiguous: 0,
-        skipped: current?.skipped ?? 0,
-        isResolving: true,
-        error: null,
-      }));
+      if (!silent) {
+        setLocationRepair((current) => ({
+          total: resolvingTotal,
+          attempted: 0,
+          resolved: 0,
+          failed: 0,
+          ambiguous: 0,
+          skipped: current?.skipped ?? 0,
+          isResolving: true,
+          error: null,
+        }));
+      }
       try {
         const summary = scopedDay
           ? await resolveDayLocations(tripId, scopedDay, force)
@@ -746,9 +749,9 @@ function JourneyMapContent() {
         setLocationRepair({ ...summary, isResolving: false, error: null });
         if (summary.resolved > 0) {
           await refreshMapObjects();
-          setMapViewVersion((version) => version + 1);
         }
       } catch (repairError) {
+        if (silent) return;
         setLocationRepair((current) => ({
           total: current?.total ?? 0,
           attempted: current?.attempted ?? 0,
@@ -867,7 +870,7 @@ function JourneyMapContent() {
     const key = `${tripId}:${days.length}`;
     if (locationRepairKeyRef.current === key) return;
     locationRepairKeyRef.current = key;
-    runLocationRepair(false).catch(() => undefined);
+    runLocationRepair(false, { silent: true }).catch(() => undefined);
   }, [days.length, isLoading, runLocationRepair, trip, tripId]);
 
   const hotelStops = useMemo(

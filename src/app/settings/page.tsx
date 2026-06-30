@@ -5,6 +5,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { AuthGate } from "@/components/AuthGate";
+import {
+  LOCALE_PREFERENCE_CHANGED_EVENT,
+  LOCALE_STORAGE_KEY,
+} from "@/components/I18nProvider";
 import { getErrorMessage } from "@/lib/errors";
 import { logout } from "@/lib/supabase/auth";
 import {
@@ -12,6 +16,7 @@ import {
   getProfile,
   listAccountRoles,
   updateAccountRole,
+  updateProfile,
   type AccountRoleRow,
 } from "@/lib/supabase/profiles";
 import type { AccountRole, Profile } from "@/types";
@@ -23,12 +28,37 @@ const roleLabels: Record<AccountRole, string> = {
   pro: "Pro用户",
 };
 
+const languageOptions = [
+  { value: "auto", label: "Auto" },
+  { value: "en", label: "English" },
+  { value: "zh-CN", label: "简体中文" },
+  { value: "zh-TW", label: "繁體中文" },
+  { value: "fr", label: "Français" },
+  { value: "de", label: "Deutsch" },
+  { value: "es", label: "Español" },
+  { value: "ja", label: "日本語" },
+  { value: "ko", label: "한국어" },
+  { value: "it", label: "Italiano" },
+  { value: "pt", label: "Português" },
+];
+
+function syncLocalePreference(language: string) {
+  window.localStorage.setItem(LOCALE_STORAGE_KEY, language);
+  window.dispatchEvent(
+    new CustomEvent(LOCALE_PREFERENCE_CHANGED_EVENT, {
+      detail: { language },
+    }),
+  );
+}
+
 function SettingsContent({ user }: { user: User }) {
   const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [languagePreference, setLanguagePreference] = useState("auto");
   const [roleRows, setRoleRows] = useState<AccountRoleRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingRoles, setIsLoadingRoles] = useState(false);
+  const [isSavingLanguage, setIsSavingLanguage] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [updatingRoleId, setUpdatingRoleId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -43,6 +73,8 @@ function SettingsContent({ user }: { user: User }) {
 
         if (isMounted) {
           setProfile(profileData);
+          setLanguagePreference(profileData.preferredLanguage || "auto");
+          syncLocalePreference(profileData.preferredLanguage || "auto");
         }
 
         if (profileData.accountRole === "admin") {
@@ -109,6 +141,34 @@ function SettingsContent({ user }: { user: User }) {
       setError(getErrorMessage(roleError, "无法更新用户角色。"));
     } finally {
       setUpdatingRoleId(null);
+    }
+  }
+
+  async function handleLanguageSave() {
+    if (!profile) return;
+
+    setIsSavingLanguage(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await updateProfile({
+        id: profile.id,
+        displayName: profile.displayName,
+        globalAka: profile.globalAka,
+        globalBaseCurrency: profile.globalBaseCurrency,
+        preferredLanguage: languagePreference,
+        avatarUrl: profile.avatarUrl,
+      });
+      setProfile(updated);
+      setLanguagePreference(updated.preferredLanguage || "auto");
+      syncLocalePreference(updated.preferredLanguage || "auto");
+      setNotice("Language preference saved.");
+    } catch (languageError) {
+      setError(
+        getErrorMessage(languageError, "Could not save language preference."),
+      );
+    } finally {
+      setIsSavingLanguage(false);
     }
   }
 
@@ -192,6 +252,51 @@ function SettingsContent({ user }: { user: User }) {
         >
           Logout
         </button>
+      </section>
+
+      <section className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+        <div>
+          <p className="text-sm font-semibold text-emerald-700">Language</p>
+          <h2 className="mt-1 text-xl font-semibold text-stone-950">
+            Display language
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600">
+            Auto follows your browser language. Languages without a reviewed
+            bundle fall back to English until generated.
+          </p>
+        </div>
+
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+          <select
+            value={languagePreference}
+            onChange={(event) => {
+              const nextLanguage = event.target.value;
+              setLanguagePreference(nextLanguage);
+              syncLocalePreference(nextLanguage);
+            }}
+            disabled={isLoading || !profile || isSavingLanguage}
+            className="min-h-12 flex-1 rounded-2xl border border-stone-200 bg-[#fffdf8] px-4 py-3 text-sm font-bold text-stone-950 disabled:text-stone-400"
+          >
+            {languageOptions.map((language) => (
+              <option key={language.value} value={language.value}>
+                {language.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={handleLanguageSave}
+            disabled={
+              isLoading ||
+              !profile ||
+              isSavingLanguage ||
+              languagePreference === (profile.preferredLanguage || "auto")
+            }
+            className="min-h-12 rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
+          >
+            {isSavingLanguage ? "Saving..." : "Save language"}
+          </button>
+        </div>
       </section>
 
       <Link

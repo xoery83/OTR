@@ -1332,6 +1332,7 @@ export function PlannerDayCard({
   } | null>(null);
   const [confirmingFaceId, setConfirmingFaceId] = useState<string | null>(null);
   const [previewFaceError, setPreviewFaceError] = useState<string | null>(null);
+  const [previewGuestFaceName, setPreviewGuestFaceName] = useState("");
   const [preparingAttachmentId, setPreparingAttachmentId] = useState<
     string | null
   >(null);
@@ -1348,6 +1349,10 @@ export function PlannerDayCard({
   >({});
   const [savingMemoryId, setSavingMemoryId] = useState<string | null>(null);
   const [recordingMemoryId, setRecordingMemoryId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPreviewGuestFaceName("");
+  }, [selectedPreviewFace?.face.id]);
   const [transcribingMemoryId, setTranscribingMemoryId] = useState<string | null>(
     null,
   );
@@ -1830,6 +1835,35 @@ export function PlannerDayCard({
         ).map((face) => (face.id === updatedFace.id ? updatedFace : face)),
       }));
       setSelectedPreviewFace(null);
+    } catch (error) {
+      setPreviewFaceError(
+        getErrorMessage(error, t("timeline.debug.error.confirmFace")),
+      );
+    } finally {
+      setConfirmingFaceId(null);
+    }
+  }
+
+  async function confirmPreviewGuestFace(name: string) {
+    if (!selectedPreviewFace) return;
+
+    setConfirmingFaceId(selectedPreviewFace.face.id);
+    setPreviewFaceError(null);
+
+    try {
+      const updatedFace = await requestFaceConfirmation({
+        faceId: selectedPreviewFace.face.id,
+        tripId,
+        recognizedName: name,
+      });
+      setFacesByAssetId((current) => ({
+        ...current,
+        [selectedPreviewFace.assetId]: (
+          current[selectedPreviewFace.assetId] ?? []
+        ).map((face) => (face.id === updatedFace.id ? updatedFace : face)),
+      }));
+      setSelectedPreviewFace(null);
+      setPreviewGuestFaceName("");
     } catch (error) {
       setPreviewFaceError(
         getErrorMessage(error, t("timeline.debug.error.confirmFace")),
@@ -2521,14 +2555,22 @@ export function PlannerDayCard({
   const activePreviewFaces = activePreviewPhoto
     ? facesByAssetId[activePreviewPhoto.id] ?? []
     : [];
+  const activeMemberNameSet = new Set(
+    activeMembers().map((member) => member.displayName.trim().toLowerCase()),
+  );
   const activePreviewPeople = activePreviewFaces.reduce<
     { name: string; face: PhotoFace }[]
   >((people, face) => {
-    if (
-      face.recognizedName &&
-      !people.some((person) => person.name === face.recognizedName)
-    ) {
-      people.push({ name: face.recognizedName, face });
+    if (face.recognizedName) {
+      const displayName =
+        !face.journeyMemberId &&
+        activeMemberNameSet.has(face.recognizedName.trim().toLowerCase())
+          ? `${face.recognizedName} (guest)`
+          : face.recognizedName;
+
+      if (!people.some((person) => person.name === displayName)) {
+        people.push({ name: displayName, face });
+      }
     }
     return people;
   }, []);
@@ -5118,6 +5160,7 @@ export function PlannerDayCard({
                           onClick={() => {
                             setSelectedPreviewFace(null);
                             setPreviewFaceError(null);
+                            setPreviewGuestFaceName("");
                           }}
                           className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-black text-stone-700 shadow-sm"
                         >
@@ -5156,6 +5199,44 @@ export function PlannerDayCard({
                           </button>
                         ))}
                       </div>
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const name = previewGuestFaceName.trim();
+                          if (!name) return;
+                          void confirmPreviewGuestFace(name);
+                        }}
+                        className="mt-4 rounded-2xl border border-dashed border-emerald-200 bg-white/70 p-3"
+                      >
+                        <p className="text-xs font-black uppercase tracking-[0.12em] text-emerald-800">
+                          {t("timeline.debug.nonMemberTitle")}
+                        </p>
+                        <p className="mt-1 text-xs font-semibold leading-5 text-stone-600">
+                          {t("timeline.debug.nonMemberHelp")}
+                        </p>
+                        <div className="mt-3 flex gap-2">
+                          <input
+                            value={previewGuestFaceName}
+                            onChange={(event) =>
+                              setPreviewGuestFaceName(event.target.value)
+                            }
+                            placeholder={t("timeline.debug.nonMemberPlaceholder")}
+                            className="min-w-0 flex-1 rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-950 outline-none focus:border-emerald-500"
+                          />
+                          <button
+                            type="submit"
+                            disabled={
+                              !previewGuestFaceName.trim() ||
+                              confirmingFaceId === selectedPreviewFace?.face.id
+                            }
+                            className="shrink-0 rounded-2xl bg-emerald-700 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
+                          >
+                            {confirmingFaceId === selectedPreviewFace?.face.id
+                              ? t("common.saving")
+                              : t("timeline.debug.saveNonMember")}
+                          </button>
+                        </div>
+                      </form>
                     </div>
                   ) : firstUnconfirmedPreviewFace && activePreviewPhoto ? (
                     <button

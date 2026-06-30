@@ -10,6 +10,7 @@ type ProfileRow = {
   display_name: string;
   global_aka?: string | null;
   global_base_currency?: string | null;
+  preferred_language?: string | null;
   avatar_url: string | null;
   account_role?: AccountRole | null;
   created_at: string;
@@ -30,6 +31,7 @@ function mapProfile(row: ProfileRow): Profile {
     displayName: row.display_name,
     globalAka: row.global_aka ?? null,
     globalBaseCurrency: row.global_base_currency ?? "NZD",
+    preferredLanguage: row.preferred_language ?? "auto",
     avatarUrl: row.avatar_url,
     accountRole: row.account_role ?? "free_user",
     createdAt: row.created_at,
@@ -76,6 +78,7 @@ export async function upsertProfileForUser(user: User) {
       display_name: getUserDisplayName(user),
       avatar_url: getUserAvatarUrl(user),
       global_base_currency: "NZD",
+      preferred_language: "auto",
       account_role:
         user.email?.toLocaleLowerCase() === "xoery83@gmail.com"
           ? "admin"
@@ -129,6 +132,7 @@ export async function updateProfile(input: {
   displayName: string;
   globalAka?: string | null;
   globalBaseCurrency?: string;
+  preferredLanguage?: string;
   avatarUrl: string | null;
 }) {
   const payload: Record<string, string | null> = {
@@ -142,6 +146,10 @@ export async function updateProfile(input: {
 
   if (input.globalBaseCurrency !== undefined) {
     payload.global_base_currency = input.globalBaseCurrency.trim().toUpperCase();
+  }
+
+  if (input.preferredLanguage !== undefined) {
+    payload.preferred_language = input.preferredLanguage.trim() || "auto";
   }
 
   const { data, error } = await supabase

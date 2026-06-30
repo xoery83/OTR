@@ -1156,11 +1156,10 @@ export async function resolveJourneyLocations(
     ...item,
     ownerUserId: item.ownerUserId ?? options.ownerUserId ?? null,
   }));
-  const candidates = items.filter(
-    (item) =>
-      shouldRetry(item, Boolean(options.force)) ||
-      Boolean(validCoordinates(item.locationLat, item.locationLng)),
-  );
+  const candidates = items.filter((item) => {
+    if (shouldRetry(item, Boolean(options.force))) return true;
+    return Boolean(options.force && validCoordinates(item.locationLat, item.locationLng));
+  });
   const limit = options.limit ?? 20;
   const selected = candidates.slice(0, limit);
   const summary: ResolveJourneySummary = {

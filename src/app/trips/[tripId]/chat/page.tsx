@@ -263,6 +263,7 @@ function ImageViewer({
       subtitle={`${message.senderName || "Traveler"} · ${formatMessageTime(message.createdAt)}`}
       photo={message.photoAsset}
       faces={faces}
+      variant="minimal"
       onClose={onClose}
     />
   );

@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import {
+  type MouseEvent,
   type PointerEvent,
+  type TouchEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -199,6 +201,12 @@ function PlannerContent() {
   const pendingDayScrollResetRef = useRef(false);
   const suppressPlannerNavRestoreUntilRef = useRef(0);
   const keepPlannerImmersiveDuringResetRef = useRef(false);
+  const plannerSwipeStartRef = useRef<{
+    x: number;
+    y: number;
+    time: number;
+  } | null>(null);
+  const suppressNextPlannerClickRef = useRef(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -367,6 +375,61 @@ function PlannerContent() {
         }),
       );
     }
+  }
+
+  function handlePlannerSwipeStart(event: TouchEvent<HTMLElement>) {
+    if (
+      window.innerWidth >= 768 ||
+      isMobilePlannerSearchActive ||
+      event.touches.length !== 1
+    ) {
+      plannerSwipeStartRef.current = null;
+      return;
+    }
+
+    const touch = event.touches[0];
+    const viewportWidth = window.innerWidth;
+    if (touch.clientX < 18 || touch.clientX > viewportWidth - 18) {
+      plannerSwipeStartRef.current = null;
+      return;
+    }
+
+    plannerSwipeStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      time: Date.now(),
+    };
+  }
+
+  function handlePlannerSwipeEnd(event: TouchEvent<HTMLElement>) {
+    const start = plannerSwipeStartRef.current;
+    plannerSwipeStartRef.current = null;
+    if (!start || event.changedTouches.length !== 1) return;
+
+    const touch = event.changedTouches[0];
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    const elapsed = Date.now() - start.time;
+    const isHorizontalSwipe =
+      Math.abs(deltaX) >= 72 &&
+      Math.abs(deltaX) > Math.abs(deltaY) * 1.35 &&
+      elapsed <= 900;
+
+    if (!isHorizontalSwipe) return;
+
+    const nextIndex = deltaX < 0 ? selectedIndex + 1 : selectedIndex - 1;
+    const nextDay = planner.days[nextIndex];
+    if (!nextDay) return;
+
+    suppressNextPlannerClickRef.current = true;
+    chooseDay(nextDay.day.id, { resetScroll: true });
+  }
+
+  function handlePlannerClickCapture(event: MouseEvent<HTMLElement>) {
+    if (!suppressNextPlannerClickRef.current) return;
+    suppressNextPlannerClickRef.current = false;
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   useEffect(() => {
@@ -797,7 +860,12 @@ function PlannerContent() {
 
       {!isMobilePlannerSearchActive ? (
         selectedDay ? (
-          <section ref={selectedDayCardRef}>
+          <section
+            ref={selectedDayCardRef}
+            onClickCapture={handlePlannerClickCapture}
+            onTouchStart={handlePlannerSwipeStart}
+            onTouchEnd={handlePlannerSwipeEnd}
+          >
             <PlannerDayCard
               tripId={tripId}
               plannerDay={selectedDay}
