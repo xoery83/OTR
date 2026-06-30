@@ -447,6 +447,33 @@ function HighlightsContent() {
         : [];
   const activeMemoryRankLabel =
     activeTab === "likes" ? t("highlights.tab.likes") : t("highlights.tab.favorites");
+  const highlightTabs = [
+    {
+      value: "journey",
+      label: t("highlights.tab.journey"),
+      count: bestItems.length,
+    },
+    {
+      value: "spending",
+      label: t("highlights.tab.spending"),
+      count: spendingRankCount,
+    },
+    {
+      value: "likes",
+      label: t("highlights.tab.likes"),
+      count: likedMemories.length,
+    },
+    {
+      value: "favorites",
+      label: t("highlights.tab.favorites"),
+      count: favoritedMemories.length,
+    },
+    {
+      value: "contribution",
+      label: t("highlights.tab.contribution"),
+      count: contributionItems.length,
+    },
+  ] as const;
 
   if (isLoading && !highlightsResource.data) {
     return (
@@ -495,7 +522,7 @@ function HighlightsContent() {
       ) : null}
 
       <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-black text-emerald-800">
               {t("highlights.eyebrow")}
@@ -504,27 +531,28 @@ function HighlightsContent() {
               {t("highlights.rankings")}
             </h2>
           </div>
-          <div className="grid grid-cols-5 rounded-full bg-stone-100 p-1 text-xs font-black text-stone-600">
-            {(
-              [
-                ["spending", t("highlights.tabWithCount", { label: t("highlights.tab.spending"), count: spendingRankCount })],
-                ["contribution", t("highlights.tabWithCount", { label: t("highlights.tab.contribution"), count: contributionItems.length })],
-                ["likes", t("highlights.tabWithCount", { label: t("highlights.tab.likes"), count: likedMemories.length })],
-                ["favorites", t("highlights.tabWithCount", { label: t("highlights.tab.favorites"), count: favoritedMemories.length })],
-                ["journey", t("highlights.tabWithCount", { label: t("highlights.tab.journey"), count: bestItems.length })],
-              ] as const
-            ).map(([value, label]) => (
+          <div className="-mx-1 flex max-w-full gap-2 overflow-x-auto px-1 pb-1 text-xs font-black text-stone-600 sm:mx-0 sm:justify-end sm:pb-0">
+            {highlightTabs.map(({ value, label, count }) => (
               <button
                 key={value}
                 type="button"
                 onClick={() => setActiveTab(value)}
-                className={`rounded-full px-3 py-1.5 transition ${
+                className={`inline-flex min-h-10 shrink-0 items-center gap-2 rounded-full border px-3 py-2 transition ${
                   activeTab === value
-                    ? "bg-white text-emerald-900 shadow-sm"
-                    : "text-stone-500"
+                    ? "border-emerald-200 bg-emerald-700 text-white shadow-sm"
+                    : "border-stone-200 bg-stone-50 text-stone-600"
                 }`}
               >
-                {label}
+                <span className="whitespace-nowrap">{label}</span>
+                <span
+                  className={`grid min-w-6 place-items-center rounded-full px-1.5 py-0.5 text-[11px] ${
+                    activeTab === value
+                      ? "bg-white/20 text-white"
+                      : "bg-white text-stone-700"
+                  }`}
+                >
+                  {count}
+                </span>
               </button>
             ))}
           </div>

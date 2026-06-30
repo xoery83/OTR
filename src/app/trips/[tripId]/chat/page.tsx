@@ -72,6 +72,8 @@ const emojiTabs = ["⌕", "☺", "♡", "✌", "😎", "🐰"];
 
 type LocalChatPendingStatus = "uploading" | "failed";
 
+const CHAT_REVOKE_WINDOW_MS = 30 * 60 * 1000;
+
 function getClipboardImageFiles(event: ClipboardEvent<HTMLTextAreaElement>) {
   const items = Array.from(event.clipboardData.items ?? []);
   const imageFiles = items
@@ -196,6 +198,16 @@ function shouldShowTime(previous: JourneyChatMessage | null, current: JourneyCha
   return new Date(current.createdAt).getTime() - new Date(previous.createdAt).getTime() > 300_000;
 }
 
+function canRevokeChatMessage(
+  message: JourneyChatMessage,
+  mine: boolean,
+  nowMs: number,
+) {
+  if (!mine || message.deletedAt || message.sourceType !== "chat") return false;
+  if (getLocalPendingStatus(message)) return false;
+  return nowMs - new Date(message.createdAt).getTime() <= CHAT_REVOKE_WINDOW_MS;
+}
+
 function Avatar({ message, mine }: { message: JourneyChatMessage; mine: boolean }) {
   const [hasImageError, setHasImageError] = useState(false);
   const initial = (message.senderName || "T").trim().slice(0, 1).toUpperCase();
@@ -233,6 +245,7 @@ function MessageBubble({
   onRevoke,
   onMediaLoad,
   protectedEntities,
+  nowMs,
 }: {
   message: JourneyChatMessage;
   mine: boolean;
@@ -240,9 +253,11 @@ function MessageBubble({
   onRevoke: (message: JourneyChatMessage) => void;
   onMediaLoad: () => void;
   protectedEntities: Array<string | null | undefined>;
+  nowMs: number;
 }) {
   const fromTimeline = message.sourceType === "timeline_memory";
   const pendingStatus = getLocalPendingStatus(message);
+  const canRevoke = canRevokeChatMessage(message, mine, nowMs);
 
   if (message.deletedAt) {
     return (
@@ -355,7 +370,7 @@ function MessageBubble({
             </div>
           ) : null}
 
-          {mine && !pendingStatus ? (
+          {canRevoke ? (
             <button
               type="button"
               onClick={() => onRevoke(message)}
@@ -425,6 +440,7 @@ function ChatContent() {
   const [isTextFocused, setIsTextFocused] = useState(false);
   const [activeImage, setActiveImage] = useState<JourneyChatMessage | null>(null);
   const [activeImageFaces, setActiveImageFaces] = useState<PhotoFace[]>([]);
+  const [revokeNowMs, setRevokeNowMs] = useState(() => Date.now());
 
   const chatResource = useJourneyCachedResource({
     cacheKey: journeyResourceKey.chat(tripId),
@@ -640,6 +656,11 @@ function ChatContent() {
       document.body.classList.remove("otr-chat-emoji-active");
     };
   }, [isSwitchingToKeyboard, isTextFocused, showEmoji]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setRevokeNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1101,6 +1122,7 @@ function ChatContent() {
                   trip?.name,
                   trip?.destination,
                 ]}
+                nowMs={revokeNowMs}
                 onMediaLoad={() => {
                   if (Date.now() < initialAutoScrollUntilRef.current || isNearBottom()) {
                     scheduleBottomLock();
@@ -1121,6 +1143,9 @@ function ChatContent() {
     isLoadingOlder,
     loadOlderMessages,
     messages,
+    revokeNowMs,
+    trip?.destination,
+    trip?.name,
   ]);
 
   return (

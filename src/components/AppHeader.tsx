@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import { TranslatedText } from "@/components/TranslatedText";
@@ -12,8 +12,9 @@ import {
   loadJourneyBaseListResource,
   loadJourneyTripResource,
 } from "@/lib/journey-resources";
+import { compareTripsByStartDateAsc, getJourneyStatus } from "@/lib/journeys/status";
 import { logout } from "@/lib/supabase/auth";
-import type { Trip } from "@/types";
+import type { JourneyStatus, Trip } from "@/types";
 
 const languageOptions = [
   { value: "en", label: "English" },
@@ -36,6 +37,44 @@ function getJourneySwitchHref(pathname: string, tripId: string) {
   return pathname.match(/^\/trips\/[^/]+/)
     ? pathname.replace(/^\/trips\/[^/]+/, `/trips/${tripId}`)
     : `/trips/${tripId}`;
+}
+
+function getDateTime(value: string | null | undefined) {
+  if (!value) return null;
+  const time = new Date(`${value}T00:00:00`).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function getJourneyStatusSortRank(status: JourneyStatus) {
+  if (status === "active") return 0;
+  if (status === "upcoming") return 1;
+  return 2;
+}
+
+function compareJourneysForSwitcher(left: Trip, right: Trip) {
+  const leftStatus = getJourneyStatus(left);
+  const rightStatus = getJourneyStatus(right);
+  const statusOrder =
+    getJourneyStatusSortRank(leftStatus) - getJourneyStatusSortRank(rightStatus);
+  if (statusOrder) return statusOrder;
+
+  if (leftStatus === "completed" && rightStatus === "completed") {
+    const leftEnd = getDateTime(left.endDate) ?? getDateTime(left.startDate) ?? 0;
+    const rightEnd = getDateTime(right.endDate) ?? getDateTime(right.startDate) ?? 0;
+    if (leftEnd !== rightEnd) return rightEnd - leftEnd;
+  }
+
+  return compareTripsByStartDateAsc(left, right);
+}
+
+function journeyStatusBadgeClasses(status: JourneyStatus) {
+  if (status === "active") {
+    return "bg-emerald-100 text-emerald-800";
+  }
+  if (status === "upcoming") {
+    return "bg-sky-100 text-sky-800";
+  }
+  return "bg-stone-100 text-stone-600";
 }
 
 export function AppHeader() {
@@ -147,6 +186,10 @@ export function AppHeader() {
           backgroundSize: "cover",
         }
       : undefined;
+  const sortedJourneys = useMemo(
+    () => [...journeys].sort(compareJourneysForSwitcher),
+    [journeys],
+  );
 
   return (
     <>
@@ -248,9 +291,16 @@ export function AppHeader() {
                       </p>
                     </div>
                     <div className="max-h-80 overflow-y-auto p-2">
-                      {journeys.length > 0 ? (
-                        journeys.map((journey) => {
+                      {sortedJourneys.length > 0 ? (
+                        sortedJourneys.map((journey) => {
                           const active = journey.id === tripId;
+                          const status = getJourneyStatus(journey);
+                          const statusLabel =
+                            status === "active"
+                              ? t("tripCard.status.active")
+                              : status === "upcoming"
+                                ? t("tripCard.status.upcoming")
+                                : t("tripCard.status.completed");
 
                           return (
                             <Link
@@ -263,15 +313,24 @@ export function AppHeader() {
                                   : "text-stone-800 hover:bg-stone-50"
                               }`}
                             >
-                              <TranslatedText
-                                as="span"
-                                className="block truncate"
-                                showToggle={false}
-                                sourceField="name"
-                                sourceId={journey.id}
-                                sourceType="trip"
-                                text={journey.name}
-                              />
+                              <span className="flex min-w-0 items-center gap-2">
+                                <TranslatedText
+                                  as="span"
+                                  className="block min-w-0 truncate"
+                                  showToggle={false}
+                                  sourceField="name"
+                                  sourceId={journey.id}
+                                  sourceType="trip"
+                                  text={journey.name}
+                                />
+                                <span
+                                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${journeyStatusBadgeClasses(
+                                    status,
+                                  )}`}
+                                >
+                                  {statusLabel}
+                                </span>
+                              </span>
                               {journey.destination ? (
                                 <TranslatedText
                                   as="span"

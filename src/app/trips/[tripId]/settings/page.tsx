@@ -133,11 +133,14 @@ function SettingsContent() {
   const [ledger, setLedger] = useState<JourneyLedger | null>(null);
   const [exchangeRates, setExchangeRates] = useState<JourneyExchangeRate[]>([]);
   const [journeyName, setJourneyName] = useState("");
+  const [journeyStartDate, setJourneyStartDate] = useState("");
+  const [journeyEndDate, setJourneyEndDate] = useState("");
   const [coverImageUrl, setCoverImageUrl] = useState("");
   const [storageProvider, setStorageProvider] =
     useState<PhotoStorageProvider | "">("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingName, setIsSavingName] = useState(false);
+  const [isSavingDates, setIsSavingDates] = useState(false);
   const [isSavingCover, setIsSavingCover] = useState(false);
   const [isSavingStorage, setIsSavingStorage] = useState(false);
   const [isConnectingStorage, setIsConnectingStorage] = useState(false);
@@ -185,6 +188,8 @@ function SettingsContent() {
         setLedger(ledgerData.ledger);
         setExchangeRates(rates);
         setJourneyName(tripData.name);
+        setJourneyStartDate(tripData.startDate ?? "");
+        setJourneyEndDate(tripData.endDate ?? "");
         setCoverImageUrl(tripData.coverImageUrl ?? "");
         setStorageProvider(
           tripData.photoStorageProvider === "google_drive" ||
@@ -243,6 +248,52 @@ function SettingsContent() {
       setError(getErrorMessage(saveError, t("journeySettings.nameSaveError")));
     } finally {
       setIsSavingName(false);
+    }
+  }
+
+  async function saveJourneyDates() {
+    if (!canManageJourney) return;
+
+    const nextStartDate = journeyStartDate || null;
+    const nextEndDate = journeyEndDate || null;
+
+    if (nextStartDate && nextEndDate && nextEndDate < nextStartDate) {
+      setNotice(null);
+      setError(t("journeySettings.datesInvalid"));
+      return;
+    }
+
+    if (
+      nextStartDate === (trip?.startDate ?? null) &&
+      nextEndDate === (trip?.endDate ?? null)
+    ) {
+      setError(null);
+      setNotice(t("journeySettings.datesUnchanged"));
+      return;
+    }
+
+    setIsSavingDates(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await updateTripSettings({
+        tripId,
+        startDate: nextStartDate,
+        endDate: nextEndDate,
+      });
+      setTrip(updated);
+      setJourneyStartDate(updated.startDate ?? "");
+      setJourneyEndDate(updated.endDate ?? "");
+      invalidateJourneyResource(journeyResourceKey.trip(tripId));
+      invalidateJourneyResource(journeyResourceKey.trips());
+      invalidateJourneyResource(journeyResourceKey.tripsBase());
+      invalidateJourneyResource(journeyResourceKey.planner(tripId));
+      invalidateJourneyResource(journeyResourceKey.map(tripId));
+      setNotice(t("journeySettings.datesSaved"));
+    } catch (saveError) {
+      setError(getErrorMessage(saveError, t("journeySettings.datesSaveError")));
+    } finally {
+      setIsSavingDates(false);
     }
   }
 
@@ -454,22 +505,74 @@ function SettingsContent() {
 
       {canManageJourney ? (
         <SettingsDisclosure
+          title={t("journeySettings.datesTitle")}
+          description={t("journeySettings.datesDescription")}
+          toggleOpenLabel={t("journeySettings.section.open")}
+          toggleCloseLabel={t("journeySettings.section.close")}
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1.5">
+              <span className="text-xs font-black uppercase tracking-wide text-stone-500">
+                {t("journeySettings.startDate")}
+              </span>
+              <input
+                type="date"
+                value={journeyStartDate}
+                onChange={(event) => setJourneyStartDate(event.target.value)}
+                className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-600"
+              />
+            </label>
+            <label className="space-y-1.5">
+              <span className="text-xs font-black uppercase tracking-wide text-stone-500">
+                {t("journeySettings.endDate")}
+              </span>
+              <input
+                type="date"
+                value={journeyEndDate}
+                min={journeyStartDate || undefined}
+                onChange={(event) => setJourneyEndDate(event.target.value)}
+                className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-600"
+              />
+            </label>
+          </div>
+          <p className="mt-3 rounded-2xl bg-stone-50 p-3 text-sm leading-6 text-stone-600">
+            {t("journeySettings.datesNote")}
+          </p>
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              onClick={saveJourneyDates}
+              disabled={isSavingDates}
+              className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
+            >
+              {isSavingDates
+                ? t("common.saving")
+                : t("journeySettings.saveDates")}
+            </button>
+          </div>
+        </SettingsDisclosure>
+      ) : null}
+
+      {canManageJourney ? (
+        <SettingsDisclosure
           title={t("journeySettings.coverTitle")}
           description={t("journeySettings.coverDescription")}
           toggleOpenLabel={t("journeySettings.section.open")}
           toggleCloseLabel={t("journeySettings.section.close")}
         >
-          <div
-            className="-mx-5 -mt-5 h-48 bg-cover bg-center"
-            style={{
-              backgroundImage: `url(${
-                coverImageUrl ||
-                trip?.coverImageUrl ||
-                "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80"
-              })`,
-            }}
-          />
-          <div className="mt-5 space-y-4">
+          <div className="overflow-hidden rounded-2xl border border-stone-100 bg-stone-100">
+            <div
+              className="h-48 bg-cover bg-center"
+              style={{
+                backgroundImage: `url(${
+                  coverImageUrl ||
+                  trip?.coverImageUrl ||
+                  "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80"
+                })`,
+              }}
+            />
+          </div>
+          <div className="mt-4 space-y-4">
             <input
               value={coverImageUrl}
               onChange={(event) => setCoverImageUrl(event.target.value)}

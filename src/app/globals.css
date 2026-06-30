@@ -389,7 +389,10 @@ input[type="date"] {
   }
 
   .otr-timeline-date-strip {
-    top: calc(15.75rem + env(safe-area-inset-top, 0px)) !important;
+    top: var(
+      --otr-timeline-date-strip-top,
+      calc(15.75rem + env(safe-area-inset-top, 0px))
+    ) !important;
   }
 
   .otr-planner-date-strip {

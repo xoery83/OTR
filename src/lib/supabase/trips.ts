@@ -145,6 +145,8 @@ export async function deleteTrip(tripId: string) {
 export type UpdateTripSettingsInput = {
   tripId: string;
   name?: string;
+  startDate?: string | null;
+  endDate?: string | null;
   coverImageUrl?: string | null;
   photoStorageProvider?: PhotoStorageProvider | null;
 };
@@ -160,6 +162,14 @@ export async function updateTripSettings(input: UpdateTripSettingsInput) {
 
   if ("coverImageUrl" in input) {
     updates.cover_image_url = input.coverImageUrl || null;
+  }
+
+  if ("startDate" in input) {
+    updates.start_date = input.startDate || null;
+  }
+
+  if ("endDate" in input) {
+    updates.end_date = input.endDate || null;
   }
 
   if ("photoStorageProvider" in input) {

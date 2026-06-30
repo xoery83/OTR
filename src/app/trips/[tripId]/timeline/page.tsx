@@ -532,6 +532,11 @@ function ItemMeta({
           {name}
         </span>
       ))}
+      {item.hasUnassignedFaces ? (
+        <span className="rounded-full bg-amber-100 px-2 py-1 text-amber-900">
+          认脸
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -888,7 +893,7 @@ function CompactMemoryCard({
         </div>
       )}
       <div className="p-4">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
           <div className="min-w-0">
             {!["text", "photo", "voice", "location"].includes(item.memory.type) ? (
               <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">
@@ -896,17 +901,12 @@ function CompactMemoryCard({
               </p>
             ) : null}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
             <MemoryEngagementActions
               memory={item.memory}
               onChange={onEngagementChange}
               compact
             />
-            {item.hasUnassignedFaces ? (
-              <span className="rounded-full bg-amber-100 px-2 py-1 text-[11px] font-black text-amber-900">
-                {t("timeline.photo.faceCheck")}
-              </span>
-            ) : null}
             {canManage ? (
               <>
                 <button
@@ -1093,18 +1093,29 @@ function flattenTimelineItems(items: TimelineItem[]): TimelineItem[] {
   return items.flatMap((item) => [item, ...flattenTimelineItems(item.replies)]);
 }
 
+function canCurrentUserManagePhoto(item: TimelineItem, currentUserId: string) {
+  return (
+    item.memory.userId === currentUserId ||
+    item.photo?.userId === currentUserId
+  );
+}
+
 function TimelinePhotoLightbox({
   item,
   members,
   tripId,
+  currentUserId,
   onClose,
+  onDelete,
   onFaceConfirmed,
   onEngagementChange,
 }: {
   item: TimelineItem | null;
   members: JourneyMember[];
   tripId: string;
+  currentUserId: string;
   onClose: () => void;
+  onDelete: (memoryId: string) => Promise<void>;
   onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
@@ -1119,18 +1130,24 @@ function TimelinePhotoLightbox({
   const [viewerImageSize, setViewerImageSize] = useState<ImagePixelSize | null>(
     null,
   );
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const requestRepair = useDriveThumbnailRepair(tripId);
 
   useEffect(() => {
     setSelectedPersonName(null);
     setSelectedFace(null);
     setConfirmError(null);
+    setDeleteError(null);
+    setIsDeleting(false);
     setViewerImageSize(null);
   }, [item?.id]);
 
   if (!item?.photo?.displayUrl) return null;
 
   const driveUrl = getMediaAssetDriveUrl(item.photo);
+  const showDeleteAction = canCurrentUserManagePhoto(item, currentUserId);
+  const memoryId = item.memory.id;
 
   function openFaceAssignment() {
     if (!item?.photo) return;
@@ -1201,6 +1218,24 @@ function TimelinePhotoLightbox({
       return false;
     } finally {
       setConfirmingFaceId(null);
+    }
+  }
+
+  async function deletePhoto() {
+    if (!showDeleteAction || isDeleting) return;
+    const confirmed = window.confirm(t("timeline.confirm.deleteMemory"));
+    if (!confirmed) return;
+
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDelete(memoryId);
+      onClose();
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error ? error.message : t("timeline.error.deleteMemory"),
+      );
+      setIsDeleting(false);
     }
   }
 
@@ -1419,6 +1454,24 @@ function TimelinePhotoLightbox({
                   {t("timeline.album.assignFaces")}
                 </button>
               ) : null}
+
+              {showDeleteAction ? (
+                <div className="border-t border-stone-100 pt-3">
+                  <button
+                    type="button"
+                    onClick={deletePhoto}
+                    disabled={isDeleting}
+                    className="rounded-full bg-red-50 px-3 py-1.5 text-xs font-black text-red-700 disabled:opacity-50"
+                  >
+                    {isDeleting ? "删除中" : "删除图片"}
+                  </button>
+                  {deleteError ? (
+                    <p className="mt-2 text-xs font-semibold text-red-700">
+                      {deleteError}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </aside>
         </div>
@@ -1537,6 +1590,8 @@ function TrueTimelineView({
   tripId,
   currentUserId,
   initialDate,
+  hideDateStrip = false,
+  onFilterInteraction,
   onSaveMemory,
   onDeleteMemory,
   onReplyCreated,
@@ -1548,6 +1603,8 @@ function TrueTimelineView({
   tripId: string;
   currentUserId: string;
   initialDate?: string | null;
+  hideDateStrip?: boolean;
+  onFilterInteraction?: () => void;
   onSaveMemory: (
     memoryId: string,
     input: { content: string; locationName: string; capturedAt: string },
@@ -1629,23 +1686,33 @@ function TrueTimelineView({
   }, [groupedItems.length, hasMoreGroups, visibleGroupCount]);
 
   useEffect(() => {
+    if (hideDateStrip) return;
     if (!activeDate) return;
     const target = dateSectionRefs.current[activeDate];
     if (!target) return;
 
     const timer = window.setTimeout(() => {
-      const stripBottom = dateStripRef.current?.getBoundingClientRect().bottom ?? 0;
+      const toolbarBottom =
+        document
+          .querySelector<HTMLElement>(".otr-timeline-toolbar")
+          ?.getBoundingClientRect().bottom ?? 0;
+      const dateStripBottom =
+        document
+          .querySelector<HTMLElement>(".otr-timeline-date-strip")
+          ?.getBoundingClientRect().bottom ?? 0;
+      const stickyBottom = Math.max(toolbarBottom, dateStripBottom);
       const targetTop = target.getBoundingClientRect().top + window.scrollY;
       window.scrollTo({
-        top: Math.max(0, targetTop - stripBottom - 8),
+        top: Math.max(0, targetTop - stickyBottom - 12),
         behavior: "smooth",
       });
     }, 80);
 
     return () => window.clearTimeout(timer);
-  }, [activeDate, visibleGroupCount]);
+  }, [activeDate, hideDateStrip, visibleGroupCount]);
 
   function selectDate(date: string) {
+    onFilterInteraction?.();
     const dateIndex = dates.indexOf(date);
     if (dateIndex >= 0) {
       setVisibleGroupCount((current) =>
@@ -1659,42 +1726,52 @@ function TrueTimelineView({
 
   return (
     <section className="space-y-4">
-      <div
-        ref={dateStripRef}
-        className={`otr-timeline-date-strip -mx-4 overflow-x-auto border-y border-emerald-100 bg-stone-50/95 px-4 py-3 shadow-sm backdrop-blur ${
-          isSearchActive
-            ? "fixed inset-x-0 top-[7.75rem] z-[2147482500] md:sticky md:top-[8.25rem]"
-            : "sticky top-[9.75rem] z-20 md:top-[8.25rem]"
-        }`}
-      >
-        <div className="flex gap-2">
-          {dates.map((date) => {
-            const active = activeDate === date;
-            const isToday = date === getLocalDateKey(new Date().toISOString());
+      {!hideDateStrip ? (
+        <div
+          ref={dateStripRef}
+          className={`otr-timeline-date-strip overflow-hidden border-x border-b border-stone-200 bg-white px-3 py-2 shadow-sm backdrop-blur ${
+            isSearchActive
+              ? "fixed inset-x-0 top-[7.75rem] z-[2147482500] md:sticky md:top-[8.25rem]"
+              : "sticky z-20 rounded-b-3xl"
+          }`}
+        >
+          <div className="overflow-x-auto px-0.5 pb-1">
+            <div className="flex gap-2">
+            {dates.map((date) => {
+              const active = activeDate === date;
+              const isToday = date === getLocalDateKey(new Date().toISOString());
+              const itemCount =
+                groupedItems.find((group) => group.date === date)?.items.length ?? 0;
 
-            return (
-              <button
-                type="button"
-                key={date}
-                onClick={() => selectDate(date)}
-                className={`shrink-0 rounded-2xl border px-4 py-2 text-sm font-black ${
-                  active
-                    ? "border-emerald-700 bg-emerald-700 text-white"
-                    : isToday
-                      ? "border-amber-300 bg-amber-50 text-amber-900 shadow-sm ring-2 ring-amber-200"
-                    : "border-white bg-white text-stone-600 shadow-sm"
-                } ${active && isToday ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-stone-50" : ""}`}
-              >
-                {new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
-                  month: "short",
-                  day: "numeric",
-                })}
-              </button>
-            );
-          })}
+              return (
+                <button
+                  type="button"
+                  key={date}
+                  onClick={() => selectDate(date)}
+                  className={`min-w-[4.85rem] shrink-0 rounded-xl border px-3 py-2 text-left shadow-sm transition ${
+                    active
+                      ? "border-emerald-700 bg-emerald-700 text-white"
+                      : isToday
+                        ? "border-amber-300 bg-amber-50 text-amber-900 ring-2 ring-amber-200"
+                        : "border-stone-100 bg-white text-stone-700"
+                  } ${active && isToday ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-stone-50" : ""}`}
+                >
+                  <p className="text-[11px] font-black uppercase leading-none tracking-wide">
+                    {new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                    })}
+                  </p>
+                  <p className="mt-1 text-xs font-black leading-none">
+                    {itemCount} 条
+                  </p>
+                </button>
+              );
+            })}
+            </div>
+          </div>
         </div>
-      </div>
-      {isSearchActive ? <div className="h-[4.5rem] md:hidden" /> : null}
+      ) : null}
 
       <div className="space-y-7">
         {visibleGroups.map((group) => (
@@ -1705,11 +1782,11 @@ function TrueTimelineView({
             }}
             className="space-y-3"
           >
-            <div className="rounded-3xl bg-white p-4 shadow-sm">
-              <h2 className="text-2xl font-semibold text-stone-950">
+            <div className="px-1 pb-1 pt-3 sm:px-2">
+              <h2 className="text-2xl font-semibold tracking-tight text-stone-950">
                 {formatDayLabel(group.date)}
               </h2>
-              <p className="mt-1 text-sm text-stone-500">
+              <p className="mt-1 text-sm font-medium text-stone-500">
                 {t("timeline.true.count", { count: group.items.length })}
               </p>
             </div>
@@ -1749,23 +1826,27 @@ function AlbumView({
   items,
   members,
   tripId,
+  currentUserId,
   initialAssetId,
   autoOpenFaceAssignment,
   returnTo,
   onInitialAssetConsumed,
   onInitialAssetClosed,
   onFaceConfirmed,
+  onDeleteMemory,
   onEngagementChange,
 }: {
   items: TimelineItem[];
   members: JourneyMember[];
   tripId: string;
+  currentUserId: string;
   initialAssetId?: string | null;
   autoOpenFaceAssignment?: boolean;
   returnTo?: string | null;
   onInitialAssetConsumed?: () => void;
   onInitialAssetClosed?: () => void;
   onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
+  onDeleteMemory: (memoryId: string) => Promise<void>;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const { t } = useI18n();
@@ -1780,6 +1861,8 @@ function AlbumView({
   const [activeImageSize, setActiveImageSize] = useState<ImagePixelSize | null>(
     null,
   );
+  const [isDeletingPhoto, setIsDeletingPhoto] = useState(false);
+  const [deletePhotoError, setDeletePhotoError] = useState<string | null>(null);
   const requestRepair = useDriveThumbnailRepair(tripId);
   const photoItems = items
     .filter((item) => item.memory.type === "photo" && item.photo?.displayUrl)
@@ -1792,6 +1875,9 @@ function AlbumView({
   const activeDriveUrl = activeItem?.photo
     ? getMediaAssetDriveUrl(activeItem.photo)
     : null;
+  const canDeleteActivePhoto = activeItem
+    ? canCurrentUserManagePhoto(activeItem, currentUserId)
+    : false;
   const openedInitialAssetIdRef = useRef<string | null>(null);
   const returnToRef = useRef(returnTo);
   const initialViewerOpenRef = useRef(false);
@@ -1802,6 +1888,8 @@ function AlbumView({
 
   useEffect(() => {
     setActiveImageSize(null);
+    setIsDeletingPhoto(false);
+    setDeletePhotoError(null);
   }, [activeItem?.photo?.id]);
 
   useEffect(() => {
@@ -1863,6 +1951,25 @@ function AlbumView({
     setSelectedPersonName(null);
     setSelectedFace(null);
     setConfirmError(null);
+    setDeletePhotoError(null);
+  }
+
+  async function deleteActivePhoto() {
+    if (!activeItem || !canDeleteActivePhoto || isDeletingPhoto) return;
+    const confirmed = window.confirm(t("timeline.confirm.deleteMemory"));
+    if (!confirmed) return;
+
+    setIsDeletingPhoto(true);
+    setDeletePhotoError(null);
+    try {
+      await onDeleteMemory(activeItem.memory.id);
+      closeViewer();
+    } catch (error) {
+      setDeletePhotoError(
+        error instanceof Error ? error.message : t("timeline.error.deleteMemory"),
+      );
+      setIsDeletingPhoto(false);
+    }
   }
 
   function openFaceAssignment() {
@@ -2207,6 +2314,24 @@ function AlbumView({
                       >
                         {t("timeline.album.assignFaces")}
                       </button>
+                    ) : null}
+
+                    {canDeleteActivePhoto ? (
+                      <div className="border-t border-stone-100 pt-3">
+                        <button
+                          type="button"
+                          onClick={deleteActivePhoto}
+                          disabled={isDeletingPhoto}
+                          className="rounded-full bg-red-50 px-3 py-1.5 text-xs font-black text-red-700 disabled:opacity-50"
+                        >
+                          {isDeletingPhoto ? "删除中" : "删除图片"}
+                        </button>
+                        {deletePhotoError ? (
+                          <p className="mt-2 text-xs font-semibold text-red-700">
+                            {deletePhotoError}
+                          </p>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
                 </aside>
@@ -3250,6 +3375,12 @@ function TimelineContent({ user }: { user: User }) {
   );
   const activePhotoItem =
     flattenedVisibleItems.find((item) => item.id === activePhotoItemId) ?? null;
+  const suppressImmersiveUntilRef = useRef(0);
+  const userScrollInputUntilRef = useRef(0);
+
+  function suppressImmersiveSwitch() {
+    suppressImmersiveUntilRef.current = Date.now() + 1500;
+  }
 
   useEffect(() => {
     if (!isMobileSearchActive) return;
@@ -3294,6 +3425,10 @@ function TimelineContent({ user }: { user: User }) {
       document.body.classList.toggle("otr-album-immersive", enabled);
     };
 
+    const markUserScrollInput = () => {
+      userScrollInputUntilRef.current = Date.now() + 1200;
+    };
+
     const handleScroll = () => {
       if (window.innerWidth >= 768) {
         setImmersive(false);
@@ -3302,6 +3437,16 @@ function TimelineContent({ user }: { user: User }) {
       }
 
       const currentY = window.scrollY;
+      if (Date.now() < suppressImmersiveUntilRef.current) {
+        previousY = currentY;
+        return;
+      }
+
+      if (Date.now() > userScrollInputUntilRef.current) {
+        previousY = currentY;
+        return;
+      }
+
       const delta = currentY - previousY;
       if (Math.abs(delta) < 3) return;
 
@@ -3323,16 +3468,48 @@ function TimelineContent({ user }: { user: User }) {
       previousY = currentY;
     };
 
+    window.addEventListener("touchmove", markUserScrollInput, { passive: true });
+    window.addEventListener("wheel", markUserScrollInput, { passive: true });
     window.addEventListener("scroll", handleScroll, { passive: true });
-    window.addEventListener("resize", handleScroll);
     handleScroll();
 
     return () => {
+      window.removeEventListener("touchmove", markUserScrollInput);
+      window.removeEventListener("wheel", markUserScrollInput);
       window.removeEventListener("scroll", handleScroll);
-      window.removeEventListener("resize", handleScroll);
       document.body.classList.remove("otr-album-immersive");
     };
   }, [isMobileSearchActive, view]);
+
+  useEffect(() => {
+    function updateDateStripTop() {
+      const toolbar = document.querySelector<HTMLElement>(".otr-timeline-toolbar");
+      const bottom = toolbar?.getBoundingClientRect().bottom ?? 0;
+      document.documentElement.style.setProperty(
+        "--otr-timeline-date-strip-top",
+        `${Math.max(0, bottom)}px`,
+      );
+    }
+
+    updateDateStripTop();
+    const toolbar = document.querySelector<HTMLElement>(".otr-timeline-toolbar");
+    const observer =
+      typeof ResizeObserver === "undefined" || !toolbar
+        ? null
+        : new ResizeObserver(updateDateStripTop);
+    if (toolbar) {
+      observer?.observe(toolbar);
+    }
+    window.addEventListener("scroll", updateDateStripTop, { passive: true });
+    window.addEventListener("resize", updateDateStripTop);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("scroll", updateDateStripTop);
+      window.removeEventListener("resize", updateDateStripTop);
+      document.documentElement.style.removeProperty("--otr-timeline-date-strip-top");
+    };
+  }, [isMobileSearchActive, selectedMemberIds.length, query, view]);
 
   function closeMobileSearch() {
     setQuery("");
@@ -3349,6 +3526,7 @@ function TimelineContent({ user }: { user: User }) {
   }
 
   function toggleMember(memberId: string) {
+    suppressImmersiveSwitch();
     setSelectedMemberIds((current) =>
       current.includes(memberId)
         ? current.filter((id) => id !== memberId)
@@ -3452,6 +3630,14 @@ function TimelineContent({ user }: { user: User }) {
     }
   }
 
+  const shouldHideTimelineDateStrip =
+    isMobileSearchActive ||
+    query.trim().length > 0 ||
+    selectedMemberIds.length > 0 ||
+    view !== "timeline";
+  const isTimelineDateStripAttached =
+    view === "timeline" && !shouldHideTimelineDateStrip && filteredItems.length > 0;
+
   if (isLoading && !timelineResource.data && memories.length === 0) {
     return (
       <div className="space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
@@ -3466,7 +3652,7 @@ function TimelineContent({ user }: { user: User }) {
   }
 
   return (
-    <div className="space-y-4 sm:space-y-6">
+    <div className={isTimelineDateStripAttached ? "space-y-0" : "space-y-4 sm:space-y-6"}>
       {timelineResource.error && timelineResource.data ? (
         <p className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
           {t("timeline.error.load")}
@@ -3479,10 +3665,12 @@ function TimelineContent({ user }: { user: User }) {
       </section>
 
       <div
-        className={`otr-timeline-toolbar space-y-2 p-3 backdrop-blur md:sticky md:top-0 md:z-30 md:rounded-3xl md:bg-stone-50/95 md:shadow-sm ${
+        className={`otr-timeline-toolbar space-y-2 p-3 backdrop-blur md:sticky md:top-0 md:z-30 md:bg-stone-50/95 md:shadow-sm ${
           isMobileSearchActive
             ? "fixed inset-x-0 top-0 z-[2147482600] rounded-none border-b border-stone-200 bg-white shadow-lg md:sticky"
-            : "sticky top-0 z-30 rounded-3xl bg-stone-50/95 shadow-sm"
+            : isTimelineDateStripAttached
+              ? "sticky top-0 z-30 rounded-t-3xl rounded-b-none bg-stone-50/95 shadow-sm"
+              : "sticky top-0 z-30 rounded-3xl bg-stone-50/95 shadow-sm"
         }`}
       >
         <div
@@ -3622,6 +3810,8 @@ function TimelineContent({ user }: { user: User }) {
           onEngagementChange={handleMemoryEngagementChange}
           onOpenPhoto={(item) => setActivePhotoItemId(item.id)}
           isSearchActive={isMobileSearchActive}
+          hideDateStrip={shouldHideTimelineDateStrip}
+          onFilterInteraction={suppressImmersiveSwitch}
         />
       ) : null}
 
@@ -3643,12 +3833,14 @@ function TimelineContent({ user }: { user: User }) {
           items={albumDeepLink?.assetId ? timelineItems : filteredItems}
           members={members}
           tripId={tripId}
+          currentUserId={user.id}
           initialAssetId={albumDeepLink?.assetId ?? null}
           autoOpenFaceAssignment={albumDeepLink?.reviewFaces ?? false}
           returnTo={albumDeepLink?.returnTo ?? null}
           onInitialAssetConsumed={clearAlbumDeepLinkParams}
           onInitialAssetClosed={() => setAlbumDeepLink(null)}
           onFaceConfirmed={handleFaceConfirmed}
+          onDeleteMemory={handleDeleteMemory}
           onEngagementChange={handleMemoryEngagementChange}
         />
       ) : null}
@@ -3687,7 +3879,9 @@ function TimelineContent({ user }: { user: User }) {
         item={activePhotoItem}
         members={members}
         tripId={tripId}
+        currentUserId={user.id}
         onClose={() => setActivePhotoItemId(null)}
+        onDelete={handleDeleteMemory}
         onFaceConfirmed={handleFaceConfirmed}
         onEngagementChange={handleMemoryEngagementChange}
       />

@@ -2,7 +2,7 @@ import type { JourneyChatMessage } from "@/types";
 import { compressImageFile, makeSafeFileName } from "@/lib/images";
 import { getCurrentUser } from "./auth";
 import { supabase } from "./client";
-import { createPhotoMemory } from "./memories";
+import { createPhotoMemory, deleteMemoryEntry } from "./memories";
 import { requestVoiceTranscription } from "./media-assets";
 
 type ChatMessageRow = {
@@ -29,6 +29,8 @@ type ChatMessageRow = {
 
 const CHAT_MESSAGE_SELECT =
   "id, trip_id, user_id, journey_member_id, message_type, text_content, media_asset_id, memory_entry_id, media_url, voice_duration_ms, transcript_text, transcript_status, source_type, source_id, deleted_at, deleted_by, metadata, created_at, updated_at";
+
+const CHAT_REVOKE_WINDOW_MS = 30 * 60 * 1000;
 
 type MemorySyncRow = {
   id: string;
@@ -801,6 +803,42 @@ export async function revokeChatMessage(messageId: string) {
   if (!user) throw new Error("You must be logged in to revoke messages.");
   const now = new Date().toISOString();
 
+  const { data: revoked, error: rpcError } = await supabase.rpc(
+    "revoke_journey_chat_message_for_current_user",
+    { target_message_id: messageId },
+  );
+
+  if (!rpcError && revoked) {
+    return mapMessage(revoked as ChatMessageRow);
+  }
+
+  if (
+    rpcError &&
+    rpcError.code !== "PGRST202" &&
+    !rpcError.message.includes("function")
+  ) {
+    throw rpcError;
+  }
+
+  const { data: existing, error: loadError } = await supabase
+    .from("journey_chat_messages")
+    .select(CHAT_MESSAGE_SELECT)
+    .eq("id", messageId)
+    .eq("user_id", user.id)
+    .single();
+
+  if (loadError) throw loadError;
+  const current = mapMessage(existing as ChatMessageRow);
+  if (current.sourceType !== "chat") {
+    throw new Error("Only messages sent from group chat can be revoked here.");
+  }
+  if (current.deletedAt) {
+    throw new Error("Message has already been revoked.");
+  }
+  if (Date.now() - new Date(current.createdAt).getTime() > CHAT_REVOKE_WINDOW_MS) {
+    throw new Error("Messages can only be revoked within 30 minutes.");
+  }
+
   const { data, error } = await supabase
     .from("journey_chat_messages")
     .update({
@@ -815,6 +853,9 @@ export async function revokeChatMessage(messageId: string) {
     .single();
 
   if (error) throw error;
+  if (current.memoryEntryId) {
+    await deleteMemoryEntry(current.memoryEntryId);
+  }
   return mapMessage(data as ChatMessageRow);
 }
 
