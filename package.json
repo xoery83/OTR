@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "planner-import:test": "rm -rf .planner-import-test-build && tsc -p tsconfig.planner-import.json && node .planner-import-test-build/tests/run-planner-import-local-tests.js",
-    "capture:test": "rm -rf .capture-test-build && tsc -p tsconfig.capture.json && node .capture-test-build/tests/run-capture-fixtures.js"
+    "capture:test": "rm -rf .capture-test-build && tsc -p tsconfig.capture.json && node .capture-test-build/tests/run-capture-fixtures.js",
+    "capture2:test": "rm -rf .capture2-test-build && tsc -p tsconfig.capture2.json && node .capture2-test-build/tests/run-capture2-safe-classifier-fixtures.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.108.2",

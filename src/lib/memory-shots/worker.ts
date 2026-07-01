@@ -44,9 +44,15 @@ type MemoryRow = {
 type MediaAssetRow = {
   id: string;
   memory_entry_id: string | null;
+  storage_bucket: string | null;
+  compressed_file_path: string | null;
+  thumbnail_file_path: string | null;
+  legacy_supabase_path: string | null;
+  legacy_thumbnail_path: string | null;
   preview_url: string | null;
   thumbnail_url: string | null;
   provider_thumbnail_url: string | null;
+  thumbnail_drive_web_url: string | null;
   taken_at: string | null;
   scene_tags: string[] | null;
   ai_metadata: Record<string, unknown> | null;
@@ -78,6 +84,15 @@ type MemoryShotContent = {
   subtitle: string;
   sections: string[];
   htmlPreview: string;
+  storyScript: {
+    title: string;
+    subtitle: string;
+    storyBeats: string[];
+    ending: string | null;
+    selectedAssetIds: string[];
+    heroImageUrl: string | null;
+  };
+  heroImageUrl: string | null;
   modelInfo: {
     provider: string | null;
     model: string | null;
@@ -114,25 +129,76 @@ function asStringArray(value: unknown) {
   return value.map((item) => String(item)).filter(Boolean);
 }
 
+function compactStoryBeat(value: string) {
+  const text = compactText(value);
+  return text.length > 155 ? `${text.slice(0, 152).trim()}...` : text;
+}
+
+function firstNonEmpty(values: Array<string | null | undefined>) {
+  return values.find((value): value is string => Boolean(value?.trim())) ?? null;
+}
+
+function photoDisplayUrl(photo: {
+  id?: string;
+  previewUrl?: string | null;
+  thumbnailUrl?: string | null;
+  providerThumbnailUrl?: string | null;
+  thumbnailDriveWebUrl?: string | null;
+  signedStorageUrl?: string | null;
+}) {
+  return firstNonEmpty([
+    photo.previewUrl,
+    photo.thumbnailUrl,
+    photo.providerThumbnailUrl,
+    photo.thumbnailDriveWebUrl,
+    photo.id ? `/api/media/assets/${photo.id}/preview` : null,
+    photo.signedStorageUrl,
+  ]);
+}
+
+function selectedHeroPhoto(
+  snapshot: CollectedJourneyDayData,
+  selectedAssetIds: string[],
+) {
+  const selected = snapshot.photos.find(
+    (photo) => selectedAssetIds.includes(photo.id) && Boolean(photo.displayUrl),
+  );
+  return selected ?? snapshot.photos.find((photo) => Boolean(photo.displayUrl)) ?? null;
+}
+
 function fallbackSections(snapshot: CollectedJourneyDayData) {
+  const place = snapshot.locations[0] ?? snapshot.trip.destination ?? snapshot.trip.name;
+  const strongestMemory = snapshot.memories.find((memory) => memory.content)?.content;
+  const strongestPlan = snapshot.plannerItems.find((item) => item.title)?.title;
   const sections = [
-    snapshot.memories.length > 0
-      ? `Captured ${snapshot.memories.length} journey moments.`
+    strongestMemory
+      ? `The day found its shape in ${place}, with ${strongestMemory.toLocaleLowerCase()}.`
+      : null,
+    strongestPlan
+      ? `${strongestPlan} became the marker everyone would remember from this part of the journey.`
       : null,
     snapshot.photos.length > 0
-      ? `Collected ${snapshot.photos.length} photos from the day.`
+      ? "A few saved frames carried the feeling better than a checklist ever could."
       : null,
-    snapshot.plannerItems.length > 0
-      ? `Planned ${snapshot.plannerItems.length} itinerary items.`
-      : null,
-    snapshot.locations.length > 0
-      ? `Moved through ${snapshot.locations.slice(0, 3).join(", ")}.`
+    snapshot.people.length > 1
+      ? `Shared by ${snapshot.people.slice(0, 3).map((person) => person.displayName).join(", ")}.`
       : null,
   ].filter((section): section is string => Boolean(section));
 
   return sections.length > 0
     ? sections
-    : ["A quiet travel day was saved for this Journey."];
+    : ["A quiet travel day became a small story worth keeping."];
+}
+
+function fallbackTitle(snapshot: CollectedJourneyDayData) {
+  const place = snapshot.locations[0] ?? snapshot.trip.destination;
+  if (place) return `A Day in ${place}`;
+  return "A Day Worth Keeping";
+}
+
+function fallbackSubtitle(snapshot: CollectedJourneyDayData) {
+  const place = snapshot.locations[0] ?? snapshot.trip.destination ?? snapshot.trip.name;
+  return `${snapshot.date}${place ? ` · ${place}` : ""}`;
 }
 
 function parseGeneratedContent(content: string, snapshot: CollectedJourneyDayData) {
@@ -140,19 +206,35 @@ function parseGeneratedContent(content: string, snapshot: CollectedJourneyDayDat
     const trimmed = content.trim();
     const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
     const parsed = JSON.parse(fenced ? fenced[1] : trimmed) as Record<string, unknown>;
-    const sections = asStringArray(parsed.sections).slice(0, 6);
+    const storyBeats = [
+      ...asStringArray(parsed.story_beats),
+      ...asStringArray(parsed.storyBeats),
+      ...asStringArray(parsed.sections),
+    ].slice(0, 4);
+    const selectedAssetIds = [
+      ...asStringArray(parsed.selected_asset_ids),
+      ...asStringArray(parsed.selectedAssetIds),
+    ].slice(0, 6);
+    const ending = compactText(String(parsed.ending ?? parsed.quote ?? ""), "");
     return {
-      title: compactText(String(parsed.title ?? ""), "Daily Best Moments"),
-      subtitle: compactText(String(parsed.subtitle ?? ""), ""),
-      sections: sections.length > 0 ? sections : fallbackSections(snapshot),
+      title: compactText(String(parsed.title ?? ""), fallbackTitle(snapshot)),
+      subtitle: compactText(String(parsed.subtitle ?? ""), fallbackSubtitle(snapshot)),
+      sections:
+        storyBeats.length > 0
+          ? storyBeats.map(compactStoryBeat)
+          : fallbackSections(snapshot).map(compactStoryBeat),
+      ending: ending || null,
+      selectedAssetIds,
       raw: parsed,
       parseFallbackUsed: false,
     };
   } catch {
     return {
-      title: "Daily Best Moments",
-      subtitle: "Generated from your Journey moments.",
-      sections: fallbackSections(snapshot),
+      title: fallbackTitle(snapshot),
+      subtitle: fallbackSubtitle(snapshot),
+      sections: fallbackSections(snapshot).map(compactStoryBeat),
+      ending: null,
+      selectedAssetIds: [],
       raw: { text: content },
       parseFallbackUsed: true,
     };
@@ -163,17 +245,26 @@ function htmlPreview(input: {
   title: string;
   subtitle: string;
   sections: string[];
+  ending: string | null;
   date: string;
+  heroImageUrl: string | null;
 }) {
   const sections = input.sections
-    .map((section) => `<li>${escapeHtml(section)}</li>`)
+    .map((section) => `<p class="story-beat">${escapeHtml(section)}</p>`)
     .join("");
   return [
-    '<article class="memory-shot memory-shot-daily-best-moments">',
-    `<p class="memory-shot-date">${escapeHtml(input.date)}</p>`,
+    '<article class="otr-story-poster otr-story-daily-best-moments">',
+    input.heroImageUrl
+      ? `<figure class="story-hero"><img src="${escapeHtml(input.heroImageUrl)}" alt="Story hero image" /></figure>`
+      : "",
+    '<section class="story-copy">',
+    `<p class="story-brand">OTR Journey Story</p>`,
+    `<p class="story-date">${escapeHtml(input.date)}</p>`,
     `<h1>${escapeHtml(input.title)}</h1>`,
-    input.subtitle ? `<p>${escapeHtml(input.subtitle)}</p>` : "",
-    sections ? `<ul>${sections}</ul>` : "",
+    input.subtitle ? `<p class="story-subtitle">${escapeHtml(input.subtitle)}</p>` : "",
+    sections ? `<div class="story-beats">${sections}</div>` : "",
+    input.ending ? `<p class="story-ending">${escapeHtml(input.ending)}</p>` : "",
+    "</section>",
     "</article>",
   ].join("");
 }
@@ -229,6 +320,69 @@ async function inferDate(
     new Date().toISOString().slice(0, 10);
 }
 
+function photoStoragePath(photo: MediaAssetRow) {
+  return firstNonEmpty([
+    photo.thumbnail_file_path,
+    photo.legacy_thumbnail_path,
+    photo.compressed_file_path,
+    photo.legacy_supabase_path,
+  ]);
+}
+
+async function createSignedPhotoUrls(
+  supabase: WorkerSupabase,
+  photos: MediaAssetRow[],
+) {
+  const pathByPhotoId = new Map<string, string>();
+  const bucketByPath = new Map<string, string>();
+
+  photos.forEach((photo) => {
+    if (
+      photo.preview_url ||
+      photo.thumbnail_url ||
+      photo.provider_thumbnail_url ||
+      photo.thumbnail_drive_web_url
+    ) {
+      return;
+    }
+    const path = photoStoragePath(photo);
+    const bucket = photo.storage_bucket || "trip-media";
+    if (!path) return;
+    pathByPhotoId.set(photo.id, path);
+    bucketByPath.set(path, bucket);
+  });
+
+  const urls: Record<string, string> = {};
+  const pathsByBucket = [...bucketByPath.entries()].reduce<Record<string, string[]>>(
+    (grouped, [path, bucket]) => {
+      grouped[bucket] = [...(grouped[bucket] ?? []), path];
+      return grouped;
+    },
+    {},
+  );
+
+  await Promise.all(
+    Object.entries(pathsByBucket).map(async ([bucket, paths]) => {
+      const { data, error } = await supabase.storage
+        .from(bucket)
+        .createSignedUrls(paths, 60 * 60);
+      if (error) return;
+      const signedByPath = new Map<string, string>();
+      for (const item of data ?? []) {
+        if (item.path && item.signedUrl) {
+          signedByPath.set(item.path, item.signedUrl);
+        }
+      }
+      for (const [photoId, path] of pathByPhotoId.entries()) {
+        const signedUrl = signedByPath.get(path);
+        if (signedUrl) urls[photoId] = signedUrl;
+      }
+    }),
+  );
+
+  return urls;
+}
+
 async function collectJourneyDayData(
   supabase: WorkerSupabase,
   trip: TripRow,
@@ -253,7 +407,7 @@ async function collectJourneyDayData(
     supabase
       .from("media_assets")
       .select(
-        "id, memory_entry_id, preview_url, thumbnail_url, provider_thumbnail_url, taken_at, scene_tags, ai_metadata, created_at",
+        "id, memory_entry_id, storage_bucket, compressed_file_path, thumbnail_file_path, legacy_supabase_path, legacy_thumbnail_path, preview_url, thumbnail_url, provider_thumbnail_url, thumbnail_drive_web_url, taken_at, scene_tags, ai_metadata, created_at",
       )
       .eq("trip_id", trip.id)
       .eq("asset_type", "image")
@@ -289,9 +443,29 @@ async function collectJourneyDayData(
     locationName: memory.location_name,
     capturedAt: memory.captured_at,
   }));
-  const photos = ((photosResult.data ?? []) as MediaAssetRow[]).map((photo) => ({
+  const photoRows = ((photosResult.data ?? []) as MediaAssetRow[]).filter(
+    (photo) => {
+      const photoDate = dateKey(photo.taken_at) ?? dateKey(photo.created_at);
+      return photoDate === date;
+    },
+  );
+  const signedPhotoUrls = await createSignedPhotoUrls(supabase, photoRows);
+  const photos = photoRows.map((photo) => ({
     id: photo.id,
     memoryEntryId: photo.memory_entry_id,
+    previewUrl: photo.preview_url,
+    thumbnailUrl: photo.thumbnail_url,
+    providerThumbnailUrl: photo.provider_thumbnail_url,
+    thumbnailDriveWebUrl: photo.thumbnail_drive_web_url,
+    signedStorageUrl: signedPhotoUrls[photo.id] ?? null,
+    displayUrl: photoDisplayUrl({
+      id: photo.id,
+      previewUrl: photo.preview_url,
+      thumbnailUrl: photo.thumbnail_url,
+      providerThumbnailUrl: photo.provider_thumbnail_url,
+      thumbnailDriveWebUrl: photo.thumbnail_drive_web_url,
+      signedStorageUrl: signedPhotoUrls[photo.id] ?? null,
+    }),
     takenAt: photo.taken_at,
     sceneTags: photo.scene_tags ?? [],
     summary:
@@ -349,6 +523,9 @@ function buildMemoryShotContent(input: {
   title: string;
   subtitle: string;
   sections: string[];
+  ending: string | null;
+  selectedAssetIds: string[];
+  heroImageUrl: string | null;
   htmlPreview: string;
   provider: string | null;
   model: string | null;
@@ -361,6 +538,15 @@ function buildMemoryShotContent(input: {
     subtitle: input.subtitle,
     sections: input.sections,
     htmlPreview: input.htmlPreview,
+    storyScript: {
+      title: input.title,
+      subtitle: input.subtitle,
+      storyBeats: input.sections,
+      ending: input.ending,
+      selectedAssetIds: input.selectedAssetIds,
+      heroImageUrl: input.heroImageUrl,
+    },
+    heroImageUrl: input.heroImageUrl,
     modelInfo: {
       provider: input.provider,
       model: input.model,
@@ -497,27 +683,34 @@ export async function runDailyBestMomentsMemoryShotJob(
       task: "memory_shot_daily_best_moments",
       responseFormat: "json",
       temperature: 0.2,
-      maxTokens: 900,
+      maxTokens: 1100,
       messages: [
         {
           role: "system",
           content:
-            "You generate compact JSON for OTR Memory Shots. Use only provided Journey data. Return JSON with title, subtitle, and sections as an array of strings.",
+            "You generate compact JSON Story Scripts for OTR Journey Story posters. Use only provided Journey data. Do not write checklist summaries, ledger amounts, or sensitive spending details. Return JSON with title, subtitle, story_beats, ending, and selected_asset_ids.",
         },
         { role: "user", content: prompt.renderedPrompt },
       ],
     });
     const parsed = parseGeneratedContent(generated.content, snapshot);
+    const heroPhoto = selectedHeroPhoto(snapshot, parsed.selectedAssetIds);
+    const heroImageUrl = heroPhoto?.displayUrl ?? null;
     const preview = htmlPreview({
       title: parsed.title,
       subtitle: parsed.subtitle,
       sections: parsed.sections,
+      ending: parsed.ending,
       date,
+      heroImageUrl,
     });
     const content = buildMemoryShotContent({
       title: parsed.title,
       subtitle: parsed.subtitle,
       sections: parsed.sections,
+      ending: parsed.ending,
+      selectedAssetIds: parsed.selectedAssetIds,
+      heroImageUrl,
       htmlPreview: preview,
       provider: generated.router.provider,
       model: generated.router.model,

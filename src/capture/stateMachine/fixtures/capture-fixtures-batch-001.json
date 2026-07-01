@@ -65,6 +65,23 @@
       }
     },
     {
+      "id": "query_112",
+      "lang": "zh",
+      "category": "query",
+      "description": "帮我查一下明天都有什么活动？",
+      "input": "帮我查一下明天都有什么活动?",
+      "initialState": {},
+      "expected": {
+        "intentType": "query_planner",
+        "action": "answer",
+        "fields": {
+          "date": "tomorrow"
+        },
+        "missingFields": [],
+        "confidenceMin": 0.88
+      }
+    },
+    {
       "id": "query_004",
       "lang": "zh",
       "category": "query",

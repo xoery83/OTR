@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": ".capture2-test-build",
+    "rootDir": ".",
+    "noEmit": false
+  },
+  "include": [
+    "src/lib/capture2/safe-classifier.ts",
+    "src/lib/capture2/safe-classifier.fixtures.ts",
+    "src/lib/capture2/safe-rules.ts",
+    "tests/run-capture2-safe-classifier-fixtures.ts"
+  ]
+}

@@ -3,6 +3,7 @@
 import {
   createContext,
   type FormEvent,
+  type KeyboardEvent,
   type ReactNode,
   useContext,
   useEffect,
@@ -73,6 +74,9 @@ type CaptureOpenOptions = {
   intentLock?: CaptureEngineOptions["intentLock"];
   mode?: CaptureEngineOptions["mode"];
   lockedContext?: CaptureEngineOptions["lockedContext"];
+  quickRecordType?: Exclude<QuickRecordType, "">;
+  quickRecordPrefill?: Partial<QuickRecordFormState>;
+  initialText?: string;
 };
 
 type CaptureModalContextValue = {
@@ -350,6 +354,19 @@ function MicrophoneIcon({ className = "size-4" }: { className?: string }) {
       <path d="M8 22h8" />
     </svg>
   );
+}
+
+function blurActiveElementForKeyboard() {
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLElement) {
+    activeElement.blur();
+  }
+}
+
+function waitForKeyboardDismissal() {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 180);
+  });
 }
 
 export function useCaptureModal() {
@@ -680,6 +697,22 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     },
   });
 
+  async function toggleCaptureVoice() {
+    if (recorder.isRecording) {
+      recorder.stop();
+      return;
+    }
+
+    if (isTranscribing || isSubmitting || !selectedTripId) {
+      return;
+    }
+
+    setShowCaptureEmoji(false);
+    blurActiveElementForKeyboard();
+    await waitForKeyboardDismissal();
+    await recorder.start();
+  }
+
   useEffect(() => {
     return () => {
       if (compressedImage?.previewUrl) {
@@ -724,6 +757,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
   }
 
   function openCapture(options?: CaptureOpenOptions) {
+    const nextTripId = options?.tripId ?? selectedTripId ?? activeTripId;
     if (!sessionId) {
       const nextSessionId = crypto.randomUUID();
       setSessionId(nextSessionId);
@@ -748,9 +782,29 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         lockedContext,
       });
     }
+    if (nextTripId) {
+      setSelectedTripId(nextTripId);
+      void getJourneyMembers(nextTripId)
+        .then(setMembers)
+        .catch(() => setMembers([]));
+    }
+    if (options?.quickRecordType) {
+      setQuickRecordType(options.quickRecordType);
+      setQuickRecordForm({
+        ...defaultQuickRecordForm(options.quickRecordType),
+        ...(options.quickRecordPrefill ?? {}),
+      });
+      setIsQuickRecordOpen(true);
+      setQuickRecordError(null);
+      setError(null);
+      closeImmersiveInput();
+    }
+    if (typeof options?.initialText === "string") {
+      setText(options.initialText);
+    }
     setIsOpen(true);
     if (trips.length === 0 || options?.tripId) {
-      void loadTrips(options?.tripId ?? selectedTripId ?? activeTripId);
+      void loadTrips(nextTripId);
     }
   }
 
@@ -2519,6 +2573,22 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
       !isDetectingIntent &&
       Boolean(selectedTripId) &&
       Boolean(text.trim() || compressedImage);
+    const submitCaptureFromKeyboard = (
+      event: KeyboardEvent<HTMLTextAreaElement>,
+    ) => {
+      if (
+        !event.shiftKey &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.nativeEvent.isComposing &&
+        event.key === "Enter" &&
+        canSubmit
+      ) {
+        event.preventDefault();
+        event.currentTarget.form?.requestSubmit();
+      }
+    };
 
     return (
       <form
@@ -2569,10 +2639,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         <div className="flex items-end gap-2">
           <button
             type="button"
-            onPointerDown={(event) => event.preventDefault()}
-            onClick={() =>
-              recorder.isRecording ? recorder.stop() : void recorder.start()
-            }
+            onClick={() => void toggleCaptureVoice()}
             disabled={isTranscribing || isSubmitting || !selectedTripId}
             className={`grid size-11 shrink-0 place-items-center rounded-2xl shadow-sm transition active:scale-95 disabled:text-stone-300 md:rounded-full ${
               recorder.isRecording
@@ -2594,8 +2661,9 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
             value={text}
             onFocus={isImmersive ? undefined : focusCaptureInput}
             onChange={(event) => setText(event.target.value)}
+            onKeyDown={isImmersive ? submitCaptureFromKeyboard : undefined}
             rows={1}
-            enterKeyHint="enter"
+            enterKeyHint={isImmersive ? "send" : "enter"}
             autoFocus={isImmersive}
             placeholder={capturePlaceholder}
             className="max-h-28 min-h-11 flex-1 resize-none rounded-xl border border-stone-200 bg-white px-3 py-2 text-base font-semibold leading-7 text-stone-950 placeholder:text-stone-500 shadow-sm outline-none focus:border-emerald-600 md:rounded-2xl md:text-sm md:leading-5"
@@ -2625,7 +2693,9 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
           <button
             type="submit"
             disabled={!canSubmit}
-            className="h-11 shrink-0 rounded-xl bg-emerald-700 px-3 text-sm font-black text-white disabled:hidden md:rounded-full md:px-4"
+            className={`h-11 shrink-0 rounded-xl bg-emerald-700 px-3 text-sm font-black text-white disabled:hidden md:rounded-full md:px-4 ${
+              isImmersive ? "hidden md:block" : ""
+            }`}
           >
             {isDetectingIntent ? "..." : t("capture.action.send")}
           </button>
@@ -3074,6 +3144,30 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
           document.body,
         )
       : null;
+  const captureRecordingPortal =
+    isOpen && recorder.isRecording && typeof document !== "undefined"
+      ? createPortal(
+          <div className="fixed inset-0 z-[2147483300] flex items-center justify-center bg-stone-950/45 px-6 text-white backdrop-blur-sm">
+            <div className="w-full max-w-xs rounded-3xl bg-stone-950/85 p-6 text-center shadow-2xl">
+              <div className="mx-auto grid size-20 place-items-center rounded-full bg-red-600 text-white shadow-lg shadow-red-950/30">
+                <MicrophoneIcon className="size-10" />
+              </div>
+              <p className="mt-4 text-xl font-black">正在录音</p>
+              <p className="mt-2 text-sm font-semibold text-white/75">
+                结束后会转成文字填入输入框
+              </p>
+              <button
+                type="button"
+                onClick={() => recorder.stop()}
+                className="mt-5 h-12 w-full rounded-2xl bg-white text-base font-black text-stone-950 active:scale-95"
+              >
+                结束录音
+              </button>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
 
   return (
     <CaptureModalContext.Provider value={{ openCapture }}>
@@ -3270,6 +3364,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
           </section>
           {immersiveInputPortal}
           {renderQuickRecordForm()}
+          {captureRecordingPortal}
         </div>
       ) : null}
     </CaptureModalContext.Provider>

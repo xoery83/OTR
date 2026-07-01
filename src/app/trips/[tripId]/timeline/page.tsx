@@ -1699,8 +1699,8 @@ function TrueTimelineView({
           .filter((item) => item.dateKey === date)
           .sort(
             (left, right) =>
-              new Date(left.capturedAt).getTime() -
-              new Date(right.capturedAt).getTime(),
+              new Date(right.capturedAt).getTime() -
+              new Date(left.capturedAt).getTime(),
           ),
       })),
     [dates, items],
@@ -3296,6 +3296,7 @@ function TimelineContent({ user }: { user: User }) {
       .subscribe();
 
     window.addEventListener("otr:capture-completed", scheduleRefresh);
+    window.addEventListener("otr:memory-created", scheduleRefresh);
     window.addEventListener("otr:background-jobs-changed", scheduleRefresh);
     window.addEventListener("otr:photo-upload-completed", scheduleRefresh);
 
@@ -3304,6 +3305,7 @@ function TimelineContent({ user }: { user: User }) {
         window.clearTimeout(refreshTimer);
       }
       window.removeEventListener("otr:capture-completed", scheduleRefresh);
+      window.removeEventListener("otr:memory-created", scheduleRefresh);
       window.removeEventListener("otr:background-jobs-changed", scheduleRefresh);
       window.removeEventListener("otr:photo-upload-completed", scheduleRefresh);
       void supabase.removeChannel(channel);

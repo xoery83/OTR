@@ -1,7 +1,14 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { classifyCapture2SafeIntent } from "@/lib/capture2/safe-classifier";
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+const CAPTURE2_TRANSCRIPTION_PROMPT = [
+  "这是 OTR Journey 旅行应用的中文语音输入。",
+  "用户常说：今天都有什么行程、今天有什么安排、导航去酒店、停车50欧、加油100欧、今晚订了酒店。",
+  "请保留中文语义，特别注意把旅行语境里的“行程”不要误写成“形成”。",
+  "地名、人名、货币可以保留中英混合。",
+].join("\n");
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
@@ -44,18 +51,48 @@ function getSupabaseForRequest(request: Request) {
   });
 }
 
-async function transcribeAudio(file: File) {
+function parseMetadata(value: FormDataEntryValue | null) {
+  if (typeof value !== "string" || !value.trim()) return {};
   try {
-    return await transcribeWithAiServer(file);
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+type TranscriptionOptions = {
+  preferOpenAi?: boolean;
+  language?: string;
+  prompt?: string;
+};
+
+async function transcribeAudio(file: File, options: TranscriptionOptions = {}) {
+  if (options.preferOpenAi && process.env.OPENAI_API_KEY) {
+    try {
+      return await transcribeWithOpenAi(file, options);
+    } catch (openAiError) {
+      try {
+        return await transcribeWithAiServer(file, options);
+      } catch {
+        throw openAiError;
+      }
+    }
+  }
+
+  try {
+    return await transcribeWithAiServer(file, options);
   } catch (error) {
     if (!process.env.OPENAI_API_KEY) {
       throw error;
     }
-    return transcribeWithOpenAi(file);
+    return transcribeWithOpenAi(file, options);
   }
 }
 
-async function transcribeWithAiServer(file: File) {
+async function transcribeWithAiServer(file: File, options: TranscriptionOptions = {}) {
   const aiServerUrl = process.env.STT_SERVICE_URL || process.env.AI_SERVER_URL;
   const aiServerSecret = process.env.AI_SERVER_SECRET;
   if (!aiServerUrl || !aiServerSecret) {
@@ -64,6 +101,8 @@ async function transcribeWithAiServer(file: File) {
 
   const formData = new FormData();
   formData.append("audio", file, file.name || "capture-audio.webm");
+  if (options.language) formData.append("language", options.language);
+  if (options.prompt) formData.append("prompt", options.prompt);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120_000);
@@ -100,7 +139,7 @@ async function transcribeWithAiServer(file: File) {
   }
 }
 
-async function transcribeWithOpenAi(file: File) {
+async function transcribeWithOpenAi(file: File, options: TranscriptionOptions = {}) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not configured.");
@@ -113,6 +152,8 @@ async function transcribeWithOpenAi(file: File) {
     process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe",
   );
   formData.append("response_format", "json");
+  if (options.language) formData.append("language", options.language);
+  if (options.prompt) formData.append("prompt", options.prompt);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60_000);
@@ -157,6 +198,7 @@ export async function POST(request: Request) {
     const timezone = String(formData.get("timezone") || "");
     const capturedAt = String(formData.get("capturedAt") || new Date().toISOString());
     const file = formData.get("audio");
+    const extraMetadata = parseMetadata(formData.get("metadata"));
 
     if (!tripId) {
       return jsonError("tripId is required.", 400);
@@ -186,10 +228,20 @@ export async function POST(request: Request) {
       return jsonError("Journey not found.", 404);
     }
 
-    const transcript = await transcribeAudio(file);
+    const isCapture2Preview = extraMetadata.source === "capture2_preview";
+    const transcript = await transcribeAudio(file, {
+      preferOpenAi:
+        isCapture2Preview && process.env.CAPTURE2_STT_PROVIDER !== "ai_server",
+      language: isCapture2Preview ? "zh" : undefined,
+      prompt: isCapture2Preview ? CAPTURE2_TRANSCRIPTION_PROMPT : undefined,
+    });
     if (!transcript.text) {
       return jsonError("No speech was detected.", 422);
     }
+    const safeClassification =
+      isCapture2Preview
+        ? classifyCapture2SafeIntent(transcript.text)
+        : null;
 
     const { data: eventRow, error: insertError } = await supabase
       .from("journey_capture_events")
@@ -202,12 +254,21 @@ export async function POST(request: Request) {
         captured_at: new Date(capturedAt).toISOString(),
         timezone: timezone || null,
         metadata: {
+          ...extraMetadata,
           fileName: file.name,
           fileType: file.type,
           fileSize: file.size,
           transcriptionProvider: transcript.provider,
           transcriptionModel: transcript.model,
           rawTranscriptionResponse: transcript.rawResponse,
+          ...(safeClassification
+            ? {
+                safeClassifier: {
+                  version: "v2",
+                  ...safeClassification,
+                },
+              }
+            : {}),
         },
         status: "raw",
       })

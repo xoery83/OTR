@@ -309,6 +309,20 @@ function SettingsContent({ user }: { user: User }) {
         </p>
       </Link>
 
+      <Link
+        href="/settings/capture2-inbox"
+        className="block rounded-2xl border border-emerald-100 bg-white p-5 shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50"
+      >
+        <p className="text-sm font-semibold text-emerald-700">Capture 2.0</p>
+        <h2 className="mt-1 text-xl font-semibold text-stone-950">
+          Today Review
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-stone-600">
+          Review today's captured moments, archive them, or organize them through
+          confirmed Memory, Ledger, and Planner flows.
+        </p>
+      </Link>
+
       {profile?.accountRole === "admin" ? (
         <section className="rounded-2xl border border-emerald-100 bg-white p-5 shadow-sm">
           <div>

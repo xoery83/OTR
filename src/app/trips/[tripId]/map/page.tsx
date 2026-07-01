@@ -1659,15 +1659,15 @@ function JourneyMapContent() {
         ) : null}
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-20 z-[500] px-3 md:bottom-5 md:px-5">
+      <div className="otr-mobile-map-floating-layer pointer-events-none absolute inset-x-0 z-[500] px-3 md:bottom-5 md:px-5">
         {!mapResource.data && mapResource.isLoading ? (
-          <p className="pointer-events-auto mb-3 inline-flex rounded-full bg-white px-4 py-2 text-sm font-black text-stone-600 shadow-lg">
+          <p className="pointer-events-auto mb-3 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-black text-stone-600 shadow-lg">
             {t("map.loading")}
           </p>
         ) : null}
 
         {mapResource.data && mappedStopCount === 0 ? (
-          <p className="pointer-events-auto mb-3 inline-flex rounded-full bg-white px-4 py-2 text-sm font-black text-stone-600 shadow-lg">
+          <p className="pointer-events-auto mb-3 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-black text-stone-600 shadow-lg">
             {t("map.noMappedStops")}
           </p>
         ) : null}

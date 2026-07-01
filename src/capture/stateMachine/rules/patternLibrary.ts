@@ -284,7 +284,7 @@ function resolveQuery(input: string, state: CaptureStateInput = {}): PatternMatc
 
   if (
     date &&
-    /安排|行程|计划|干嘛|做什么|what.*(?:plan|doing|schedule)|(?:plan|schedule)/i.test(input)
+    /安排|行程|活动|景点|计划|干嘛|做什么|what.*(?:plan|doing|schedule|activit)|(?:plan|schedule|activit)/i.test(input)
   ) {
     return {
       intentType: "query_planner",

@@ -4,10 +4,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useState } from "react";
+import { useCapture2Preview } from "@/components/Capture2PreviewProvider";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
 import { hasUnreadJourneyChat } from "@/lib/supabase/chat";
+import { supabase } from "@/lib/supabase/client";
 
 type MobileNavIcon =
   | "journeys"
@@ -29,6 +31,11 @@ type MobileNavItem = {
   icon: MobileNavIcon;
 };
 
+type Capture2ReviewCountRow = {
+  status: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
 function getActiveTripId(pathname: string) {
   const match = pathname.match(/^\/trips\/([^/]+)/);
   const tripId = match?.[1];
@@ -43,6 +50,36 @@ function getActiveTripId(pathname: string) {
   }
 
   return null;
+}
+
+function needsCapture2Review(row: Capture2ReviewCountRow) {
+  if (row.status === "archived" || row.status === "processed") return false;
+  const inbox = row.metadata?.capture2Inbox;
+  const inboxStatus =
+    inbox && typeof inbox === "object"
+      ? (inbox as { status?: unknown }).status
+      : null;
+  if (inboxStatus === "archived" || inboxStatus === "processed") return false;
+
+  const capture2 = row.metadata?.capture2;
+  const safetyClass =
+    capture2 && typeof capture2 === "object"
+      ? (capture2 as { safetyClass?: unknown }).safetyClass
+      : null;
+  return row.status === "raw" || row.status === "deferred" || safetyClass === "deferred";
+}
+
+async function getCapture2ReviewCount(tripId: string) {
+  const { data, error } = await supabase
+    .from("journey_capture_events")
+    .select("status, metadata")
+    .eq("journey_id", tripId)
+    .filter("metadata->>source", "eq", "capture2_preview")
+    .not("status", "in", "(archived,processed)")
+    .limit(1000);
+
+  if (error) throw error;
+  return ((data ?? []) as Capture2ReviewCountRow[]).filter(needsCapture2Review).length;
 }
 
 function Icon({ name }: { name: MobileNavIcon }) {
@@ -199,10 +236,12 @@ export function BottomNav() {
   const pathname = usePathname();
   const { t } = useI18n();
   const { openCapture } = useCaptureModal();
+  const { openCapture2 } = useCapture2Preview();
   const activeTripId = getActiveTripId(pathname);
   const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
   const isChatPage = Boolean(pathname.match(/^\/trips\/[^/]+\/chat$/));
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
+  const [capture2ReviewCount, setCapture2ReviewCount] = useState(0);
   const [exploringHref, setExploringHref] = useState<string | null>(null);
   const globalItems: MobileNavItem[] = [
     { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
@@ -331,6 +370,61 @@ export function BottomNav() {
       <span className="text-xs font-black leading-none">{t("nav.capture")}</span>
     </button>
   );
+  const capture2Button = activeTripId ? (
+    <div
+      className="otr-mobile-capture2-float fixed left-3 z-40 flex items-center gap-2 md:hidden"
+    >
+      <button
+        type="button"
+        onClick={() => openCapture2({ tripId: activeTripId })}
+        className="grid size-11 place-items-center rounded-full border border-stone-200 bg-white/90 text-[11px] font-black uppercase tracking-wide text-stone-500 shadow-lg shadow-stone-950/10 backdrop-blur transition active:scale-95"
+        aria-label="Capture Beta"
+        title="Capture Beta"
+      >
+        Beta
+      </button>
+      <Link
+        href="/settings/capture2-inbox"
+        className="grid size-11 place-items-center rounded-full border border-emerald-100 bg-emerald-700 text-sm font-black text-white shadow-lg shadow-stone-950/10 transition active:scale-95"
+        aria-label={`${capture2ReviewCount} captures need review`}
+        title="Today Review"
+      >
+        {capture2ReviewCount > 99 ? "99+" : capture2ReviewCount}
+      </Link>
+    </div>
+  ) : null;
+
+  useEffect(() => {
+    if (!activeTripId) {
+      setCapture2ReviewCount(0);
+      return;
+    }
+
+    let cancelled = false;
+    async function refreshReviewCount() {
+      const count = await getCapture2ReviewCount(activeTripId!).catch(() => 0);
+      if (!cancelled) setCapture2ReviewCount(count);
+    }
+
+    void refreshReviewCount();
+    const interval = window.setInterval(refreshReviewCount, 30_000);
+    const onFocus = () => void refreshReviewCount();
+    const onCaptureChanged = () => void refreshReviewCount();
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("otr:capture2-changed", onCaptureChanged);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("otr:capture2-changed", onCaptureChanged);
+    };
+  }, [activeTripId]);
+
+  useEffect(() => {
+    document.body.classList.toggle("otr-map-page", isMapPage);
+    return () => document.body.classList.remove("otr-map-page");
+  }, [isMapPage]);
 
   useEffect(() => {
     if (!activeTripId || isChatPage) {
@@ -364,6 +458,7 @@ export function BottomNav() {
       <>
         {renderBottomBar(globalItems)}
         {captureButton}
+        {capture2Button}
       </>
     );
   }
@@ -406,6 +501,7 @@ export function BottomNav() {
   return (
     <>
       {renderBottomBar(journeyItems)}
+      {capture2Button}
       {isChatPage ? null : captureButton}
     </>
   );

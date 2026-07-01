@@ -148,7 +148,7 @@ from (
   values
     (
       'memory_shot_daily_best_moments',
-      'Create a concise Memory Shot draft from the provided Journey day data. Highlight the best real moments, avoid inventing facts, and return structured JSON for title, subtitle, sections, photo_notes, privacy_notes, and source_summary. Journey data: {{journey_data}}'
+      'Create a Journey Story poster script from the provided Journey day data. Use only the provided data. Return only valid JSON with title, subtitle, story_beats, ending, and selected_asset_ids. Prefer a warm travel-story voice. If photos exist, choose at least one useful photo id for selected_asset_ids. Do not use the words Memory Shot. Do not write a checklist, log, or database-style summary. Do not expose ledger amounts, payment details, receipts, or sensitive spending details. Journey data: {{journey_data}}'
     ),
     (
       'memory_shot_today_spending',
@@ -175,4 +175,3 @@ set
   metadata = public.prompt_template_versions.metadata || excluded.metadata
 where public.prompt_template_versions.status <> 'active'
   or public.prompt_template_versions.metadata ? 'seed';
-

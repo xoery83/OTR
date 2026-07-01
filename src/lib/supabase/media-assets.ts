@@ -693,6 +693,7 @@ export async function requestDriveThumbnailRepairForAssets(
 export async function requestVoiceTranscription(input: {
   tripId: string;
   audio: File;
+  metadata?: Record<string, unknown>;
 }) {
   const { data } = await supabase.auth.getSession();
   const accessToken = data.session?.access_token;
@@ -706,6 +707,9 @@ export async function requestVoiceTranscription(input: {
   formData.append("audio", input.audio);
   formData.append("timezone", Intl.DateTimeFormat().resolvedOptions().timeZone);
   formData.append("capturedAt", new Date().toISOString());
+  if (input.metadata) {
+    formData.append("metadata", JSON.stringify(input.metadata));
+  }
 
   const response = await fetch("/api/capture/transcribe", {
     method: "POST",

@@ -13,6 +13,7 @@ const fallbackBucket = "memory-shot-renders";
 const signedUrlTtlSeconds = 60 * 60 * 24 * 7;
 
 type RenderKind = "original" | "preview" | "thumbnail";
+type WebArtifactKind = "web" | "manifest" | "asset";
 
 type UploadRenderInput = {
   supabase: SupabaseClient;
@@ -62,6 +63,10 @@ function folderId(folder?: { id?: string; folderId?: string } | null) {
 
 function renderPath(input: UploadRenderInput, kind: RenderKind) {
   return `${input.journeyId}/${input.memoryShotId}/${kind}/${input.filename}`;
+}
+
+function webArtifactPath(input: UploadRenderInput, kind: WebArtifactKind) {
+  return `${input.journeyId}/${input.memoryShotId}/motion-story/${kind}/${input.filename}`;
 }
 
 function warningMessage(provider: string, error: unknown) {
@@ -287,6 +292,108 @@ async function uploadToMediaServer(
   );
 }
 
+async function uploadWebArtifactToMediaServer(
+  input: UploadRenderInput,
+  kind: WebArtifactKind,
+): Promise<RenderUploadResult> {
+  const workerSecret = process.env.MEDIA_WORKER_SECRET;
+  const workerUrls = mediaWorkerUrls();
+  if (workerUrls.length === 0 || !workerSecret) {
+    throw new Error("MEDIA_WORKER_URL and MEDIA_WORKER_SECRET are required.");
+  }
+
+  const path = webArtifactPath(input, kind);
+  let lastError: unknown = null;
+  for (const workerUrl of workerUrls) {
+    try {
+      const form = new FormData();
+      form.append("path", path);
+      form.append("kind", kind);
+      form.append("journeyId", input.journeyId);
+      form.append("memoryShotId", input.memoryShotId);
+      form.append(
+        "file",
+        new Blob([new Uint8Array(input.buffer)], { type: input.contentType }),
+        input.filename,
+      );
+      const response = await fetch(`${workerUrl}/memory-shots/renders`, {
+        method: "POST",
+        headers: {
+          "x-media-worker-secret": workerSecret,
+        },
+        body: form,
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        url?: string;
+        path?: string;
+        error?: string;
+        detail?: string;
+      };
+
+      if (!response.ok || !payload.url) {
+        throw new Error(
+          payload.error || payload.detail || "Media worker artifact upload failed.",
+        );
+      }
+
+      return {
+        provider: "media_server",
+        path: payload.path ?? path,
+        url: payload.url,
+        metadata: {
+          width: input.width ?? null,
+          height: input.height ?? null,
+          workerUrl,
+          kind,
+        },
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    lastError instanceof Error
+      ? lastError.message
+      : "Could not upload Memory Shot artifact to media worker.",
+  );
+}
+
+async function uploadWebArtifactToSupabaseFallback(
+  input: UploadRenderInput,
+  kind: WebArtifactKind,
+): Promise<RenderUploadResult> {
+  const path = webArtifactPath(input, kind);
+  const { error: uploadError } = await input.supabase.storage
+    .from(fallbackBucket)
+    .upload(path, input.buffer, {
+      contentType: input.contentType,
+      upsert: true,
+    });
+
+  if (uploadError) throw uploadError;
+
+  const { data, error: signedUrlError } = await input.supabase.storage
+    .from(fallbackBucket)
+    .createSignedUrl(path, signedUrlTtlSeconds);
+
+  if (signedUrlError || !data?.signedUrl) {
+    throw signedUrlError || new Error("Could not create artifact signed URL.");
+  }
+
+  return {
+    provider: "supabase_fallback",
+    path,
+    url: data.signedUrl,
+    metadata: {
+      bucket: fallbackBucket,
+      width: input.width ?? null,
+      height: input.height ?? null,
+      kind,
+    },
+  };
+}
+
 export async function uploadOriginalRender(
   input: UploadRenderInput,
 ): Promise<RenderUploadResult> {
@@ -329,4 +436,19 @@ export async function uploadThumbnailRender(
   }
 }
 
-export type { RenderUploadResult, UploadRenderInput };
+export async function uploadMotionStoryWebArtifact(
+  input: UploadRenderInput,
+  kind: WebArtifactKind,
+): Promise<RenderUploadResult> {
+  try {
+    return await uploadWebArtifactToMediaServer(input, kind);
+  } catch (error) {
+    const fallback = await uploadWebArtifactToSupabaseFallback(input, kind);
+    return {
+      ...fallback,
+      warning: warningMessage("media_server", error),
+    };
+  }
+}
+
+export type { RenderUploadResult, UploadRenderInput, WebArtifactKind };

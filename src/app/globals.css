@@ -375,14 +375,56 @@ input[type="date"] {
   body.otr-mobile-search-active [data-mobile-bottom-nav],
   body.otr-chat-keyboard-active [data-mobile-bottom-nav],
   body.otr-mobile-search-active [data-mobile-capture-button],
+  body.otr-mobile-search-active .otr-mobile-capture2-float,
   body.otr-album-immersive [data-mobile-bottom-nav],
   body.otr-album-immersive [data-mobile-capture-button],
+  body.otr-album-immersive .otr-mobile-capture2-float,
   body.otr-album-immersive [data-mobile-activity-center],
   body.otr-planner-immersive [data-mobile-bottom-nav],
   body.otr-planner-immersive [data-mobile-capture-button],
+  body.otr-planner-immersive .otr-mobile-capture2-float,
   body.otr-planner-immersive [data-mobile-activity-center],
   body.otr-mobile-search-active [data-mobile-activity-center] {
     display: none !important;
+  }
+
+  .otr-mobile-activity-float,
+  .otr-mobile-map-floating-layer,
+  .otr-mobile-capture2-float {
+    left: 1rem !important;
+    transition:
+      bottom 160ms ease,
+      opacity 160ms ease,
+      transform 160ms ease;
+  }
+
+  .otr-mobile-activity-float {
+    bottom: calc(5.75rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .otr-mobile-map-floating-layer {
+    right: auto !important;
+    bottom: calc(5.75rem + env(safe-area-inset-bottom, 0px));
+    width: min(360px, calc(100vw - 7rem));
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  body.otr-has-mobile-activity-center .otr-mobile-map-floating-layer {
+    bottom: calc(9rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .otr-mobile-capture2-float {
+    bottom: calc(5.75rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  body.otr-has-mobile-activity-center .otr-mobile-capture2-float,
+  body.otr-map-page .otr-mobile-capture2-float {
+    bottom: calc(10rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  body.otr-map-page.otr-has-mobile-activity-center .otr-mobile-capture2-float {
+    bottom: calc(13.5rem + env(safe-area-inset-bottom, 0px));
   }
 
   .otr-timeline-toolbar {
@@ -432,7 +474,8 @@ input[type="date"] {
   [data-mobile-app-header],
   [data-mobile-bottom-nav],
   [data-mobile-capture-button],
-  [data-mobile-activity-center] {
+  [data-mobile-activity-center],
+  .otr-mobile-capture2-float {
     transition:
       opacity 160ms ease,
       transform 160ms ease;
@@ -468,4 +511,24 @@ input[type="date"] {
   .otr-chat-voice-guard {
     touch-action: none;
   }
+}
+
+@keyframes capture2-upload-flow {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.capture2-upload-flow {
+  background: linear-gradient(
+    90deg,
+    rgba(16, 185, 129, 0.08) 0%,
+    rgba(16, 185, 129, 0.88) 42%,
+    rgba(20, 184, 166, 0.95) 58%,
+    rgba(16, 185, 129, 0.08) 100%
+  );
+  animation: capture2-upload-flow 1.05s linear infinite;
 }

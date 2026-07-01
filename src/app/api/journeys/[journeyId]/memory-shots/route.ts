@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { listMemoryShots } from "@/lib/memory-shots";
+import { listMemoryShotArtifacts } from "@/lib/memory-shots/artifacts";
 
 class HttpError extends Error {
   status: number;
@@ -83,8 +84,39 @@ export async function GET(
       supabase,
       limit: 20,
     });
+    const memoryShotsWithMotionStory = await Promise.all(
+      memoryShots.map(async (memoryShot) => {
+        let motionStory = null;
+        try {
+          [motionStory] = await listMemoryShotArtifacts(memoryShot.id, {
+            supabase,
+            artifactType: "motion_story",
+            variant: "scroll_story",
+            status: "ready",
+            limit: 1,
+          });
+        } catch {
+          return memoryShot;
+        }
+        if (!motionStory) return memoryShot;
+        return {
+          ...memoryShot,
+          metadata: {
+            ...(memoryShot.metadata ?? {}),
+            motionStory: {
+              artifactId: motionStory.id,
+              url: motionStory.publicUrl ?? motionStory.previewUrl,
+              previewUrl: motionStory.previewUrl,
+              thumbnailUrl: motionStory.thumbnailUrl,
+              status: motionStory.status,
+              variant: motionStory.variant,
+            },
+          },
+        };
+      }),
+    );
 
-    return NextResponse.json({ memoryShots });
+    return NextResponse.json({ memoryShots: memoryShotsWithMotionStory });
   } catch (error) {
     return jsonError(
       errorMessage(error, "Could not load Memory Shots."),

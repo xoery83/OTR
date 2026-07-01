@@ -6,6 +6,7 @@ import {
   type CSSProperties,
   type ChangeEvent,
   type FormEvent,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -195,6 +196,19 @@ function MicrophoneIcon({ className = "size-4" }: { className?: string }) {
       <path d="M8 22h8" />
     </svg>
   );
+}
+
+function blurActiveElementForKeyboard() {
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLElement) {
+    activeElement.blur();
+  }
+}
+
+function waitForKeyboardDismissal() {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 180);
+  });
 }
 
 const bookingLabelKeys: Partial<Record<string, TranslationKey>> = {
@@ -1747,6 +1761,9 @@ export function PlannerDayCard({
     activeVoiceItemIdRef.current = itemId;
     setRecordingMemoryId(itemId);
     setMemoryErrorByItem((current) => ({ ...current, [itemId]: "" }));
+    setShowInlineComposerEmoji(false);
+    blurActiveElementForKeyboard();
+    await waitForKeyboardDismissal();
     await voiceRecorder.start();
   }
 
@@ -2797,7 +2814,8 @@ export function PlannerDayCard({
       savingMemoryId === item.id ||
       (Boolean(transcribingMemoryId) && transcribingMemoryId !== item.id) ||
       (voiceRecorder.isRecording && recordingMemoryId !== item.id);
-    const isRecordingThis = recordingMemoryId === item.id;
+    const isRecordingThis =
+      voiceRecorder.isRecording && recordingMemoryId === item.id;
     const canSubmit = Boolean(attachment || textValue.trim()) && !isBusy;
     const mentionItems = mentionOptions(item.id);
     const displayTime = item.time
@@ -2838,7 +2856,6 @@ export function PlannerDayCard({
     const voiceButton = (
       <button
         type="button"
-        onPointerDown={(event) => event.preventDefault()}
         onClick={() => void toggleInlineVoice(item.id)}
         disabled={isVoiceBusy}
         className={`grid size-11 shrink-0 place-items-center rounded-2xl bg-white text-emerald-800 shadow-sm transition active:scale-95 disabled:text-stone-300 md:size-9 md:rounded-full ${
@@ -2884,6 +2901,23 @@ export function PlannerDayCard({
       </button>
     );
 
+    const submitInlineMemoryFromKeyboard = (
+      event: KeyboardEvent<HTMLTextAreaElement>,
+    ) => {
+      if (
+        !event.shiftKey &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.nativeEvent.isComposing &&
+        event.key === "Enter" &&
+        canSubmit
+      ) {
+        event.preventDefault();
+        event.currentTarget.form?.requestSubmit();
+      }
+    };
+
     const renderTextarea = (isOverlay: boolean) => (
       <textarea
         value={textValue}
@@ -2894,8 +2928,9 @@ export function PlannerDayCard({
             [item.id]: event.target.value,
           }))
         }
+        onKeyDown={isOverlay ? submitInlineMemoryFromKeyboard : undefined}
         rows={1}
-        enterKeyHint="enter"
+        enterKeyHint={isOverlay ? "send" : "enter"}
         placeholder={t("planner.memory.placeholder")}
         className={`max-h-28 min-h-11 flex-1 resize-none rounded-xl border bg-white px-3 py-2 text-base font-semibold leading-7 text-stone-950 shadow-sm outline-none ${toneClasses.focus} md:min-h-9 md:rounded-2xl md:text-sm md:leading-5`}
         autoFocus={isOverlay}
@@ -2982,6 +3017,28 @@ export function PlannerDayCard({
       </>
     );
 
+    const recordingOverlay =
+      isRecordingThis && activeInlineComposerItemId === item.id ? (
+        <div className="fixed inset-0 z-[2147482500] flex items-center justify-center bg-stone-950/45 px-6 text-white backdrop-blur-sm md:hidden">
+          <div className="w-full max-w-xs rounded-3xl bg-stone-950/85 p-6 text-center shadow-2xl">
+            <div className="mx-auto grid size-20 place-items-center rounded-full bg-red-600 text-white shadow-lg shadow-red-950/30">
+              <MicrophoneIcon className="size-10" />
+            </div>
+            <p className="mt-4 text-xl font-black">正在录音</p>
+            <p className="mt-2 text-sm font-semibold text-white/75">
+              结束后会转成文字填入输入框
+            </p>
+            <button
+              type="button"
+              onClick={() => voiceRecorder.stop()}
+              className="mt-5 h-12 w-full rounded-2xl bg-white text-base font-black text-stone-950 active:scale-95"
+            >
+              结束录音
+            </button>
+          </div>
+        </div>
+      ) : null;
+
     const inlineForm = (
       <form
         onSubmit={(event) => addInlineMemory(event, item)}
@@ -3008,8 +3065,8 @@ export function PlannerDayCard({
       activeInlineComposerItemId === item.id && typeof document !== "undefined"
         ? createPortal(
             <div className="fixed inset-0 z-[2147482400] flex flex-col bg-[#dcefe9] md:hidden">
-              <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3 pt-[env(safe-area-inset-top,0px)]">
-                <div className="mx-auto max-w-3xl py-3">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-3 pt-[env(safe-area-inset-top,0px)]">
+                <div className="mx-auto flex min-h-full max-w-3xl flex-col justify-end py-3">
                   <div className="rounded-3xl border border-emerald-100 bg-white/95 p-4 shadow-sm">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -3087,15 +3144,9 @@ export function PlannerDayCard({
                   {renderTextarea(true)}
                   {emojiButton}
                   {imageButton}
-                  <button
-                    type="submit"
-                    disabled={!canSubmit}
-                    className="h-11 shrink-0 rounded-xl bg-emerald-700 px-3 text-sm font-black text-white disabled:hidden"
-                  >
-                    发送
-                  </button>
                 </div>
               </form>
+              {recordingOverlay}
             </div>,
             document.body,
           )

@@ -522,10 +522,18 @@ export function ActivityCenter() {
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [closePanel, isOpen]);
 
-  if (
-    (activeCount === 0 && visibleFailedCount === 0 && !notice && !isOpen) ||
-    (visibleActivityCount === 0 && !notice && !isOpen)
-  ) {
+  const isVisible =
+    !(
+      (activeCount === 0 && visibleFailedCount === 0 && !notice && !isOpen) ||
+      (visibleActivityCount === 0 && !notice && !isOpen)
+    );
+
+  useEffect(() => {
+    document.body.classList.toggle("otr-has-mobile-activity-center", isVisible);
+    return () => document.body.classList.remove("otr-has-mobile-activity-center");
+  }, [isVisible]);
+
+  if (!isVisible) {
     return null;
   }
 
@@ -533,7 +541,7 @@ export function ActivityCenter() {
     <div
       ref={containerRef}
       data-mobile-activity-center
-      className="fixed bottom-24 left-3 z-[2147482500] md:bottom-5 md:left-5"
+      className="otr-mobile-activity-float fixed left-3 z-[2147482500] md:bottom-5 md:left-5"
     >
       {notice && !isOpen ? (
         <div className="mb-3 w-[min(360px,calc(100vw-24px))] rounded-3xl border border-emerald-100 bg-white p-4 text-sm font-bold text-emerald-900 shadow-2xl">
@@ -718,7 +726,7 @@ export function ActivityCenter() {
         </section>
       ) : null}
 
-      <div className="inline-flex overflow-hidden rounded-full bg-stone-950 text-white shadow-2xl">
+      <div className="inline-flex h-11 overflow-hidden rounded-full bg-stone-950 text-sm font-black text-white shadow-2xl">
         <button
           type="button"
           onClick={() => {
@@ -728,7 +736,7 @@ export function ActivityCenter() {
             }
             setIsOpen(true);
           }}
-          className="px-4 py-3 text-sm font-black"
+          className="px-4"
         >
           {attentionCount > 0
             ? t("activity.summary.attention", { count: attentionCount })
@@ -743,7 +751,7 @@ export function ActivityCenter() {
             event.stopPropagation();
             dismissCurrentActivity();
           }}
-          className="grid min-h-11 w-10 place-items-center border-l border-white/10 bg-white/10 text-sm font-black hover:bg-white/20"
+          className="grid h-11 w-11 place-items-center border-l border-white/10 bg-white/10 text-sm font-black hover:bg-white/20"
         >
           ×
         </button>

@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { AppHeader } from "@/components/AppHeader";
 import { ActivityCenter } from "@/components/ActivityCenter";
 import { BottomNav } from "@/components/BottomNav";
+import { Capture2PreviewProvider } from "@/components/Capture2PreviewProvider";
 import { CaptureModalProvider } from "@/components/CaptureModalProvider";
 import { I18nProvider } from "@/components/I18nProvider";
 import { SidebarNav } from "@/components/SidebarNav";
@@ -42,16 +43,18 @@ export default function RootLayout({
       <body className="min-h-full bg-[#f7f3ea] text-stone-950">
         <I18nProvider>
           <CaptureModalProvider>
-            <Suspense fallback={null}>
-              <WorkspaceManager />
-            </Suspense>
-            <SidebarNav />
-            <AppHeader />
-            <ActivityCenter />
-            <main className="otr-page-shell mx-auto w-full max-w-3xl px-5 pb-28 pt-6 md:ml-[var(--otr-sidebar-width)] md:pb-10 lg:max-w-5xl">
-              {children}
-            </main>
-            <BottomNav />
+            <Capture2PreviewProvider>
+              <Suspense fallback={null}>
+                <WorkspaceManager />
+              </Suspense>
+              <SidebarNav />
+              <AppHeader />
+              <ActivityCenter />
+              <main className="otr-page-shell mx-auto w-full max-w-3xl px-5 pb-28 pt-6 md:ml-[var(--otr-sidebar-width)] md:pb-10 lg:max-w-5xl">
+                {children}
+              </main>
+              <BottomNav />
+            </Capture2PreviewProvider>
           </CaptureModalProvider>
         </I18nProvider>
       </body>

@@ -1,0 +1,502 @@
+import { randomUUID } from "crypto";
+import { createClient } from "@supabase/supabase-js";
+import { NextResponse } from "next/server";
+import sharp from "sharp";
+import { generateHetznerMediaVariants } from "@/lib/server/media-worker";
+import { decryptGoogleToken } from "@/lib/server/google-token";
+import {
+  ensureGoogleDriveFolder,
+  ensureGoogleDriveMediaFolders,
+  refreshGoogleDriveAccessToken,
+  uploadBufferToGoogleDrive,
+} from "@/lib/storage/google-drive";
+
+export const runtime = "nodejs";
+export const maxDuration = 120;
+
+const MAX_VIDEO_FILES = 5;
+const RECOMMENDED_VIDEO_BYTES = 100 * 1024 * 1024;
+const HARD_VIDEO_BYTES = 300 * 1024 * 1024;
+const RECOMMENDED_VIDEO_SECONDS = 30;
+const HARD_VIDEO_SECONDS = 120;
+
+const RESERVED_VIDEO_JOB_TYPES = [
+  "video_thumbnail",
+  "video_preview_transcode",
+  "video_clip_extract",
+  "video_metadata_extract",
+] as const;
+
+type StorageConnectionRow = {
+  token_reference: string | null;
+  journey_folder_id: string | null;
+  metadata: {
+    mediaFolders?: {
+      originals?: { id?: string; folderId?: string; name?: string };
+      thumbnails?: { id?: string; folderId?: string; name?: string };
+      ai?: { id?: string; folderId?: string; name?: string };
+      outsideJourneyDates?: { id?: string; folderId?: string; name?: string };
+    };
+  } | null;
+};
+
+type ClientFileMetadata = {
+  name?: string;
+  size?: number;
+  type?: string;
+  width?: number | null;
+  height?: number | null;
+  durationSeconds?: number | null;
+  lastModified?: number | null;
+};
+
+type UploadResult = {
+  id: string;
+  assetType: "image" | "video";
+  fileName: string;
+  mimeType: string | null;
+  fileSize: number;
+  width: number | null;
+  height: number | null;
+  durationSeconds: number | null;
+  driveFileId: string;
+  driveUrl: string | null;
+  thumbnailUrl: string | null;
+  previewUrl: string | null;
+  warnings: string[];
+};
+
+function jsonError(message: string, status: number) {
+  return NextResponse.json({ error: message }, { status });
+}
+
+function getSupabaseForRequest(request: Request) {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const authorization = request.headers.get("authorization");
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error("Missing Supabase environment variables.");
+  }
+
+  if (!authorization) {
+    throw new Error("Missing authorization header.");
+  }
+
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    global: {
+      headers: { Authorization: authorization },
+    },
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
+
+function parseClientMetadata(value: FormDataEntryValue | null) {
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? (parsed as ClientFileMetadata[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeMediaFileName(fileName: string, fallback: "photo" | "video") {
+  const extension = fileName.match(/\.[a-z0-9]+$/i)?.[0]?.toLowerCase() ?? "";
+  const baseName = fileName
+    .replace(/\.[^.]+$/, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return `${baseName || fallback}${extension}`;
+}
+
+function folderId(folder?: { id?: string; folderId?: string } | null) {
+  return folder?.id ?? folder?.folderId ?? null;
+}
+
+async function ensureMediaFolders(input: {
+  accessToken: string;
+  supabase: ReturnType<typeof getSupabaseForRequest>;
+  tripId: string;
+  connection: StorageConnectionRow;
+}) {
+  if (!input.connection.journey_folder_id) {
+    throw new Error("Google Drive journey folder was not found.");
+  }
+
+  const existing = input.connection.metadata?.mediaFolders;
+  const hasAllFolders =
+    existing?.originals &&
+    existing?.thumbnails &&
+    existing?.ai &&
+    existing?.outsideJourneyDates;
+
+  if (hasAllFolders) return existing;
+
+  const folders = await ensureGoogleDriveMediaFolders({
+    accessToken: input.accessToken,
+    journeyFolderId: input.connection.journey_folder_id,
+  });
+  const metadata = {
+    ...(input.connection.metadata ?? {}),
+    mediaFolders: {
+      originals: folders.originals,
+      thumbnails: folders.thumbnails,
+      ai: folders.ai,
+      outsideJourneyDates: folders.outsideJourneyDates,
+    },
+  };
+
+  const { error } = await input.supabase
+    .from("journey_storage_connections")
+    .update({ metadata })
+    .eq("trip_id", input.tripId)
+    .eq("provider", "google_drive")
+    .eq("status", "connected");
+
+  if (error) throw error;
+  return metadata.mediaFolders;
+}
+
+async function getUploadFolderId(input: {
+  accessToken: string;
+  parentFolderId: string;
+  capturedDate: string | null;
+}) {
+  if (!input.capturedDate) return input.parentFolderId;
+  const folder = await ensureGoogleDriveFolder({
+    accessToken: input.accessToken,
+    name: input.capturedDate,
+    parentFolderId: input.parentFolderId,
+  });
+  return folder.id;
+}
+
+function mediaKind(file: File) {
+  if (file.type.startsWith("image/")) return "image" as const;
+  if (file.type.startsWith("video/")) return "video" as const;
+  return null;
+}
+
+function videoWarnings(file: File, metadata: ClientFileMetadata) {
+  const warnings: string[] = [];
+  const durationSeconds =
+    typeof metadata.durationSeconds === "number" && Number.isFinite(metadata.durationSeconds)
+      ? metadata.durationSeconds
+      : null;
+
+  if (file.size > RECOMMENDED_VIDEO_BYTES) {
+    warnings.push("建议上传 100MB 以内短视频，方便后续整理。");
+  }
+  if (durationSeconds !== null && durationSeconds > RECOMMENDED_VIDEO_SECONDS) {
+    warnings.push("建议上传 30 秒以内短视频，方便后续整理。");
+  }
+  return warnings;
+}
+
+function videoHardLimitMessage(file: File, metadata: ClientFileMetadata) {
+  if (file.size > HARD_VIDEO_BYTES) {
+    return "视频超过 300MB 硬限制，请选择更短的视频。";
+  }
+  const durationSeconds =
+    typeof metadata.durationSeconds === "number" && Number.isFinite(metadata.durationSeconds)
+      ? metadata.durationSeconds
+      : null;
+  if (durationSeconds !== null && durationSeconds > HARD_VIDEO_SECONDS) {
+    return "视频超过 2 分钟硬限制，请选择更短的视频。";
+  }
+  return null;
+}
+
+export async function POST(request: Request) {
+  try {
+    const form = await request.formData();
+    const tripId = String(form.get("tripId") ?? "");
+    const capturedAt = String(form.get("capturedAt") || new Date().toISOString());
+    const timezone = String(form.get("timezone") || "");
+    const clientMetadata = parseClientMetadata(form.get("fileMetadata"));
+    const files = form.getAll("files").filter((file): file is File => file instanceof File);
+
+    if (!tripId) return jsonError("tripId is required.", 400);
+    if (files.length === 0) return jsonError("At least one file is required.", 400);
+
+    const videoCount = files.filter((file) => mediaKind(file) === "video").length;
+    if (videoCount > MAX_VIDEO_FILES) {
+      return jsonError("一次最多上传 5 个视频。", 413);
+    }
+
+    for (const [index, file] of files.entries()) {
+      const kind = mediaKind(file);
+      if (!kind) {
+        return jsonError(`不支持的文件类型：${file.name || `file-${index + 1}`}`, 400);
+      }
+      if (kind === "video") {
+        const hardLimit = videoHardLimitMessage(file, clientMetadata[index] ?? {});
+        if (hardLimit) return jsonError(hardLimit, 413);
+      }
+    }
+
+    const supabase = getSupabaseForRequest(request);
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    if (userError || !userData.user) {
+      return jsonError("You must be logged in.", 401);
+    }
+
+    const { data: trip, error: tripError } = await supabase
+      .from("trips")
+      .select("id")
+      .eq("id", tripId)
+      .single();
+
+    if (tripError || !trip) {
+      return jsonError("Journey not found.", 404);
+    }
+
+    const { data: connection, error: connectionError } = await supabase
+      .from("journey_storage_connections")
+      .select("token_reference, journey_folder_id, metadata")
+      .eq("trip_id", tripId)
+      .eq("provider", "google_drive")
+      .eq("status", "connected")
+      .maybeSingle();
+
+    if (connectionError) throw connectionError;
+    if (!connection?.token_reference) {
+      return jsonError("Google Drive is not connected for Capture2 media uploads.", 409);
+    }
+
+    const refreshToken = decryptGoogleToken(connection.token_reference);
+    const accessToken = await refreshGoogleDriveAccessToken(refreshToken);
+    const mediaFolders = await ensureMediaFolders({
+      accessToken,
+      supabase,
+      tripId,
+      connection: connection as StorageConnectionRow,
+    });
+    const originalParentFolderId = folderId(mediaFolders.originals);
+    if (!originalParentFolderId) {
+      throw new Error("Google Drive Originals folder was not found.");
+    }
+    const originalFolderId = await getUploadFolderId({
+      accessToken,
+      parentFolderId: originalParentFolderId,
+      capturedDate: capturedAt.slice(0, 10),
+    });
+
+    const results: UploadResult[] = [];
+
+    for (const [index, file] of files.entries()) {
+      const kind = mediaKind(file);
+      if (!kind) continue;
+
+      const assetId = randomUUID();
+      const clientFile = clientMetadata[index] ?? {};
+      const originalBuffer = Buffer.from(await file.arrayBuffer());
+      const mimeType = file.type || clientFile.type || "application/octet-stream";
+      const safeName = safeMediaFileName(file.name, kind === "image" ? "photo" : "video");
+      const uploadedOriginal = await uploadBufferToGoogleDrive({
+        accessToken,
+        folderId: originalFolderId,
+        buffer: originalBuffer,
+        mimeType,
+        filename: `${Date.now()}-${index + 1}-${safeName}`,
+      });
+
+      let width: number | null =
+        typeof clientFile.width === "number" && Number.isFinite(clientFile.width)
+          ? clientFile.width
+          : null;
+      let height: number | null =
+        typeof clientFile.height === "number" && Number.isFinite(clientFile.height)
+          ? clientFile.height
+          : null;
+      let thumbnailUrl: string | null = null;
+      let previewUrl: string | null = null;
+      let thumbnailSize: number | null = null;
+      let previewSize: number | null = null;
+      let thumbnailWidth: number | null = null;
+      let thumbnailHeight: number | null = null;
+      let processingStatus: "pending" | "ready" = kind === "image" ? "ready" : "pending";
+      let processingError: string | null = null;
+
+      if (kind === "image") {
+        const image = sharp(originalBuffer, { failOn: "none" }).rotate();
+        const metadata = await image.metadata();
+        width = metadata.width ?? width;
+        height = metadata.height ?? height;
+
+        try {
+          const variants = await generateHetznerMediaVariants({
+            journeyId: tripId,
+            assetId,
+            filename: safeName,
+            mimeType,
+            originalBuffer,
+          });
+          thumbnailUrl = variants.thumbnail.url;
+          previewUrl = variants.preview.url;
+          thumbnailSize = variants.thumbnail.file_size;
+          previewSize = variants.preview.file_size;
+          thumbnailWidth = variants.thumbnail.width;
+          thumbnailHeight = variants.thumbnail.height;
+        } catch (error) {
+          processingStatus = "pending";
+          processingError =
+            error instanceof Error ? error.message : "Image variants were not generated.";
+        }
+      }
+
+      const durationSeconds =
+        kind === "video" &&
+        typeof clientFile.durationSeconds === "number" &&
+        Number.isFinite(clientFile.durationSeconds)
+          ? clientFile.durationSeconds
+          : null;
+      const warnings = kind === "video" ? videoWarnings(file, clientFile) : [];
+
+      const { error: insertError } = await supabase.from("media_assets").insert({
+        id: assetId,
+        trip_id: tripId,
+        user_id: userData.user.id,
+        memory_entry_id: null,
+        asset_type: kind,
+        storage_provider: "google_drive",
+        storage_bucket: "google-drive",
+        provider_file_id: uploadedOriginal.id,
+        provider_web_url: uploadedOriginal.webViewLink ?? null,
+        provider_thumbnail_url: thumbnailUrl,
+        provider_original_reference: uploadedOriginal.webContentLink ?? null,
+        original_drive_file_id: uploadedOriginal.id,
+        original_drive_web_url: uploadedOriginal.webViewLink ?? null,
+        original_file_size: file.size,
+        original_file_path: uploadedOriginal.name,
+        compressed_file_path: null,
+        compressed_file_size: previewSize,
+        thumbnail_file_path: null,
+        thumbnail_url: thumbnailUrl,
+        preview_url: previewUrl,
+        thumbnail_size: thumbnailSize,
+        mime_type: mimeType,
+        width,
+        height,
+        thumbnail_width: thumbnailWidth,
+        thumbnail_height: thumbnailHeight,
+        storage_tier: "standard",
+        is_original_preserved: true,
+        processing_status: processingStatus,
+        ai_status: "pending",
+        ai_metadata: {
+          source: "capture2_preview",
+          capture2: {
+            version: "preview",
+            entryPoint: "upload_media",
+            originalStorage: "google_drive",
+            durationSeconds,
+            fileName: file.name,
+            fileSizeBytes: file.size,
+            lastModified: clientFile.lastModified ?? file.lastModified ?? null,
+            warnings,
+            processingError,
+            reservedJobTypes: kind === "video" ? RESERVED_VIDEO_JOB_TYPES : [],
+          },
+        },
+      });
+
+      if (insertError) throw insertError;
+
+      results.push({
+        id: assetId,
+        assetType: kind,
+        fileName: file.name,
+        mimeType,
+        fileSize: file.size,
+        width,
+        height,
+        durationSeconds,
+        driveFileId: uploadedOriginal.id,
+        driveUrl: uploadedOriginal.webViewLink ?? null,
+        thumbnailUrl,
+        previewUrl,
+        warnings,
+      });
+    }
+
+    const photoIds = results
+      .filter((asset) => asset.assetType === "image")
+      .map((asset) => asset.id);
+    const videoIds = results
+      .filter((asset) => asset.assetType === "video")
+      .map((asset) => asset.id);
+    const inputType =
+      photoIds.length > 0 && videoIds.length > 0
+        ? "attachment"
+        : videoIds.length > 0
+          ? "video"
+          : "photo";
+    const warnings = [...new Set(results.flatMap((asset) => asset.warnings))];
+
+    const { data: eventRow, error: eventError } = await supabase
+      .from("journey_capture_events")
+      .insert({
+        journey_id: tripId,
+        user_id: userData.user.id,
+        input_type: inputType,
+        original_input: `Capture 2.0 media upload: ${results.length} file(s)`,
+        captured_at: new Date(capturedAt).toISOString(),
+        timezone: timezone || null,
+        referenced_photo_ids: photoIds,
+        referenced_video_ids: videoIds,
+        metadata: {
+          source: "capture2_preview",
+          capture2: {
+            version: "preview",
+            entryPoint: "upload_media",
+            safetyClass: "deferred",
+            status: "captured",
+            deferReason: "Media upload is deferred for background organization",
+            mediaAssetIds: results.map((asset) => asset.id),
+            photoAssetIds: photoIds,
+            videoAssetIds: videoIds,
+            originalStorage: "google_drive",
+            reservedVideoJobTypes: RESERVED_VIDEO_JOB_TYPES,
+            warnings,
+          },
+          files: results.map((asset) => ({
+            id: asset.id,
+            name: asset.fileName,
+            type: asset.mimeType,
+            size: asset.fileSize,
+            mediaType: asset.assetType,
+            durationSeconds: asset.durationSeconds,
+            width: asset.width,
+            height: asset.height,
+            driveFileId: asset.driveFileId,
+          })),
+        },
+        status: "raw",
+      })
+      .select("id")
+      .single();
+
+    if (eventError || !eventRow) {
+      throw eventError || new Error("Could not save capture event.");
+    }
+
+    return NextResponse.json({
+      captureEventId: eventRow.id,
+      mediaAssetIds: results.map((asset) => asset.id),
+      assets: results,
+      warnings,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Could not upload Capture2 media.";
+    return jsonError(message, 500);
+  }
+}

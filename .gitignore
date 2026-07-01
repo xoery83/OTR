@@ -21,6 +21,7 @@ __pycache__/
 # testing
 /coverage
 /.capture-test-build
+/.capture2-test-build
 /.planner-import-test-build
 .pytest_cache/
 
