@@ -1,0 +1,788 @@
+OTR Localization Center v1.0
+
+Global Localization Architecture Design
+
+Version: Draft v1.0
+Status: Design Only（旅行结束后实施）
+Owner: OTR Core Architecture
+
+⸻
+
+1. Vision
+
+Localization（本地化）不是 UI 翻译。
+
+OTR 是一个面向全球旅行者的 Journey OS，未来所有 AI 能力都需要支持不同国家、语言、文化。
+
+因此 OTR 不建立一个简单的 i18n 系统，而建立一个统一的 Localization Center。
+
+Localization Center 负责管理：
+
+* UI
+* AI Prompt
+* AI 输出
+* Capture Parser
+* OCR
+* Voice
+* Notification
+* Email
+* Help Center
+* Translation Memory
+* Locale Preferences
+
+它将成为 JIE（Journey Intelligence Engine）的基础能力之一。
+
+⸻
+
+2. Design Goals
+
+2.1 AI Native
+
+所有语言资源允许 AI 自动生成。
+
+不是人工维护几十份 JSON。
+
+而是：
+
+English Source
+
+↓
+
+LLM
+
+↓
+
+Language Pack
+
+↓
+
+Review
+
+↓
+
+Publish
+
+⸻
+
+2.2 Zero Manual Maintenance
+
+新增一种语言：
+
+不修改代码。
+
+不增加 if。
+
+不增加 switch。
+
+只增加 Locale Config。
+
+⸻
+
+2.3 Single Source of Truth
+
+所有地方都读取同一份 Locale Registry。
+
+禁止：
+
+* Header 自己维护
+* Settings 自己维护
+* Admin 自己维护
+
+全部读取：
+
+Locale Registry
+
+⸻
+
+2.4 Modular
+
+语言包必须模块化。
+
+禁止：
+
+common.json
+(5000+ keys)
+
+建议：
+
+common.json
+planner.json
+capture.json
+timeline.json
+ledger.json
+map.json
+people.json
+discover.json
+overview.json
+notifications.json
+emails.json
+ai.json
+
+⸻
+
+3. Overall Architecture
+
+                    Localization Center
+                           │
+      ┌──────────────────────────────────────────┐
+      │                                          │
+ Locale Registry                         Translation Engine
+      │                                          │
+      │                                   AI Job Queue
+      │                                          │
+      │                                   Prompt Center
+      │                                          │
+      │                                   Model Router
+      │                                          │
+      └───────────────Language Packs─────────────┘
+                           │
+                   Runtime Translation
+                           │
+        UI / Capture / AI / OCR / Voice / Email
+
+Localization Center 不直接调用模型。
+
+所有 AI 请求仍然经过：
+
+AI Job Queue
+
+↓
+
+Model Router
+
+↓
+
+Prompt Center
+
+保持与 JIE 架构一致。
+
+⸻
+
+4. Locale Registry
+
+统一配置：
+
+interface LocaleConfig {
+    locale
+    language
+    country
+    nativeName
+    englishName
+    tier
+    dir
+    dateFormat
+    timeFormat
+    temperatureUnit
+    distanceUnit
+    currency
+    firstDayOfWeek
+    enabled
+}
+
+例如：
+
+en-US
+zh-CN
+zh-TW
+fr-FR
+ja-JP
+de-DE
+
+所有页面：
+
+统一读取：
+
+Locale Registry。
+
+⸻
+
+5. Locale Priority
+
+系统语言优先级：
+
+User Preference
+↓
+Journey Default Locale
+↓
+Browser Locale
+↓
+English
+
+例如：
+
+浏览器：
+
+English
+
+但是：
+
+Journey 默认：
+
+Japanese
+
+则：
+
+首次进入 Journey：
+
+使用 Japanese。
+
+⸻
+
+6. Tier Strategy
+
+Tier 1
+
+正式支持。
+
+* English
+* 简体中文
+* 繁體中文
+* Español
+* Français
+* Deutsch
+* 日本語
+* 한국어
+* Italiano
+* Português
+
+⸻
+
+Tier 2
+
+AI 自动生成。
+
+按需发布。
+
+例如：
+
+* Русский
+* العربية
+* Nederlands
+* Dansk
+* Svenska
+* Norsk
+* Suomi
+* Polski
+* Türkçe
+
+⸻
+
+Tier 3
+
+社区贡献。
+
+未来允许用户贡献翻译。
+
+管理员审核。
+
+⸻
+
+7. Language Pack
+
+Language Pack 建议数据库管理。
+
+而不是：
+
+/locales
+
+建议：
+
+language_packs
+translation_jobs
+translation_versions
+
+Language Pack：
+
+locale
+namespace
+version
+status
+provider
+model
+created_at
+published_at
+
+⸻
+
+8. Version Management
+
+支持：
+
+v1
+v2
+v3
+
+新增功能：
+
+只更新：
+
+planner.json
+
+无需重新生成整个 App。
+
+⸻
+
+9. Translation Status
+
+建议状态：
+
+missing
+generating
+draft
+reviewed
+published
+deprecated
+
+后台可以看到：
+
+正在生成。
+
+还是：
+
+等待审核。
+
+⸻
+
+10. Translation Generation Pipeline
+
+English Source
+↓
+Find Missing Keys
+↓
+AI Job Queue
+↓
+Prompt Center
+↓
+Model Router
+↓
+LLM
+↓
+Draft Pack
+↓
+Preview
+↓
+Publish
+
+整个过程异步。
+
+⸻
+
+11. Runtime Loading
+
+进入页面：
+
+Load Locale
+↓
+Load Required Namespace
+↓
+Cache
+↓
+Render
+
+例如：
+
+Planner 页面：
+
+只加载：
+
+planner.json
+common.json
+
+⸻
+
+12. Translation Memory
+
+未来建立：
+
+Translation Memory。
+
+例如：
+
+Let's go.
+
+第一次：
+
+翻译。
+
+缓存。
+
+以后：
+
+直接读取。
+
+节省 Token。
+
+⸻
+
+13. Capture Translation
+
+Capture 永远保存：
+
+Raw Content。
+
+例如：
+
+Bonjour
+
+数据库：
+
+raw_text
+
+浏览用户：
+
+实时：
+
+Viewer Locale
+↓
+Translation Cache
+↓
+Display
+
+禁止：
+
+存储：
+
+English。
+
+⸻
+
+14. Parser Localization
+
+Parser 不依赖 UI。
+
+例如：
+
+加油
+Fuel
+Essence
+Tanken
+
+全部：
+
+映射：
+
+Fuel Expense
+
+Parser Dictionary：
+
+也是 Localization Center 一部分。
+
+⸻
+
+15. OCR Localization
+
+OCR：
+
+识别：
+
+原文。
+
+AI：
+
+生成：
+
+Localized Description。
+
+例如：
+
+菜单：
+
+法语。
+
+中国用户：
+
+中文解释。
+
+美国用户：
+
+英文解释。
+
+⸻
+
+16. Voice Localization
+
+支持：
+
+不同语言：
+
+Voice Command。
+
+例如：
+
+Take photo
+拍照
+写真を撮る
+
+统一：
+
+Capture Intent。
+
+⸻
+
+17. AI Prompt Localization
+
+Prompt：
+
+不能全部使用 English。
+
+例如：
+
+Daily Report。
+
+Memory Shot。
+
+Journey Summary。
+
+每种语言：
+
+拥有独立 Prompt。
+
+Prompt Pack：
+
+也是 Localization Center。
+
+⸻
+
+18. Notification Localization
+
+所有：
+
+Notification：
+
+使用：
+
+Locale。
+
+例如：
+
+Push
+
+Email
+
+System Notification
+
+Daily Reminder
+
+Journey Reminder
+
+统一：
+
+Localization Center。
+
+⸻
+
+19. Email Localization
+
+邮件模板：
+
+按 Locale。
+
+例如：
+
+Invitation
+
+Reset Password
+
+Weekly Summary
+
+Journey Completed
+
+均支持：
+
+AI 自动生成。
+
+⸻
+
+20. Help Center Localization
+
+帮助中心：
+
+统一：
+
+Language Pack。
+
+避免：
+
+重新开发。
+
+⸻
+
+21. RTL Support
+
+目前：
+
+仅预留。
+
+Locale：
+
+dir="rtl"
+
+未来：
+
+支持：
+
+Arabic。
+
+暂不启用。
+
+⸻
+
+22. Admin Console
+
+后台：
+
+Localization Dashboard。
+
+每种语言：
+
+显示：
+
+Locale
+Native Name
+Tier
+Status
+Namespaces
+Keys
+Provider
+Model
+Version
+Updated
+Published
+
+支持：
+
+Generate Missing Keys
+
+Regenerate Namespace
+
+Regenerate Locale
+
+Preview
+
+Publish
+
+Rollback
+
+Diff
+
+⸻
+
+23. AI Continuous Optimization
+
+未来：
+
+允许：
+
+用户：
+
+提交：
+
+翻译建议。
+
+AI：
+
+自动学习。
+
+管理员：
+
+审核。
+
+持续优化。
+
+⸻
+
+24. Future Roadmap
+
+Phase 1（已完成基础能力）
+
+* UI 多语言
+* 统一 Locale Registry
+* AI Language Pack Generation
+* Translation Jobs
+
+⸻
+
+Phase 2
+
+* Prompt Localization
+* Notification Localization
+* Email Localization
+* Help Center Localization
+
+⸻
+
+Phase 3
+
+* Capture Translation
+* Parser Localization
+* OCR Localization
+* Voice Localization
+* Translation Memory
+
+⸻
+
+Phase 4
+
+完整 Localization Center
+
+包括：
+
+* Community Translation
+* AI Continuous Optimization
+* Translation Quality Scoring
+* Locale Analytics
+* Translation Cost Dashboard
+
+⸻
+
+25. 与 JIE 的关系
+
+Localization Center 不是独立系统。
+
+它是 Journey Intelligence Engine（JIE） 的基础能力之一。
+
+整体架构关系：
+
+                 Journey Intelligence Engine
+                           │
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+ Capture Engine      Localization Center    AI Platform
+        │                  │                  │
+        │            Locale Registry          │
+        │            Language Packs           │
+        │            Prompt Packs             │
+        │            Parser Dictionaries      │
+        │            Translation Memory       │
+        │                  │                  │
+        └────────────── AI Job Queue ─────────┘
+                           │
+                     Prompt Center
+                           │
+                     Model Router
+                           │
+                    OpenAI / DeepSeek / Qwen / Gemini
+
+Localization Center 负责所有与语言、地区、文化相关的资源管理；JIE 负责智能理解、推荐、生成与分发。两者解耦但协同工作，共同构成 OTR AI OS 的核心基础设施。
+
+⸻
+
+实施建议（旅行后的第一阶段）
+
+本次欧洲旅行前，不建议实施本方案。
+
+原因：
+
+* 涉及国际化基础架构调整，改动面较大。
+* 当前旅行更重要的是验证 Capture、Journey、AI 总结、多人协作等核心能力。
+* 多语言已经能够满足当前测试需求，没有必要承担额外的稳定性风险。
+
+建议旅行结束后，按以下顺序实施：
+
+1. 建立 Locale Registry。
+2. 后台升级为 Localization Dashboard。
+3. 引入 AI 自动生成 Language Pack。
+4. 完成 Prompt、Notification、Email 等资源迁移。
+5. 最后升级为完整的 Localization Center。
+
+这样既保证当前版本稳定，也为 OTR 后续全球化和 AI 能力扩展打下统一基础。

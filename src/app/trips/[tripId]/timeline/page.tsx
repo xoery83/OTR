@@ -1868,10 +1868,9 @@ function TrueTimelineView({
         {hasMoreGroups ? (
           <div
             ref={loadMoreRef}
-            className="py-6 text-center text-sm font-bold text-stone-500"
-          >
-            {t("timeline.true.loadingMore")}
-          </div>
+            className="h-8"
+            aria-hidden="true"
+          />
         ) : null}
       </div>
     </section>
@@ -3149,6 +3148,7 @@ function TimelineContent({ user }: { user: User }) {
   const [error, setError] = useState<string | null>(null);
   const [activePhotoItemId, setActivePhotoItemId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const memoryLoadMoreRef = useRef<HTMLDivElement | null>(null);
   const scrollRestoreTimerRef = useRef<number | null>(null);
 
   const loadMemoryPage = useCallback(
@@ -3643,7 +3643,7 @@ function TimelineContent({ user }: { user: User }) {
     );
   }
 
-  async function loadMoreMemories() {
+  const loadMoreMemories = useCallback(async () => {
     if (!nextMemoryCursor || isLoadingMoreMemories) return;
 
     setIsLoadingMoreMemories(true);
@@ -3684,7 +3684,36 @@ function TimelineContent({ user }: { user: User }) {
     } finally {
       setIsLoadingMoreMemories(false);
     }
-  }
+  }, [
+    isLoadingMoreMemories,
+    loadMemoryPage,
+    memories,
+    nextMemoryCursor,
+    photoAssets,
+    t,
+  ]);
+
+  const shouldAutoLoadMoreMemories =
+    !error &&
+    Boolean(nextMemoryCursor) &&
+    !(view === "album" && hasLoadedAllAlbumPhotos);
+
+  useEffect(() => {
+    if (!shouldAutoLoadMoreMemories) return;
+    const target = memoryLoadMoreRef.current;
+    if (!target) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        void loadMoreMemories();
+      },
+      { rootMargin: "900px 0px" },
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [loadMoreMemories, shouldAutoLoadMoreMemories]);
 
   const shouldHideTimelineDateStrip =
     isMobileSearchActive ||
@@ -3912,23 +3941,12 @@ function TimelineContent({ user }: { user: User }) {
         />
       ) : null}
 
-      {!error &&
-      nextMemoryCursor &&
-      !(view === "album" && hasLoadedAllAlbumPhotos) ? (
-        <div className="flex justify-center py-4">
-          <button
-            type="button"
-            onClick={loadMoreMemories}
-            disabled={isLoadingMoreMemories}
-            className="rounded-full bg-white px-5 py-3 text-sm font-black text-emerald-800 shadow-sm ring-1 ring-emerald-100 disabled:opacity-50"
-          >
-            {isLoadingMoreMemories
-              ? "Loading..."
-              : view === "album"
-                ? "Load older photos"
-                : "Load older memories"}
-          </button>
-        </div>
+      {shouldAutoLoadMoreMemories ? (
+        <div
+          ref={memoryLoadMoreRef}
+          className="h-12"
+          aria-hidden="true"
+        />
       ) : null}
 
       <TimelinePhotoLightbox

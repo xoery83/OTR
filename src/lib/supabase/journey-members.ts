@@ -248,6 +248,21 @@ export async function updateJourneyMember(input: UpdateJourneyMemberInput) {
   return mapJourneyMember(data as JourneyMemberRow);
 }
 
+export async function updateOwnJourneyMemberNotes(input: {
+  memberId: string;
+  notes: string;
+}) {
+  const { data, error } = await supabase
+    .rpc("update_own_journey_member_notes", {
+      target_member_id: input.memberId,
+      next_notes: input.notes,
+    })
+    .single();
+
+  if (error) throw error;
+  return mapJourneyMember(data as JourneyMemberRow);
+}
+
 export async function removeJourneyMember(memberId: string) {
   const { data, error } = await supabase.rpc("remove_journey_member", {
     target_member_id: memberId,

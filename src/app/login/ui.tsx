@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
+import { OtrLogo } from "@/components/OtrLogo";
 import { signInWithEmailOtp, signInWithGoogle } from "@/lib/supabase/auth";
 import { supabase } from "@/lib/supabase/client";
 import { ensureRestoredSession } from "@/lib/supabase/session-fallback";
@@ -71,6 +72,7 @@ export function LoginForm() {
   return (
     <div className="space-y-6">
       <section>
+        <OtrLogo className="mb-4 size-14 rounded-2xl" />
         <p className="text-sm font-semibold text-emerald-700">Welcome back</p>
         <h1 className="mt-1 text-3xl font-semibold text-stone-950">
           Sign in to OTR

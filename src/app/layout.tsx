@@ -23,6 +23,10 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "OTR",
   description: "A group travel memory app for daily notes, photos, and reports.",
+  icons: {
+    icon: "/logo.png",
+    apple: "/logo.png",
+  },
 };
 
 export default function RootLayout({
@@ -44,7 +48,7 @@ export default function RootLayout({
             <SidebarNav />
             <AppHeader />
             <ActivityCenter />
-            <main className="otr-page-shell mx-auto w-full max-w-3xl px-5 pb-28 pt-6 md:ml-44 md:pb-10 lg:max-w-5xl">
+            <main className="otr-page-shell mx-auto w-full max-w-3xl px-5 pb-28 pt-6 md:ml-[var(--otr-sidebar-width)] md:pb-10 lg:max-w-5xl">
               {children}
             </main>
             <BottomNav />

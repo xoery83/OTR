@@ -57,9 +57,19 @@ export function MemoryEngagementActions({
   async function handleLike() {
     if (engagement.myLikeCount >= 5 || workingAction) return;
 
+    const previous = engagement;
+    const optimistic = {
+      ...previous,
+      likeCount: previous.likeCount + 1,
+      myLikeCount: Math.min(previous.myLikeCount + 1, 5),
+    } satisfies MemoryEngagement;
+
+    applyEngagement(optimistic);
     setWorkingAction("like");
     try {
       applyEngagement(await incrementMemoryLike(memory.id));
+    } catch {
+      applyEngagement(previous);
     } finally {
       setWorkingAction(null);
     }
@@ -68,11 +78,24 @@ export function MemoryEngagementActions({
   async function handleFavorite() {
     if (workingAction) return;
 
+    const previous = engagement;
+    const shouldFavorite = !previous.isFavorited;
+    const optimistic = {
+      ...previous,
+      favoriteCount: shouldFavorite
+        ? previous.favoriteCount + 1
+        : Math.max(previous.favoriteCount - 1, 0),
+      isFavorited: shouldFavorite,
+    } satisfies MemoryEngagement;
+
+    applyEngagement(optimistic);
     setWorkingAction("favorite");
     try {
       applyEngagement(
-        await toggleMemoryFavorite(memory.id, !engagement.isFavorited),
+        await toggleMemoryFavorite(memory.id, shouldFavorite),
       );
+    } catch {
+      applyEngagement(previous);
     } finally {
       setWorkingAction(null);
     }

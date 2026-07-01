@@ -23,6 +23,7 @@ export function DayMemoryPreview({
   date,
   memories,
   imageUrls = {},
+  imageUrlCandidatesByMemoryId = {},
   onOpenImage,
   onEngagementChange,
 }: {
@@ -30,10 +31,24 @@ export function DayMemoryPreview({
   date: string;
   memories: MemoryEntry[];
   imageUrls?: Record<string, string>;
-  onOpenImage?: (image: { src: string; alt: string; memoryId: string }) => void;
+  imageUrlCandidatesByMemoryId?: Record<string, string[]>;
+  onOpenImage?: (image: {
+    src: string;
+    alt: string;
+    memoryId: string;
+    fallbackSrcs?: string[];
+  }) => void;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const { t } = useI18n();
+  const imageCandidatesForMemory = (memory: MemoryEntry) => {
+    const candidates = [
+      ...(imageUrlCandidatesByMemoryId[memory.id] ?? []),
+      memory.mediaUrl ? imageUrls[memory.mediaUrl] : null,
+    ].filter((value): value is string => Boolean(value));
+
+    return [...new Set(candidates)];
+  };
   const latestMemories = useMemo(
     () =>
       [...memories]
@@ -49,7 +64,7 @@ export function DayMemoryPreview({
     return latestMemories.reduce<PreviewGroup[]>((groups, memory) => {
       const isPurePhoto =
         memory.type === "photo" &&
-        Boolean(memory.mediaUrl && imageUrls[memory.mediaUrl]) &&
+        imageCandidatesForMemory(memory).length > 0 &&
         !memory.content.trim();
 
       if (!isPurePhoto) {
@@ -66,7 +81,7 @@ export function DayMemoryPreview({
 
       return groups;
     }, []);
-  }, [imageUrls, latestMemories]);
+  }, [imageUrlCandidatesByMemoryId, imageUrls, latestMemories]);
 
   return (
     <div className="space-y-3">
@@ -84,9 +99,8 @@ export function DayMemoryPreview({
                   className="grid grid-cols-3 gap-1"
                 >
                   {group.memories.map((memory) => {
-                    const imageUrl = memory.mediaUrl
-                      ? imageUrls[memory.mediaUrl]
-                      : null;
+                    const imageCandidates = imageCandidatesForMemory(memory);
+                    const imageUrl = imageCandidates[0] ?? null;
                     if (!imageUrl) return null;
 
                     return (
@@ -98,19 +112,16 @@ export function DayMemoryPreview({
                             src: imageUrl,
                             alt: t("planner.memory.imagePreview"),
                             memoryId: memory.id,
+                            fallbackSrcs: imageCandidates.slice(1),
                           })
                         }
                         className="group relative aspect-square overflow-hidden rounded-xl bg-stone-100 text-left shadow-sm transition hover:opacity-90"
                         title={t("planner.memory.openImage")}
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={imageUrl}
-                          alt=""
+                        <FallbackImage
+                          sources={imageCandidates}
                           className="h-full w-full object-cover"
-                          onError={(event) => {
-                            event.currentTarget.style.display = "none";
-                          }}
                         />
                       </button>
                     );
@@ -120,7 +131,8 @@ export function DayMemoryPreview({
             }
 
             const memory = group.memory;
-            const imageUrl = memory.mediaUrl ? imageUrls[memory.mediaUrl] : null;
+            const imageCandidates = imageCandidatesForMemory(memory);
+            const imageUrl = imageCandidates[0] ?? null;
 
             return (
               <article
@@ -147,19 +159,16 @@ export function DayMemoryPreview({
                           src: imageUrl,
                           alt: memory.content || t("planner.memory.imagePreview"),
                           memoryId: memory.id,
+                          fallbackSrcs: imageCandidates.slice(1),
                         })
                       }
                       className="size-16 shrink-0 overflow-hidden rounded-xl bg-stone-100 shadow-sm ring-1 ring-stone-100 transition hover:opacity-90"
                       title={t("planner.memory.openImage")}
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={imageUrl}
-                        alt=""
+                      <FallbackImage
+                        sources={imageCandidates}
                         className="size-full object-cover"
-                        onError={(event) => {
-                          event.currentTarget.style.display = "none";
-                        }}
                       />
                     </button>
                   ) : null}
@@ -185,5 +194,37 @@ export function DayMemoryPreview({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function FallbackImage({
+  sources,
+  className,
+}: {
+  sources: string[];
+  className: string;
+}) {
+  const firstSource = sources[0];
+  if (!firstSource) return null;
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      key={sources.join("|")}
+      src={firstSource}
+      alt=""
+      className={className}
+      onError={(event) => {
+        const nextIndex = Number(event.currentTarget.dataset.nextIndex ?? "1");
+        const nextSource = sources[nextIndex];
+        if (nextSource) {
+          event.currentTarget.dataset.nextIndex = String(nextIndex + 1);
+          event.currentTarget.src = nextSource;
+          return;
+        }
+
+        event.currentTarget.style.display = "none";
+      }}
+    />
   );
 }

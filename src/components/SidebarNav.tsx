@@ -2,17 +2,23 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
+import { OtrLogo } from "@/components/OtrLogo";
+import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
+import {
+  journeyResourceKey,
+  loadJourneyBaseListResource,
+} from "@/lib/journey-resources";
 import {
   compareTripsByStartDateAsc,
   getJourneyStatus,
 } from "@/lib/journeys/status";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
 import { hasUnreadJourneyChat } from "@/lib/supabase/chat";
-import { getTripsForCurrentUser } from "@/lib/supabase/trips";
-import type { Trip } from "@/types";
+import type { JourneyStatus, Trip } from "@/types";
 
 type NavIcon =
   | "home"
@@ -37,13 +43,68 @@ type NavItem = {
   icon: NavIcon;
 };
 
+const SIDEBAR_WIDTH_STORAGE_KEY = "otr.sidebar.width";
+const DEFAULT_SIDEBAR_WIDTH = 192;
+const MIN_SIDEBAR_WIDTH = 176;
+const MAX_SIDEBAR_WIDTH = 288;
+
+function clampSidebarWidth(width: number) {
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width));
+}
+
 function getActiveTripId(pathname: string) {
   return pathname.match(/^\/trips\/([^/]+)/)?.[1] ?? null;
 }
 
+function getJourneySwitchHref(pathname: string, nextTripId: string) {
+  return pathname.match(/^\/trips\/[^/]+/)
+    ? pathname.replace(/^\/trips\/[^/]+/, `/trips/${nextTripId}`)
+    : `/trips/${nextTripId}/planner`;
+}
+
+function getDateTime(value: string | null | undefined) {
+  if (!value) return null;
+  const time = new Date(`${value}T00:00:00`).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function getJourneyStatusSortRank(status: JourneyStatus) {
+  if (status === "active") return 0;
+  if (status === "upcoming") return 1;
+  return 2;
+}
+
+function compareJourneysForSwitcher(left: Trip, right: Trip) {
+  const leftStatus = getJourneyStatus(left);
+  const rightStatus = getJourneyStatus(right);
+  const statusOrder =
+    getJourneyStatusSortRank(leftStatus) - getJourneyStatusSortRank(rightStatus);
+  if (statusOrder) return statusOrder;
+
+  if (leftStatus === "completed" && rightStatus === "completed") {
+    const leftEnd = getDateTime(left.endDate) ?? getDateTime(left.startDate) ?? 0;
+    const rightEnd = getDateTime(right.endDate) ?? getDateTime(right.startDate) ?? 0;
+    if (leftEnd !== rightEnd) return rightEnd - leftEnd;
+  }
+
+  return compareTripsByStartDateAsc(left, right);
+}
+
+function journeyStatusLabel(status: JourneyStatus) {
+  if (status === "active") return "进行中";
+  if (status === "upcoming") return "即将开始";
+  return "已完成";
+}
+
+function journeyStatusDotClass(status: JourneyStatus) {
+  if (status === "active") return "bg-emerald-500";
+  if (status === "upcoming") return "bg-sky-500";
+  return "bg-stone-300";
+}
+
 function Icon({ name }: { name: NavIcon }) {
   const common = {
-    className: "h-5 w-5",
+    className: "h-5 w-5 shrink-0",
     viewBox: "0 0 24 24",
     fill: "none",
     stroke: "currentColor",
@@ -182,9 +243,12 @@ export function SidebarNav() {
   const tripId = getActiveTripId(pathname);
   const isChatPage = Boolean(pathname.match(/^\/trips\/[^/]+\/chat$/));
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
-  const [quickTrips, setQuickTrips] = useState<Trip[]>([]);
+  const [isJourneysOpen, setIsJourneysOpen] = useState(() =>
+    pathname === "/trips" || pathname.startsWith("/trips/"),
+  );
+  const [journeys, setJourneys] = useState<Trip[]>([]);
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const mainItems: NavItem[] = [
-    { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
     { labelKey: "nav.discover", href: "/discover", icon: "discover" },
     { labelKey: "nav.capture", href: "/capture", icon: "capture" },
     { labelKey: "nav.account", href: "/profile", icon: "account" },
@@ -215,41 +279,55 @@ export function SidebarNav() {
         },
       ]
     : [];
-  const quickJourneyItems = useMemo(() => {
-    const statusRank: Record<string, number> = {
-      active: 0,
-      upcoming: 1,
-      completed: 2,
-    };
-
-    return [...quickTrips]
-      .sort((left, right) => {
-        const statusOrder =
-          statusRank[getJourneyStatus(left)] - statusRank[getJourneyStatus(right)];
-        if (statusOrder) return statusOrder;
-        return compareTripsByStartDateAsc(left, right);
-      })
-      .slice(0, 3);
-  }, [quickTrips]);
+  const sortedJourneys = useMemo(
+    () => [...journeys].sort(compareJourneysForSwitcher),
+    [journeys],
+  );
+  const journeyListResource = useJourneyCachedResource({
+    cacheKey: journeyResourceKey.tripsBase(),
+    loader: loadJourneyBaseListResource,
+    ttl: 2 * 60_000,
+    staleTime: 30_000,
+    keepPreviousData: true,
+    backgroundRefresh: true,
+  });
 
   useEffect(() => {
-    if (tripId) {
-      return;
+    const savedWidth = Number(
+      window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY),
+    );
+    const nextWidth = Number.isFinite(savedWidth)
+      ? clampSidebarWidth(savedWidth)
+      : DEFAULT_SIDEBAR_WIDTH;
+    setSidebarWidth(nextWidth);
+    document.documentElement.style.setProperty(
+      "--otr-sidebar-width",
+      `${nextWidth}px`,
+    );
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--otr-sidebar-width",
+      `${sidebarWidth}px`,
+    );
+    window.localStorage.setItem(
+      SIDEBAR_WIDTH_STORAGE_KEY,
+      String(sidebarWidth),
+    );
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (journeyListResource.data) {
+      setJourneys(journeyListResource.data);
     }
+  }, [journeyListResource.data]);
 
-    let isMounted = true;
-    getTripsForCurrentUser()
-      .then((trips) => {
-        if (isMounted) setQuickTrips(trips);
-      })
-      .catch(() => {
-        if (isMounted) setQuickTrips([]);
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [tripId]);
+  useEffect(() => {
+    if (pathname === "/trips" || pathname.startsWith("/trips/")) {
+      setIsJourneysOpen(true);
+    }
+  }, [pathname]);
 
   useEffect(() => {
     if (!tripId || isChatPage) {
@@ -285,11 +363,40 @@ export function SidebarNav() {
   }
 
   function itemClass(active: boolean) {
-    return `group relative flex h-10 w-full items-center gap-3 rounded-xl px-3 text-sm font-bold transition ${
+    return `group relative flex h-10 w-full min-w-0 items-center gap-3 rounded-xl px-3 text-sm font-bold transition ${
       active
         ? "bg-emerald-50 text-emerald-900 shadow-sm"
         : "text-stone-600 hover:bg-stone-100 hover:text-stone-950"
     }`;
+  }
+
+  function handleResizePointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function onPointerMove(moveEvent: PointerEvent) {
+      const nextWidth = clampSidebarWidth(
+        startWidth + moveEvent.clientX - startX,
+      );
+      setSidebarWidth(nextWidth);
+    }
+
+    function onPointerUp() {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    }
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp, { once: true });
+    window.addEventListener("pointercancel", onPointerUp, { once: true });
   }
 
   function renderItem(item: NavItem) {
@@ -306,7 +413,7 @@ export function SidebarNav() {
           aria-label={label}
         >
           <Icon name={item.icon} />
-          <span className="truncate">
+          <span className="min-w-0 truncate">
             {label}
           </span>
         </button>
@@ -328,53 +435,135 @@ export function SidebarNav() {
             className="absolute right-3 top-2 h-2.5 w-2.5 rounded-full bg-red-500 shadow-sm ring-2 ring-white"
           />
         ) : null}
-        <span className="truncate">
+        <span className="min-w-0 truncate">
           {label}
         </span>
       </Link>
     );
   }
 
-  function renderQuickJourney(trip: Trip) {
+  function renderJourneySwitchLink(trip: Trip) {
     const status = getJourneyStatus(trip);
-    const statusLabel =
-      status === "active" ? "进行中" : status === "upcoming" ? "即将开始" : "已完成";
+    const active = trip.id === tripId;
 
     return (
       <Link
         key={trip.id}
-        href={`/trips/${trip.id}/planner`}
-        className="group rounded-xl px-3 py-2 transition hover:bg-emerald-50"
+        href={getJourneySwitchHref(pathname, trip.id)}
+        className={`group relative block rounded-lg py-1.5 pl-4 pr-2 transition ${
+          active
+            ? "bg-emerald-50 text-emerald-950"
+            : "text-stone-600 hover:bg-stone-100 hover:text-stone-950"
+        }`}
         title={trip.name}
       >
-        <span className="block truncate text-sm font-black text-stone-900 group-hover:text-emerald-900">
-          {trip.name}
-        </span>
-        <span className="mt-0.5 block truncate text-[11px] font-semibold text-stone-500">
-          {statusLabel}
-          {trip.destination ? ` · ${trip.destination}` : ""}
+        <span
+          className={`absolute left-0 top-2 h-6 w-1 rounded-full ${
+            active ? "bg-emerald-600" : "bg-transparent"
+          }`}
+          aria-hidden="true"
+        />
+        <span className="flex min-w-0 items-center gap-2">
+          <span
+            className={`size-1.5 shrink-0 rounded-full ${journeyStatusDotClass(status)}`}
+            title={journeyStatusLabel(status)}
+          />
+          <span className="truncate text-sm font-black">
+            {trip.name}
+          </span>
         </span>
       </Link>
     );
   }
 
+  function renderJourneySwitcher() {
+    const active = pathname === "/trips" || pathname.startsWith("/trips/");
+
+    return (
+      <div className="space-y-1.5">
+        <button
+          type="button"
+          onClick={() => setIsJourneysOpen((current) => !current)}
+          className={`${itemClass(active)} pr-2`}
+          aria-expanded={isJourneysOpen}
+        >
+          <Icon name="journeys" />
+          <span className="min-w-0 flex-1 truncate text-left">{t("nav.journeys")}</span>
+          <span
+            className={`grid size-6 place-items-center rounded-lg text-stone-500 transition ${
+              isJourneysOpen ? "rotate-180 bg-white/80" : "bg-stone-50"
+            }`}
+            aria-hidden="true"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              className="size-4"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2.2"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </span>
+        </button>
+
+        {isJourneysOpen ? (
+          <div className="ml-3 border-l border-emerald-100 pl-2">
+            <Link
+              href="/trips"
+              className={`relative block rounded-lg py-1.5 pl-4 pr-2 text-sm font-black transition ${
+                pathname === "/trips"
+                  ? "bg-emerald-50 text-emerald-950"
+                  : "text-stone-600 hover:bg-stone-100 hover:text-stone-950"
+              }`}
+            >
+              <span
+                className={`absolute left-0 top-2 h-6 w-1 rounded-full ${
+                  pathname === "/trips" ? "bg-emerald-600" : "bg-transparent"
+                }`}
+                aria-hidden="true"
+              />
+              <span className="block min-w-0 truncate">全部旅程</span>
+            </Link>
+            {sortedJourneys.length > 0 ? (
+              <div className="mt-0.5 max-h-40 space-y-0.5 overflow-y-auto pr-0.5">
+                {sortedJourneys.map(renderJourneySwitchLink)}
+              </div>
+            ) : (
+              <p className="rounded-lg px-4 py-1.5 text-xs font-semibold text-stone-500">
+                {journeyListResource.isLoading ? "加载旅程中..." : "还没有旅程"}
+              </p>
+            )}
+            <Link
+              href="/trips/new"
+              className="mt-1 block rounded-lg py-1.5 pl-4 pr-2 text-xs font-black text-emerald-800 transition hover:bg-emerald-50"
+            >
+              <span className="block min-w-0 truncate">+ 新建 Journey</span>
+            </Link>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
-    <aside className="fixed left-0 top-0 z-40 hidden h-screen w-44 border-r border-emerald-100 bg-[#fffdf8] px-3 py-5 shadow-[8px_0_28px_rgba(28,25,23,0.04)] md:block">
-      <Link href="/trips" className="flex items-center gap-3 px-1" title="OTR">
-        <span className="grid size-10 place-items-center rounded-xl bg-emerald-700 text-sm font-bold text-white">
-          O
-        </span>
-        <span>
+    <aside className="fixed left-0 top-0 z-40 hidden h-screen w-[var(--otr-sidebar-width)] border-r border-emerald-100 bg-[#fffdf8] px-3 py-5 shadow-[8px_0_28px_rgba(28,25,23,0.04)] md:block">
+      <Link href="/trips" className="flex min-w-0 items-center gap-3 px-1" title="OTR">
+        <OtrLogo className="size-10 shrink-0 rounded-xl" />
+        <span className="min-w-0">
           <span className="block text-base font-black leading-tight text-stone-950">
             OTR
           </span>
-          <span className="block text-xs font-semibold leading-tight text-stone-500">
+          <span className="block truncate text-xs font-semibold leading-tight text-stone-500">
             旅程与记忆
           </span>
         </span>
       </Link>
       <nav className="mt-7 space-y-5">
         <div className="grid gap-1.5">
+          {renderJourneySwitcher()}
           {mainItems.map(renderItem)}
         </div>
 
@@ -389,27 +578,21 @@ export function SidebarNav() {
               </div>
             </>
           ) : (
-            <>
-              <p className="mb-2 px-3 text-[11px] font-black uppercase tracking-[0.16em] text-emerald-800">
-                快速进入
-              </p>
-              {quickJourneyItems.length > 0 ? (
-                <div className="grid gap-1.5 rounded-2xl bg-white/60 p-1.5 ring-1 ring-emerald-50">
-                  {quickJourneyItems.map(renderQuickJourney)}
-                </div>
-              ) : (
-                <Link
-                  href="/trips"
-                  className="flex h-10 items-center gap-3 rounded-xl bg-stone-50 px-3 text-sm font-bold text-stone-400 hover:bg-emerald-50 hover:text-emerald-900"
-                >
-                  <Icon name="journeys" />
-                  Journey
-                </Link>
-              )}
-            </>
+            null
           )}
         </div>
       </nav>
+      <button
+        type="button"
+        onPointerDown={handleResizePointerDown}
+        className="group absolute inset-y-0 right-[-5px] z-20 hidden w-2 cursor-col-resize touch-none items-center justify-center md:flex"
+        aria-label="调整侧边栏宽度"
+        aria-valuemax={MAX_SIDEBAR_WIDTH}
+        aria-valuemin={MIN_SIDEBAR_WIDTH}
+        aria-valuenow={sidebarWidth}
+      >
+        <span className="h-12 w-1 rounded-full bg-emerald-200/70 opacity-0 transition group-hover:opacity-100" />
+      </button>
     </aside>
   );
 }

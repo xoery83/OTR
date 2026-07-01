@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
+import { OtrLogo } from "@/components/OtrLogo";
 import { TranslatedText } from "@/components/TranslatedText";
 import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
 import {
@@ -223,9 +224,7 @@ export function AppHeader() {
             }
             aria-label={t("app.menu.open")}
           >
-            <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-emerald-700 text-sm font-bold text-white">
-              O
-            </span>
+            <OtrLogo className="size-9 rounded-xl" />
             <div
               className={`${
                 isMapPage || isChatPage
@@ -378,9 +377,7 @@ export function AppHeader() {
           />
           <aside className="absolute left-0 top-0 h-full w-72 max-w-[82vw] bg-[#fffdf8] p-5 shadow-2xl">
             <div className="flex items-center gap-3">
-              <span className="grid size-10 place-items-center rounded-xl bg-emerald-700 text-sm font-bold text-white">
-                O
-              </span>
+              <OtrLogo className="size-10 rounded-xl" />
               <div>
                 <p className="text-lg font-semibold text-stone-950">OTR</p>
                 <p className="text-xs font-medium text-stone-500">

@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import {
@@ -39,17 +40,31 @@ import type {
 import { getErrorMessage } from "@/lib/errors";
 import { compressImageFile, type CompressedImage } from "@/lib/images";
 import { readTodayScopedValue } from "@/lib/day-view-storage";
+import { getDefaultCapturedAt } from "@/lib/format";
 import {
   compareTripsByStartDateAsc,
   getJourneyStatus,
 } from "@/lib/journeys/status";
-import { getLedgerData } from "@/lib/supabase/ledger";
+import { createRawCaptureEvent } from "@/lib/supabase/capture-events";
+import {
+  createItineraryEvent,
+  createItineraryReservation,
+} from "@/lib/supabase/itinerary";
+import { createLedgerEntry, getLedgerData } from "@/lib/supabase/ledger";
 import { getPlannerV2, type PlannerV2Day } from "@/lib/supabase/planner-v2";
 import { requestVoiceTranscription } from "@/lib/supabase/media-assets";
 import { getJourneyMembers } from "@/lib/supabase/journey-members";
 import { getTripsForCurrentUser } from "@/lib/supabase/trips";
 import { startPhotoUploadBatch } from "@/lib/uploads/photo-upload-manager";
-import type { ItineraryReservation, JourneyMember, Trip } from "@/types";
+import type {
+  ItineraryEventType,
+  ItineraryReservation,
+  ItineraryReservationType,
+  JourneyMember,
+  LedgerAccountingMode,
+  LedgerCategory,
+  Trip,
+} from "@/types";
 
 type CaptureOpenOptions = {
   tripId?: string | null;
@@ -64,6 +79,34 @@ type CaptureModalContextValue = {
   openCapture: (options?: CaptureOpenOptions) => void;
 };
 
+type QuickRecordType =
+  | ""
+  | "schedule"
+  | "expense"
+  | "hotel"
+  | "flight"
+  | "reservation";
+
+type QuickRecordFormState = {
+  title: string;
+  date: string;
+  endDate: string;
+  startTime: string;
+  endTime: string;
+  locationName: string;
+  description: string;
+  eventType: ItineraryEventType;
+  amount: string;
+  currency: string;
+  category: LedgerCategory;
+  accountingMode: LedgerAccountingMode;
+  payerMemberId: string;
+  provider: string;
+  confirmationCode: string;
+  url: string;
+  reservationType: ItineraryReservationType;
+};
+
 const CaptureModalContext = createContext<CaptureModalContextValue | null>(null);
 
 function getActiveTripId(pathname: string) {
@@ -73,6 +116,220 @@ function getActiveTripId(pathname: string) {
 
 function stringPayload(value: unknown) {
   return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+}
+
+const captureQuickEmojis = ["😀", "😂", "🥰", "😎", "😭", "👍", "🙏", "🎉", "❤️", "📍", "💸", "✅"];
+
+const quickRecordLabels: Record<Exclude<QuickRecordType, "">, string> = {
+  schedule: "一条日程",
+  expense: "费用支出",
+  hotel: "酒店预订",
+  flight: "航班信息",
+  reservation: "预订信息",
+};
+
+const captureEventTypes: ItineraryEventType[] = [
+  "activity",
+  "meal",
+  "transport",
+  "shopping",
+  "note",
+  "other",
+];
+
+const captureEventTypeLabels: Record<ItineraryEventType, string> = {
+  flight: "航班",
+  hotel: "住宿",
+  car: "租车",
+  activity: "活动",
+  shopping: "购物",
+  meal: "用餐",
+  transport: "交通",
+  note: "备注",
+  other: "其他",
+};
+
+const captureReservationTypes: ItineraryReservationType[] = [
+  "car",
+  "ferry",
+  "tour",
+  "restaurant",
+  "other",
+];
+
+const captureReservationTypeLabels: Record<ItineraryReservationType, string> = {
+  flight: "航班",
+  hotel: "住宿",
+  car: "租车",
+  ferry: "轮渡",
+  tour: "预订活动",
+  restaurant: "餐厅",
+  other: "其他",
+};
+
+function addQuickRecordDateDays(date: string, days: number) {
+  if (!date) return "";
+  const next = new Date(`${date}T00:00:00`);
+  next.setDate(next.getDate() + days);
+  return next.toISOString().slice(0, 10);
+}
+
+function quickRecordReservationType(
+  type: QuickRecordType,
+  selectedType: ItineraryReservationType,
+) {
+  if (type === "hotel") return "hotel";
+  if (type === "flight") return "flight";
+  return selectedType;
+}
+
+function reservationDefaultsForType(type: ItineraryReservationType, date: string) {
+  if (type === "hotel") {
+    return {
+      title: "新住宿",
+      startTime: "15:00",
+      endDate: addQuickRecordDateDays(date, 1),
+      endTime: "11:00",
+    };
+  }
+  if (type === "restaurant") {
+    return {
+      title: "新餐厅预订",
+      startTime: "19:00",
+      endDate: date,
+      endTime: "21:00",
+    };
+  }
+  if (type === "car") {
+    return {
+      title: "新租车",
+      startTime: "09:00",
+      endDate: date,
+      endTime: "18:00",
+    };
+  }
+  if (type === "flight") {
+    return {
+      title: "新航班",
+      startTime: "09:00",
+      endDate: date,
+      endTime: "12:00",
+    };
+  }
+  if (type === "ferry") {
+    return {
+      title: "新轮渡",
+      startTime: "09:00",
+      endDate: date,
+      endTime: "12:00",
+    };
+  }
+  if (type === "tour") {
+    return {
+      title: "新活动预订",
+      startTime: "09:00",
+      endDate: date,
+      endTime: "12:00",
+    };
+  }
+  return {
+    title: "新预订",
+    startTime: "09:00",
+    endDate: date,
+    endTime: "12:00",
+  };
+}
+
+function reservationFormCopy(type: ItineraryReservationType) {
+  if (type === "flight") {
+    return {
+      heading: "航班预订",
+      titleLabel: "航班号 / 航班标题",
+      locationLabel: "航线 / 机场",
+      startLabel: "起飞时间",
+      endLabel: "到达时间",
+      providerLabel: "航空公司 / 预订平台",
+      codeLabel: "PNR / 确认号",
+      urlLabel: "机票链接",
+      saveLabel: "保存这条航班",
+    };
+  }
+  if (type === "hotel") {
+    return {
+      heading: "住宿预订",
+      titleLabel: "酒店 / 住宿名称",
+      locationLabel: "住宿地址",
+      startLabel: "入住时间",
+      endLabel: "退房时间",
+      providerLabel: "平台 / 预订人",
+      codeLabel: "确认号",
+      urlLabel: "预订链接",
+      saveLabel: "保存这条住宿",
+    };
+  }
+  if (type === "car") {
+    return {
+      heading: "租车预订",
+      titleLabel: "车行 / 租车标题",
+      locationLabel: "取还车地点",
+      startLabel: "取车时间",
+      endLabel: "还车时间",
+      providerLabel: "租车公司 / 平台",
+      codeLabel: "预订号",
+      urlLabel: "租车链接",
+      saveLabel: "保存这条租车",
+    };
+  }
+  if (type === "restaurant") {
+    return {
+      heading: "餐厅预订",
+      titleLabel: "餐厅名称",
+      locationLabel: "餐厅地址",
+      startLabel: "用餐时间",
+      endLabel: "结束时间",
+      providerLabel: "预订平台 / 联系人",
+      codeLabel: "确认号",
+      urlLabel: "餐厅链接",
+      saveLabel: "保存这条餐厅",
+    };
+  }
+  if (type === "tour") {
+    return {
+      heading: "活动预订",
+      titleLabel: "活动 / Tour 名称",
+      locationLabel: "集合地点",
+      startLabel: "开始时间",
+      endLabel: "结束时间",
+      providerLabel: "供应商 / 平台",
+      codeLabel: "确认号",
+      urlLabel: "活动链接",
+      saveLabel: "保存这条活动预订",
+    };
+  }
+  if (type === "ferry") {
+    return {
+      heading: "轮渡预订",
+      titleLabel: "轮渡 / 船班标题",
+      locationLabel: "航线 / 港口",
+      startLabel: "出发时间",
+      endLabel: "抵达时间",
+      providerLabel: "船公司 / 平台",
+      codeLabel: "确认号",
+      urlLabel: "轮渡链接",
+      saveLabel: "保存这条轮渡",
+    };
+  }
+  return {
+    heading: "其他预订",
+    titleLabel: "预订标题",
+    locationLabel: "地点 / 地址",
+    startLabel: "开始时间",
+    endLabel: "结束时间",
+    providerLabel: "供应商 / 平台",
+    codeLabel: "确认号",
+    urlLabel: "链接",
+    saveLabel: "保存这条预订",
+  };
 }
 
 function MicrophoneIcon({ className = "size-4" }: { className?: string }) {
@@ -137,10 +394,19 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     null,
   );
   const [isDebugOpen, setIsDebugOpen] = useState(false);
+  const [isImmersiveInputOpen, setIsImmersiveInputOpen] = useState(false);
+  const [showCaptureEmoji, setShowCaptureEmoji] = useState(false);
+  const [quickRecordType, setQuickRecordType] = useState<QuickRecordType>("");
+  const [isQuickRecordOpen, setIsQuickRecordOpen] = useState(false);
+  const [isQuickRecordSaving, setIsQuickRecordSaving] = useState(false);
+  const [quickRecordError, setQuickRecordError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [engineOptions, setEngineOptions] = useState<CaptureEngineOptions>({
     entryPoint: "global_capture",
   });
+  const [quickRecordForm, setQuickRecordForm] = useState<QuickRecordFormState>(
+    () => defaultQuickRecordForm(""),
+  );
 
   const selectedTrip = trips.find((trip) => trip.id === selectedTripId) ?? null;
   const confirmLabel = intentResult?.intent === "planner_update"
@@ -190,6 +456,78 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
         lockedDayDate ? ` · ${t("capture.context.recordTo", { date: lockedDayDate })}` : ""
       }`;
 
+  function defaultQuickRecordForm(type: QuickRecordType): QuickRecordFormState {
+    const contextDate =
+      typeof engineOptions.lockedContext?.dayDate === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(engineOptions.lockedContext.dayDate)
+        ? engineOptions.lockedContext.dayDate
+        : new Date().toISOString().slice(0, 10);
+    const base: QuickRecordFormState = {
+      title: "",
+      date: contextDate,
+      endDate: contextDate,
+      startTime: "",
+      endTime: "",
+      locationName: "",
+      description: "",
+      eventType: "activity",
+      amount: "",
+      currency: "NZD",
+      category: "other",
+      accountingMode: "shared",
+      payerMemberId: "",
+      provider: "",
+      confirmationCode: "",
+      url: "",
+      reservationType: "other",
+    };
+
+    if (type === "expense") {
+      return {
+        ...base,
+        title: "费用支出",
+        category: "other",
+        accountingMode: "shared",
+        payerMemberId:
+          members.find((member) => member.role === "owner")?.id ??
+          members.find((member) => member.role === "group_member")?.id ??
+          "",
+      };
+    }
+    if (type === "hotel") {
+      const defaults = reservationDefaultsForType("hotel", contextDate);
+      return {
+        ...base,
+        ...defaults,
+        eventType: "hotel",
+        reservationType: "hotel",
+      };
+    }
+    if (type === "flight") {
+      const defaults = reservationDefaultsForType("flight", contextDate);
+      return {
+        ...base,
+        ...defaults,
+        eventType: "flight",
+        reservationType: "flight",
+      };
+    }
+    if (type === "reservation") {
+      const defaults = reservationDefaultsForType("other", contextDate);
+      return {
+        ...base,
+        ...defaults,
+        reservationType: "other",
+      };
+    }
+    return {
+      ...base,
+      title: type === "schedule" ? "新日程" : base.title,
+      startTime: type === "schedule" ? "09:00" : base.startTime,
+      endTime: type === "schedule" ? "10:00" : base.endTime,
+    };
+  }
+
   useEffect(() => {
     if (!isOpen) return;
     window.requestAnimationFrame(() => {
@@ -224,6 +562,13 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     setIsSubmitting(false);
     setIntentResult(null);
     setIsDebugOpen(false);
+    setIsImmersiveInputOpen(false);
+    setShowCaptureEmoji(false);
+    setQuickRecordType("");
+    setIsQuickRecordOpen(false);
+    setIsQuickRecordSaving(false);
+    setQuickRecordError(null);
+    setQuickRecordForm(defaultQuickRecordForm(""));
     setError(null);
     setEngineOptions({ entryPoint: "global_capture" });
   }
@@ -231,6 +576,11 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
   function closeCapture() {
     setIsOpen(false);
     setError(null);
+    setIsImmersiveInputOpen(false);
+    setShowCaptureEmoji(false);
+    setQuickRecordType("");
+    setIsQuickRecordOpen(false);
+    setQuickRecordError(null);
     if (recorder.isRecording) {
       recorder.stop();
     }
@@ -246,6 +596,12 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     setOriginalPhotoFile(null);
     setCompressedImage(null);
     setIsDebugOpen(false);
+    setIsImmersiveInputOpen(false);
+    setShowCaptureEmoji(false);
+    setQuickRecordType("");
+    setIsQuickRecordOpen(false);
+    setQuickRecordError(null);
+    setQuickRecordForm(defaultQuickRecordForm(""));
     setEngineOptions({ entryPoint: "global_capture" });
   }
 
@@ -497,6 +853,209 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
       setError(getErrorMessage(photoError, t("capture.error.preparePhoto")));
     } finally {
       setIsPhotoPreparing(false);
+    }
+  }
+
+  function isMobileCaptureViewport() {
+    return (
+      typeof window !== "undefined" &&
+      window.matchMedia("(max-width: 767px)").matches
+    );
+  }
+
+  function focusCaptureInput() {
+    if (isMobileCaptureViewport()) {
+      setIsImmersiveInputOpen(true);
+      setShowCaptureEmoji(false);
+    }
+  }
+
+  function closeImmersiveInput() {
+    setIsImmersiveInputOpen(false);
+    setShowCaptureEmoji(false);
+    if (typeof document !== "undefined") {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement) activeElement.blur();
+    }
+  }
+
+  function appendCaptureEmoji(emoji: string) {
+    setText((current) => `${current}${emoji}`);
+  }
+
+  function handleQuickRecordSelect(nextType: QuickRecordType) {
+    setQuickRecordType(nextType);
+    if (!nextType) {
+      setIsQuickRecordOpen(false);
+      setQuickRecordError(null);
+      return;
+    }
+    setQuickRecordForm(defaultQuickRecordForm(nextType));
+    setIsQuickRecordOpen(true);
+    setQuickRecordError(null);
+    setError(null);
+    closeImmersiveInput();
+  }
+
+  function updateQuickRecordForm(patch: Partial<QuickRecordFormState>) {
+    setQuickRecordForm((current) => ({ ...current, ...patch }));
+  }
+
+  function quickDateTime(date: string, time: string) {
+    if (!date) return "";
+    return `${date}T${time || "12:00"}`;
+  }
+
+  function quickRecordTripDayId() {
+    const context = engineOptions.lockedContext ?? {};
+    const tripDayId =
+      typeof context.tripDayId === "string"
+        ? context.tripDayId
+        : typeof context.dayId === "string"
+          ? context.dayId
+          : "";
+    return tripDayId || null;
+  }
+
+  function quickRecordSourceText(type: Exclude<QuickRecordType, "">) {
+    return [
+      quickRecordLabels[type],
+      quickRecordForm.title,
+      quickRecordForm.date,
+      quickRecordForm.startTime,
+      quickRecordForm.locationName,
+      quickRecordForm.amount
+        ? `${quickRecordForm.amount} ${quickRecordForm.currency}`
+        : "",
+      quickRecordForm.provider,
+      quickRecordForm.confirmationCode,
+      quickRecordForm.description,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  async function submitQuickRecord(addAnother: boolean) {
+    if (!selectedTripId || !quickRecordType) {
+      setQuickRecordError(t("capture.error.chooseJourney"));
+      return;
+    }
+    if (!quickRecordForm.title.trim()) {
+      setQuickRecordError("请填写标题。");
+      return;
+    }
+
+    setIsQuickRecordSaving(true);
+    setQuickRecordError(null);
+    const type = quickRecordType;
+    const sourceText = quickRecordSourceText(type);
+
+    try {
+      await createRawCaptureEvent({
+        tripId: selectedTripId,
+        inputType: "text",
+        originalInput: sourceText,
+        capturedAt: getDefaultCapturedAt(quickRecordForm.date),
+        metadata: {
+          source: "capture_quick_record",
+          quickRecordType: type,
+          form: quickRecordForm,
+          engineOptions,
+        },
+      });
+
+      if (type === "schedule") {
+        await createItineraryEvent({
+          tripId: selectedTripId,
+          tripDayId: quickRecordTripDayId(),
+          title: quickRecordForm.title,
+          description: quickRecordForm.description,
+          eventType: quickRecordForm.eventType,
+          locationName: quickRecordForm.locationName,
+          plannedStart: quickDateTime(quickRecordForm.date, quickRecordForm.startTime),
+          plannedEnd: quickRecordForm.endTime
+            ? quickDateTime(
+                quickRecordForm.endDate || quickRecordForm.date,
+                quickRecordForm.endTime,
+              )
+            : "",
+          bookingReference: quickRecordForm.confirmationCode,
+          url: quickRecordForm.url,
+          sourceText,
+          confidence: 1,
+          needsReview: false,
+        });
+      } else if (type === "expense") {
+        const ledgerData = await getLedgerData(selectedTripId);
+        const amount = Number(quickRecordForm.amount);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          throw new Error("请填写有效金额。");
+        }
+        await createLedgerEntry({
+          journeyId: selectedTripId,
+          title: quickRecordForm.title,
+          description: quickRecordForm.description,
+          category: quickRecordForm.category,
+          accountingMode: quickRecordForm.accountingMode,
+          expenseDate: quickRecordForm.date,
+          startDate: quickRecordForm.date,
+          endDate: quickRecordForm.date,
+          originalAmount: amount,
+          originalCurrency: quickRecordForm.currency || ledgerData.ledger.baseCurrency,
+          baseCurrency: ledgerData.ledger.baseCurrency,
+          exchangeRate: 1,
+          payerMemberId: quickRecordForm.payerMemberId || null,
+          participantMemberIds:
+            quickRecordForm.accountingMode === "shared"
+              ? activeJourneyMemberIds()
+              : [],
+          addressText: quickRecordForm.locationName,
+        });
+      } else {
+        await createItineraryReservation({
+          tripId: selectedTripId,
+          tripDayId: quickRecordTripDayId(),
+          reservationType:
+            type === "hotel"
+              ? "hotel"
+              : type === "flight"
+                ? "flight"
+                : quickRecordForm.reservationType,
+          title: quickRecordForm.title,
+          provider: quickRecordForm.provider,
+          locationName: quickRecordForm.locationName,
+          startsAt: quickDateTime(quickRecordForm.date, quickRecordForm.startTime),
+          endsAt: quickRecordForm.endTime
+            ? quickDateTime(
+                quickRecordForm.endDate || quickRecordForm.date,
+                quickRecordForm.endTime,
+              )
+            : "",
+          confirmationCode: quickRecordForm.confirmationCode,
+          url: quickRecordForm.url,
+          sourceText,
+          confidence: 1,
+          needsReview: false,
+        });
+      }
+
+      window.dispatchEvent(new CustomEvent("otr:capture-completed"));
+
+      if (addAnother) {
+        setQuickRecordForm(defaultQuickRecordForm(type));
+        setQuickRecordType(type);
+        setIsQuickRecordOpen(true);
+        return;
+      }
+
+      setQuickRecordType("");
+      setIsQuickRecordOpen(false);
+      setQuickRecordError(null);
+      closeCapture();
+    } catch (quickError) {
+      setQuickRecordError(getErrorMessage(quickError, "快速记录保存失败。"));
+    } finally {
+      setIsQuickRecordSaving(false);
     }
   }
 
@@ -1688,6 +2247,7 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
 
   async function reviewCapture(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    closeImmersiveInput();
     if (!selectedTripId) {
       setError(t("capture.error.chooseJourney"));
       return;
@@ -1952,6 +2512,569 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
     router.push("/parser-upgrade?source=capture");
   }
 
+  function renderCaptureInputForm(isImmersive: boolean) {
+    const canSubmit =
+      !isSubmitting &&
+      !isTranscribing &&
+      !isDetectingIntent &&
+      Boolean(selectedTripId) &&
+      Boolean(text.trim() || compressedImage);
+
+    return (
+      <form
+        onSubmit={reviewCapture}
+        className={
+          isImmersive
+            ? "border-t border-white/40 bg-[#e4f4ef]/95 px-3 pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] pt-2 shadow-[0_-12px_30px_rgba(0,0,0,0.08)] backdrop-blur"
+            : "rounded-3xl border border-stone-200 bg-white p-2 shadow-sm"
+        }
+      >
+        {compressedImage ? (
+          <div className="mb-2 overflow-hidden rounded-2xl border border-stone-200 bg-stone-50">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={compressedImage.previewUrl}
+              alt={t("capture.photo.previewAlt")}
+              className="max-h-40 w-full object-cover"
+            />
+            <div className="flex flex-wrap gap-3 border-t border-stone-200 bg-white p-2 text-xs font-semibold text-stone-600">
+              <span>{photoFileName}</span>
+              <span>{compressedImage.width} x {compressedImage.height}</span>
+              <span>{Math.round(compressedImage.blob.size / 1024)} KB</span>
+            </div>
+            {singlePhotoProgress !== null ? (
+              <div className="border-t border-stone-200 bg-white px-2 py-2">
+                <div className="flex items-center justify-between text-xs font-bold text-emerald-800">
+                  <span>{t("capture.status.uploadingPhoto")}</span>
+                  <span>{singlePhotoProgress}%</span>
+                </div>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-stone-100">
+                  <div
+                    className="h-full rounded-full bg-emerald-700 transition-all"
+                    style={{ width: `${singlePhotoProgress}%` }}
+                  />
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        <input
+          ref={photoInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={handlePhotoChange}
+          className="sr-only"
+        />
+        <div className="flex items-end gap-2">
+          <button
+            type="button"
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() =>
+              recorder.isRecording ? recorder.stop() : void recorder.start()
+            }
+            disabled={isTranscribing || isSubmitting || !selectedTripId}
+            className={`grid size-11 shrink-0 place-items-center rounded-2xl shadow-sm transition active:scale-95 disabled:text-stone-300 md:rounded-full ${
+              recorder.isRecording
+                ? "bg-red-600 text-white"
+                : isTranscribing
+                  ? "bg-emerald-50 text-emerald-800"
+                  : "bg-stone-100 text-stone-600"
+            }`}
+            title={t("capture.action.voice")}
+            aria-label={t("capture.action.voice")}
+          >
+            {isTranscribing ? (
+              <span className="text-xs font-bold">...</span>
+            ) : (
+              <MicrophoneIcon className="size-5" />
+            )}
+          </button>
+          <textarea
+            value={text}
+            onFocus={isImmersive ? undefined : focusCaptureInput}
+            onChange={(event) => setText(event.target.value)}
+            rows={1}
+            enterKeyHint="enter"
+            autoFocus={isImmersive}
+            placeholder={capturePlaceholder}
+            className="max-h-28 min-h-11 flex-1 resize-none rounded-xl border border-stone-200 bg-white px-3 py-2 text-base font-semibold leading-7 text-stone-950 placeholder:text-stone-500 shadow-sm outline-none focus:border-emerald-600 md:rounded-2xl md:text-sm md:leading-5"
+          />
+          <button
+            type="button"
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => {
+              if (isMobileCaptureViewport()) setIsImmersiveInputOpen(true);
+              setShowCaptureEmoji((current) => !current);
+            }}
+            className="grid size-11 shrink-0 place-items-center rounded-2xl bg-stone-100 text-2xl font-black text-emerald-800 shadow-sm transition active:scale-95 md:rounded-full"
+            aria-label="表情"
+          >
+            ☺
+          </button>
+          <button
+            type="button"
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => photoInputRef.current?.click()}
+            disabled={isPhotoPreparing || isSubmitting}
+            className="grid size-11 shrink-0 place-items-center rounded-2xl bg-stone-100 text-3xl font-black text-emerald-800 shadow-sm transition active:scale-95 disabled:text-stone-300 md:rounded-full"
+            title={t("capture.action.attach")}
+          >
+            {isPhotoPreparing ? "..." : "+"}
+          </button>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className="h-11 shrink-0 rounded-xl bg-emerald-700 px-3 text-sm font-black text-white disabled:hidden md:rounded-full md:px-4"
+          >
+            {isDetectingIntent ? "..." : t("capture.action.send")}
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  function renderQuickRecordForm() {
+    if (!isQuickRecordOpen || !quickRecordType) return null;
+    const isExpense = quickRecordType === "expense";
+    const isSchedule = quickRecordType === "schedule";
+    const isReservation = !isExpense && !isSchedule;
+    const effectiveReservationType = quickRecordReservationType(
+      quickRecordType,
+      quickRecordForm.reservationType,
+    );
+    const reservationCopy = reservationFormCopy(effectiveReservationType);
+    const formHeading = isSchedule
+      ? "单条行程"
+      : isExpense
+        ? "费用支出"
+        : reservationCopy.heading;
+    const titleLabel = isSchedule
+      ? "日程标题"
+      : isExpense
+        ? "支出标题"
+        : reservationCopy.titleLabel;
+    const locationLabel = isSchedule
+      ? "地点"
+      : isExpense
+        ? "消费地点"
+        : reservationCopy.locationLabel;
+    const startLabel = isSchedule ? "开始时间" : reservationCopy.startLabel;
+    const endLabel = isSchedule ? "结束时间" : reservationCopy.endLabel;
+
+    return (
+      <div className="fixed inset-0 z-[2147483200] bg-stone-950/35 px-3 py-6 backdrop-blur-sm md:grid md:place-items-center">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitQuickRecord(false);
+          }}
+          className="mx-auto flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-[#fffdf8] shadow-2xl"
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-stone-100 p-4">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-800">
+                快速记录
+              </p>
+              <h3 className="mt-1 text-xl font-black text-stone-950">
+                {formHeading}
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setQuickRecordType("");
+                setIsQuickRecordOpen(false);
+              }}
+              className="grid size-10 shrink-0 place-items-center rounded-full bg-stone-100 text-xl font-black text-stone-600"
+              aria-label={t("capture.action.close")}
+            >
+              ×
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="space-y-1 md:col-span-2">
+                <span className="text-xs font-bold text-stone-600">
+                  {titleLabel}
+                </span>
+                <input
+                  value={quickRecordForm.title}
+                  onChange={(event) =>
+                    updateQuickRecordForm({ title: event.target.value })
+                  }
+                  className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-bold text-stone-600">
+                  {isExpense ? "支出日期" : "开始日期"}
+                </span>
+                <input
+                  type="date"
+                  value={quickRecordForm.date}
+                  onChange={(event) => {
+                    const nextDate = event.target.value;
+                    updateQuickRecordForm({
+                      date: nextDate,
+                      ...(!isExpense
+                        ? {
+                            endDate:
+                              effectiveReservationType === "hotel"
+                                ? addQuickRecordDateDays(nextDate, 1)
+                                : nextDate,
+                          }
+                        : {}),
+                    });
+                  }}
+                  className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                />
+              </label>
+              {!isExpense ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-600">
+                      {startLabel}
+                    </span>
+                    <input
+                      type="time"
+                      value={quickRecordForm.startTime}
+                      onChange={(event) =>
+                        updateQuickRecordForm({ startTime: event.target.value })
+                      }
+                      className="w-full rounded-2xl border border-stone-200 bg-white px-3 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-600">
+                      {endLabel}
+                    </span>
+                    <input
+                      type="time"
+                      value={quickRecordForm.endTime}
+                      onChange={(event) =>
+                        updateQuickRecordForm({ endTime: event.target.value })
+                      }
+                      className="w-full rounded-2xl border border-stone-200 bg-white px-3 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                    />
+                  </label>
+                </div>
+              ) : null}
+              {!isExpense ? (
+                <label className="space-y-1">
+                  <span className="text-xs font-bold text-stone-600">
+                    {endLabel}日期
+                  </span>
+                  <input
+                    type="date"
+                    value={quickRecordForm.endDate}
+                    onChange={(event) =>
+                      updateQuickRecordForm({ endDate: event.target.value })
+                    }
+                    className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                  />
+                </label>
+              ) : null}
+              {isSchedule ? (
+                <label className="space-y-1">
+                  <span className="text-xs font-bold text-stone-600">类型</span>
+                  <select
+                    value={quickRecordForm.eventType}
+                    onChange={(event) =>
+                      updateQuickRecordForm({
+                        eventType: event.target.value as ItineraryEventType,
+                      })
+                    }
+                    className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                  >
+                    {captureEventTypes.map((type) => (
+                      <option key={type} value={type}>
+                        {captureEventTypeLabels[type]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              {isReservation && quickRecordType === "reservation" ? (
+                <label className="space-y-1">
+                  <span className="text-xs font-bold text-stone-600">预订类型</span>
+                  <select
+                    value={quickRecordForm.reservationType}
+                    onChange={(event) => {
+                      const nextType = event.target
+                        .value as ItineraryReservationType;
+                      const defaults = reservationDefaultsForType(
+                        nextType,
+                        quickRecordForm.date,
+                      );
+                      updateQuickRecordForm({
+                        reservationType: nextType,
+                        ...defaults,
+                      });
+                    }}
+                    className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                  >
+                    {captureReservationTypes.map((type) => (
+                      <option key={type} value={type}>
+                        {captureReservationTypeLabels[type]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              {isExpense ? (
+                <>
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-600">金额</span>
+                    <input
+                      inputMode="decimal"
+                      value={quickRecordForm.amount}
+                      onChange={(event) =>
+                        updateQuickRecordForm({ amount: event.target.value })
+                      }
+                      className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-600">币种</span>
+                    <input
+                      value={quickRecordForm.currency}
+                      onChange={(event) =>
+                        updateQuickRecordForm({
+                          currency: event.target.value.toUpperCase(),
+                        })
+                      }
+                      className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-600">类别</span>
+                    <select
+                      value={quickRecordForm.category}
+                      onChange={(event) =>
+                        updateQuickRecordForm({
+                          category: event.target.value as LedgerCategory,
+                        })
+                      }
+                      className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                    >
+                      <option value="food">餐饮</option>
+                      <option value="transport">交通</option>
+                      <option value="fuel">燃油</option>
+                      <option value="hotel">酒店</option>
+                      <option value="ticket">门票</option>
+                      <option value="shopping">购物</option>
+                      <option value="car">租车</option>
+                      <option value="flight">航班</option>
+                      <option value="other">其他</option>
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-600">付款人</span>
+                    <select
+                      value={quickRecordForm.payerMemberId}
+                      onChange={(event) =>
+                        updateQuickRecordForm({ payerMemberId: event.target.value })
+                      }
+                      className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                    >
+                      <option value="">未选择</option>
+                      {members.map((member) => (
+                        <option key={member.id} value={member.id}>
+                          {member.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-600">记账方式</span>
+                    <select
+                      value={quickRecordForm.accountingMode}
+                      onChange={(event) =>
+                        updateQuickRecordForm({
+                          accountingMode: event.target.value as LedgerAccountingMode,
+                        })
+                      }
+                      className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                    >
+                      <option value="shared">共同分摊</option>
+                      <option value="stats_only">只统计</option>
+                    </select>
+                  </label>
+                </>
+              ) : null}
+              {!isExpense ? (
+                <>
+                  {isReservation ? (
+                    <>
+                      <label className="space-y-1">
+                        <span className="text-xs font-bold text-stone-600">
+                          {reservationCopy.providerLabel}
+                        </span>
+                        <input
+                          value={quickRecordForm.provider}
+                          onChange={(event) =>
+                            updateQuickRecordForm({ provider: event.target.value })
+                          }
+                          placeholder={reservationCopy.providerLabel}
+                          className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-bold text-stone-600">
+                          {reservationCopy.codeLabel}
+                        </span>
+                        <input
+                          value={quickRecordForm.confirmationCode}
+                          onChange={(event) =>
+                            updateQuickRecordForm({
+                              confirmationCode: event.target.value,
+                            })
+                          }
+                          placeholder={reservationCopy.codeLabel}
+                          className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                        />
+                      </label>
+                    </>
+                  ) : null}
+                </>
+              ) : null}
+              <label className="space-y-1 md:col-span-2">
+                <span className="text-xs font-bold text-stone-600">
+                  {locationLabel}
+                </span>
+                <input
+                  value={quickRecordForm.locationName}
+                  onChange={(event) =>
+                    updateQuickRecordForm({ locationName: event.target.value })
+                  }
+                  placeholder={locationLabel}
+                  className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                />
+              </label>
+              {isReservation ? (
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-bold text-stone-600">
+                    {reservationCopy.urlLabel}
+                  </span>
+                  <input
+                    value={quickRecordForm.url}
+                    onChange={(event) =>
+                      updateQuickRecordForm({ url: event.target.value })
+                    }
+                    placeholder={reservationCopy.urlLabel}
+                    className="w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-950 outline-none focus:border-emerald-500"
+                  />
+                </label>
+              ) : null}
+              <label className="space-y-1 md:col-span-2">
+                <span className="text-xs font-bold text-stone-600">备注</span>
+                <textarea
+                  value={quickRecordForm.description}
+                  onChange={(event) =>
+                    updateQuickRecordForm({ description: event.target.value })
+                  }
+                  rows={3}
+                  className="w-full resize-none rounded-2xl border border-stone-200 bg-white px-4 py-3 text-base leading-6 text-stone-950 outline-none focus:border-emerald-500"
+                />
+              </label>
+            </div>
+          </div>
+          <div className="grid gap-2 border-t border-stone-100 p-4 sm:grid-cols-2">
+            {quickRecordError ? (
+              <p className="rounded-2xl bg-red-50 px-4 py-3 text-sm font-bold text-red-700 sm:col-span-2">
+                {quickRecordError}
+              </p>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void submitQuickRecord(true)}
+              disabled={isQuickRecordSaving}
+              className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-800 disabled:text-stone-400"
+            >
+              {isQuickRecordSaving ? "保存中..." : "确定并添加下一条"}
+            </button>
+            <button
+              type="submit"
+              disabled={isQuickRecordSaving}
+              className="rounded-2xl bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:bg-stone-300"
+            >
+              {isQuickRecordSaving ? "保存中..." : "确定添加并关闭"}
+            </button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  const immersiveInputPortal =
+    isOpen && isImmersiveInputOpen && typeof document !== "undefined"
+      ? createPortal(
+          <div className="fixed inset-0 z-[2147483100] flex flex-col bg-[#dcefe9] md:hidden">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3 pt-[env(safe-area-inset-top,0px)]">
+              <div className="mx-auto max-w-3xl py-3">
+                <div className="rounded-3xl border border-emerald-100 bg-white/95 p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-800">
+                        {t("capture.eyebrow")}
+                      </p>
+                      <h3 className="mt-1 text-lg font-black text-stone-950">
+                        {captureTitle}
+                      </h3>
+                      <p className="mt-1 text-sm font-semibold text-stone-500">
+                        {captureContextLine}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closeImmersiveInput}
+                      className="grid size-10 shrink-0 place-items-center rounded-full bg-stone-100 text-xl font-black text-stone-600"
+                      aria-label={t("capture.action.close")}
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 rounded-3xl bg-white/60 p-3">
+                  {messages.length === 0 ? (
+                    <div className="rounded-3xl bg-emerald-50 px-4 py-3 text-sm font-semibold leading-6 text-emerald-950">
+                      {captureIntro}
+                    </div>
+                  ) : (
+                    <CaptureMessageList
+                      messages={messages}
+                      members={members}
+                      onQuickAction={handleQuickAction}
+                      onActionUpdate={handleActionUpdate}
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
+            {showCaptureEmoji ? (
+              <div className="border-t border-emerald-900/5 bg-[#dcefeb] px-4 py-3">
+                <div className="mx-auto grid max-w-3xl grid-cols-6 gap-3">
+                  {captureQuickEmojis.map((emoji, index) => (
+                    <button
+                      key={`${emoji}-${index}`}
+                      type="button"
+                      onClick={() => appendCaptureEmoji(emoji)}
+                      className="text-3xl leading-none"
+                      aria-label={`输入表情 ${emoji}`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {renderCaptureInputForm(true)}
+          </div>,
+          document.body,
+        )
+      : null;
+
   return (
     <CaptureModalContext.Provider value={{ openCapture }}>
       {children}
@@ -2002,33 +3125,50 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
             ) : null}
 
             {!isLoadingTrips && trips.length > 0 ? (
-              <select
-                value={selectedTripId}
-                onChange={(event) => void changeSelectedTrip(event.target.value)}
-                disabled={messages.length > 0}
-                className="mt-4 w-full rounded-2xl border border-stone-200 bg-white px-4 py-3 text-sm font-bold text-stone-900 outline-none focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100 disabled:text-stone-500"
-              >
-                {Object.entries(groupedTrips).map(([status, group]) =>
-                  group.length > 0 ? (
-                    <optgroup
-                      key={status}
-                      label={
-                        status === "active"
-                          ? t("trips.group.active")
-                          : status === "upcoming"
-                            ? t("trips.group.upcoming")
-                            : t("trips.group.completed")
-                      }
-                    >
-                      {group.map((trip) => (
-                        <option key={trip.id} value={trip.id}>
-                          {trip.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ) : null,
-                )}
-              </select>
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <select
+                  value={selectedTripId}
+                  onChange={(event) => void changeSelectedTrip(event.target.value)}
+                  disabled={messages.length > 0}
+                  className="min-w-0 rounded-2xl border border-stone-200 bg-white px-3 py-3 text-sm font-bold text-stone-900 outline-none focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100 disabled:text-stone-500"
+                >
+                  {Object.entries(groupedTrips).map(([status, group]) =>
+                    group.length > 0 ? (
+                      <optgroup
+                        key={status}
+                        label={
+                          status === "active"
+                            ? t("trips.group.active")
+                            : status === "upcoming"
+                              ? t("trips.group.upcoming")
+                              : t("trips.group.completed")
+                        }
+                      >
+                        {group.map((trip) => (
+                          <option key={trip.id} value={trip.id}>
+                            {trip.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null,
+                  )}
+                </select>
+                <select
+                  value={quickRecordType}
+                  onChange={(event) =>
+                    handleQuickRecordSelect(event.target.value as QuickRecordType)
+                  }
+                  disabled={!selectedTripId}
+                  className="min-w-0 rounded-2xl border border-stone-200 bg-white px-3 py-3 text-sm font-bold text-stone-900 outline-none focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100 disabled:text-stone-500"
+                >
+                  <option value="">—快速记录—</option>
+                  <option value="schedule">一条日程</option>
+                  <option value="expense">费用支出</option>
+                  <option value="hotel">酒店预订</option>
+                  <option value="flight">航班信息</option>
+                  <option value="reservation">预订信息</option>
+                </select>
+              </div>
             ) : null}
 
             <div
@@ -2104,98 +3244,22 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
                 </div>
               ) : null}
 
-              <form onSubmit={reviewCapture} className="rounded-3xl border border-stone-200 bg-white p-2 shadow-sm">
-                {compressedImage ? (
-                  <div className="mb-2 overflow-hidden rounded-2xl border border-stone-200 bg-stone-50">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={compressedImage.previewUrl}
-                      alt={t("capture.photo.previewAlt")}
-                      className="max-h-40 w-full object-cover"
-                    />
-                    <div className="flex flex-wrap gap-3 border-t border-stone-200 bg-white p-2 text-xs font-semibold text-stone-600">
-                      <span>{photoFileName}</span>
-                      <span>{compressedImage.width} x {compressedImage.height}</span>
-                      <span>{Math.round(compressedImage.blob.size / 1024)} KB</span>
-                    </div>
-                    {singlePhotoProgress !== null ? (
-                      <div className="border-t border-stone-200 bg-white px-2 py-2">
-                        <div className="flex items-center justify-between text-xs font-bold text-emerald-800">
-                          <span>{t("capture.status.uploadingPhoto")}</span>
-                          <span>{singlePhotoProgress}%</span>
-                        </div>
-                        <div className="mt-2 h-2 overflow-hidden rounded-full bg-stone-100">
-                          <div
-                            className="h-full rounded-full bg-emerald-700 transition-all"
-                            style={{ width: `${singlePhotoProgress}%` }}
-                          />
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-                <input
-                  ref={photoInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handlePhotoChange}
-                  className="sr-only"
-                />
-                <div className="flex items-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => photoInputRef.current?.click()}
-                    disabled={isPhotoPreparing || isSubmitting}
-                    className="grid size-11 shrink-0 place-items-center rounded-full bg-stone-100 text-xl font-bold text-stone-600 disabled:text-stone-300"
-                    title={t("capture.action.attach")}
-                  >
-                    {isPhotoPreparing ? "..." : "+"}
-                  </button>
-                  <textarea
-                    value={text}
-                    onChange={(event) => setText(event.target.value)}
-                    rows={1}
-                    placeholder={capturePlaceholder}
-                    className="min-h-11 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-4 py-3 text-sm leading-5 text-stone-950 placeholder:text-stone-500 outline-none focus:border-emerald-600"
-                  />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      recorder.isRecording ? recorder.stop() : void recorder.start()
-                    }
-                    disabled={isTranscribing || isSubmitting || !selectedTripId}
-                    className={`grid size-11 shrink-0 place-items-center rounded-full disabled:text-stone-300 ${
-                      recorder.isRecording
-                        ? "bg-red-600 text-white"
-                        : isTranscribing
-                          ? "bg-emerald-50 text-emerald-800"
-                          : "bg-stone-100 text-stone-600"
-                    }`}
-                    title={t("capture.action.voice")}
-                    aria-label={t("capture.action.voice")}
-                  >
-                    {isTranscribing ? (
-                      <span className="text-xs font-bold">...</span>
-                    ) : (
-                      <MicrophoneIcon />
-                    )}
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={
-                      isSubmitting ||
-                      isTranscribing ||
-                      isDetectingIntent ||
-                      !selectedTripId ||
-                      (!text.trim() && !compressedImage)
-                    }
-                    className="rounded-full bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:bg-stone-300"
-                  >
-                    {isDetectingIntent ? "..." : t("capture.action.send")}
-                  </button>
+              {showCaptureEmoji && !isImmersiveInputOpen ? (
+                <div className="grid grid-cols-6 gap-2 rounded-3xl bg-emerald-50 p-3">
+                  {captureQuickEmojis.map((emoji, index) => (
+                    <button
+                      key={`${emoji}-${index}`}
+                      type="button"
+                      onClick={() => appendCaptureEmoji(emoji)}
+                      className="text-2xl leading-none"
+                      aria-label={`输入表情 ${emoji}`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
                 </div>
-              </form>
+              ) : null}
+              {renderCaptureInputForm(false)}
             </div>
 
             {error ? (
@@ -2204,6 +3268,8 @@ export function CaptureModalProvider({ children }: { children: ReactNode }) {
               </p>
             ) : null}
           </section>
+          {immersiveInputPortal}
+          {renderQuickRecordForm()}
         </div>
       ) : null}
     </CaptureModalContext.Provider>

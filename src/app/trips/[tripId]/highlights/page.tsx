@@ -16,6 +16,14 @@ import type { PlannerV2Data } from "@/lib/supabase/planner-v2";
 import {
   getSignedMemoryImageUrls,
 } from "@/lib/supabase/memories";
+import {
+  getMediaAssetDisplayUrl,
+  getMediaAssetLegacySignedUrlById,
+  getMediaAssetPreviewUrl,
+  getMediaAssetsByMemoryIds,
+} from "@/lib/supabase/media-assets";
+import { supabase } from "@/lib/supabase/client";
+import type { MemoryShot } from "@/lib/memory-shots/types";
 import type {
   ItineraryEventType,
   ItineraryItemRatingSummary,
@@ -25,6 +33,7 @@ import type {
   LedgerEntry,
   LedgerMemberBalance,
   MemoryEntry,
+  PhotoAssetWithMemory,
   Trip,
 } from "@/types";
 import { getErrorMessage } from "@/lib/errors";
@@ -55,6 +64,61 @@ type ContributionRankItem = {
   count: number;
   href: string;
 };
+
+function memoryShotSections(memoryShot: MemoryShot) {
+  const sections = memoryShot.content.sections;
+  return Array.isArray(sections)
+    ? sections.map((section) => String(section)).filter(Boolean).slice(0, 3)
+    : [];
+}
+
+function memoryShotTemplateKey(memoryShot: MemoryShot) {
+  const key = memoryShot.metadata.templateKey;
+  return typeof key === "string" ? key : null;
+}
+
+function memoryShotErrorSummary(memoryShot: MemoryShot) {
+  return memoryShot.errorMessage || "Generation failed. Please try again.";
+}
+
+function memoryShotPreviewSources(memoryShot: MemoryShot) {
+  return [memoryShot.thumbnailUrl, memoryShot.previewUrl].filter(
+    (value): value is string => Boolean(value),
+  );
+}
+
+function sortMemoryShots(memoryShots: MemoryShot[]) {
+  return [...memoryShots].sort((first, second) => {
+    const firstTime = first.generatedAt ?? first.createdAt;
+    const secondTime = second.generatedAt ?? second.createdAt;
+    return new Date(secondTime).getTime() - new Date(firstTime).getTime();
+  });
+}
+
+async function memoryShotAuthHeaders() {
+  const { data } = await supabase.auth.getSession();
+  const accessToken = data.session?.access_token;
+  if (!accessToken) throw new Error("You must be logged in.");
+  return {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+  };
+}
+
+function memoryShotApiError(
+  payload: { error?: string; aiJobId?: string | null },
+  fallback: string,
+) {
+  const message = payload.error || fallback;
+  return payload.aiJobId ? `${message} AI job: ${payload.aiJobId}` : message;
+}
+
+const emptyPlanner: PlannerV2Data = { days: [] };
+const emptyLedgerEntries: LedgerEntry[] = [];
+const emptyLedgerBalances: LedgerMemberBalance[] = [];
+const emptyMembers: JourneyMember[] = [];
+const emptyCounts: Record<string, number> = {};
+const emptyMemories: MemoryEntry[] = [];
 
 const typeLabelKeys: Record<string, TranslationKey> = {
   flight: "highlights.type.flight",
@@ -240,21 +304,15 @@ function rankedMemoriesBy(
 function HighlightsContent() {
   const { tripId } = useParams<{ tripId: string }>();
   const { locale, t } = useI18n();
-  const [trip, setTrip] = useState<Trip | null>(null);
-  const [planner, setPlanner] = useState<PlannerV2Data>({ days: [] });
-  const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
-  const [ledgerBalances, setLedgerBalances] = useState<LedgerMemberBalance[]>([]);
-  const [ledgerCurrency, setLedgerCurrency] = useState("NZD");
-  const [members, setMembers] = useState<JourneyMember[]>([]);
-  const [imageUploadCounts, setImageUploadCounts] = useState<Record<string, number>>({});
-  const [faceTagCounts, setFaceTagCounts] = useState<Record<string, number>>({});
-  const [ratingCounts, setRatingCounts] = useState<Record<string, number>>({});
-  const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [memoryImageUrls, setMemoryImageUrls] = useState<Record<string, string>>({});
+  const [memoryImageUrlCandidates, setMemoryImageUrlCandidates] = useState<
+    Record<string, string[]>
+  >({});
   const [selectedMemory, setSelectedMemory] = useState<MemoryEntry | null>(null);
+  const [memoryShots, setMemoryShots] = useState<MemoryShot[]>([]);
+  const [isGeneratingMemoryShot, setIsGeneratingMemoryShot] = useState(false);
+  const [memoryShotError, setMemoryShotError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<HighlightTab>("spending");
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   const highlightsResource = useJourneyCachedResource({
     cacheKey: journeyResourceKey.highlights(tripId),
@@ -264,41 +322,170 @@ function HighlightsContent() {
     keepPreviousData: true,
     backgroundRefresh: true,
   });
+  const highlightsData = highlightsResource.data;
+  const trip: Trip | null = highlightsData?.tripData ?? null;
+  const planner = highlightsData?.plannerData ?? emptyPlanner;
+  const ledgerEntries = highlightsData?.ledgerData.entries ?? emptyLedgerEntries;
+  const ledgerBalances =
+    highlightsData?.ledgerData.summary.balances ?? emptyLedgerBalances;
+  const ledgerCurrency = highlightsData?.ledgerData.ledger.baseCurrency ?? "NZD";
+  const members = highlightsData?.journeyMembers ?? emptyMembers;
+  const imageUploadCounts = highlightsData?.imageCounts ?? emptyCounts;
+  const faceTagCounts = highlightsData?.faceCounts ?? emptyCounts;
+  const ratingCounts = highlightsData?.ratingCountsByUser ?? emptyCounts;
+  const memories = highlightsData?.memoryData ?? emptyMemories;
+  const isLoading = !highlightsData && !highlightsResource.error;
+  const error =
+    !highlightsData && highlightsResource.error
+      ? getErrorMessage(highlightsResource.error, "Could not load highlights.")
+      : null;
 
   useEffect(() => {
-    const data = highlightsResource.data;
+    const data = highlightsData;
     if (!data) return;
-    setTrip(data.tripData);
-    setPlanner(data.plannerData);
-    setLedgerEntries(data.ledgerData.entries);
-    setLedgerBalances(data.ledgerData.summary.balances);
-    setLedgerCurrency(data.ledgerData.ledger.baseCurrency);
-    setMembers(data.journeyMembers);
-    setImageUploadCounts(data.imageCounts);
-    setFaceTagCounts(data.faceCounts);
-    setRatingCounts(data.ratingCountsByUser);
-    setMemories(data.memoryData);
-    setIsLoading(false);
-    setError(null);
 
     let cancelled = false;
-    getSignedMemoryImageUrls(data.memoryData)
-      .then((signedImageUrls) => {
-        if (!cancelled) setMemoryImageUrls(signedImageUrls);
+    const photoMemories = data.memoryData.filter(
+      (memory) => memory.type === "photo",
+    );
+    const photoMemoryIds = photoMemories.map((memory) => memory.id);
+
+    Promise.all([
+      getSignedMemoryImageUrls(data.memoryData),
+      getMediaAssetsByMemoryIds(photoMemoryIds)
+        .then(async (assets) => {
+          const legacyUrlsByAssetId = await getMediaAssetLegacySignedUrlById(assets);
+          return assets.reduce<Record<string, PhotoAssetWithMemory>>(
+            (groups, asset) => {
+              if (!asset.memoryEntryId) return groups;
+              groups[asset.memoryEntryId] = {
+                ...asset,
+                memory:
+                  photoMemories.find(
+                    (memory) => memory.id === asset.memoryEntryId,
+                  ) ?? null,
+                displayUrl: getMediaAssetDisplayUrl(asset),
+                displayPreviewUrl: getMediaAssetPreviewUrl(asset),
+                displayFallbackUrl: legacyUrlsByAssetId[asset.id],
+              };
+              return groups;
+            },
+            {},
+          );
+        })
+        .catch(() => ({}) as Record<string, PhotoAssetWithMemory>),
+    ])
+      .then(([signedImageUrls, assetsByMemoryId]) => {
+        if (cancelled) return;
+        setMemoryImageUrls(signedImageUrls);
+        setMemoryImageUrlCandidates(
+          photoMemories.reduce<Record<string, string[]>>((urls, memory) => {
+            const asset = assetsByMemoryId[memory.id];
+            const candidates = [
+              asset?.displayPreviewUrl,
+              asset?.displayUrl,
+              memory.mediaUrl ? signedImageUrls[memory.mediaUrl] : null,
+              asset?.displayFallbackUrl,
+              asset ? `/api/media/assets/${asset.id}/thumbnail` : null,
+              asset ? `/api/media/assets/${asset.id}/preview` : null,
+            ].filter((value): value is string => Boolean(value));
+
+            urls[memory.id] = [...new Set(candidates)];
+            return urls;
+          }, {}),
+        );
       })
       .catch(() => {
-        if (!cancelled) setMemoryImageUrls({});
+        if (!cancelled) {
+          setMemoryImageUrls({});
+          setMemoryImageUrlCandidates({});
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [highlightsResource.data]);
+  }, [highlightsData]);
 
   useEffect(() => {
-    if (!highlightsResource.error || highlightsResource.data) return;
-    setError(getErrorMessage(highlightsResource.error, "Could not load highlights."));
-    setIsLoading(false);
-  }, [highlightsResource.data, highlightsResource.error]);
+    let cancelled = false;
+
+    async function loadMemoryShots() {
+      try {
+        const response = await fetch(`/api/journeys/${tripId}/memory-shots`, {
+          headers: await memoryShotAuthHeaders(),
+        });
+        const payload = (await response.json()) as {
+          memoryShots?: MemoryShot[];
+          error?: string;
+        };
+        if (!response.ok || !payload.memoryShots) {
+          throw new Error(payload.error || "Could not load Memory Shots.");
+        }
+        if (!cancelled) {
+          setMemoryShots(sortMemoryShots(payload.memoryShots));
+          setMemoryShotError(null);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setMemoryShotError(
+            loadError instanceof Error
+              ? loadError.message
+              : "Could not load Memory Shots.",
+          );
+        }
+      }
+    }
+
+    loadMemoryShots();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tripId]);
+
+  async function generateDailyBestMoments() {
+    if (isGeneratingMemoryShot || hasGeneratingDailyBestMoments) return;
+
+    setIsGeneratingMemoryShot(true);
+    setMemoryShotError(null);
+    try {
+      const response = await fetch(
+        `/api/journeys/${tripId}/memory-shots/generate`,
+        {
+          method: "POST",
+          headers: await memoryShotAuthHeaders(),
+          body: JSON.stringify({
+            templateKey: "memory_shot_daily_best_moments",
+            language: locale,
+          }),
+        },
+      );
+      const payload = (await response.json()) as {
+        memoryShot?: MemoryShot;
+        error?: string;
+        aiJobId?: string | null;
+      };
+      if (!response.ok || !payload.memoryShot) {
+        throw new Error(
+          memoryShotApiError(payload, "Could not generate Memory Shot."),
+        );
+      }
+      setMemoryShots((current) =>
+        sortMemoryShots([
+          payload.memoryShot as MemoryShot,
+          ...current.filter((item) => item.id !== payload.memoryShot?.id),
+        ]),
+      );
+    } catch (generateError) {
+      setMemoryShotError(
+        generateError instanceof Error
+          ? generateError.message
+          : "Could not generate Memory Shot.",
+      );
+    } finally {
+      setIsGeneratingMemoryShot(false);
+    }
+  }
 
   const bestItems = useMemo(() => ratedItems(planner), [planner]);
   const bestByType = useMemo(() => {
@@ -447,6 +634,14 @@ function HighlightsContent() {
         : [];
   const activeMemoryRankLabel =
     activeTab === "likes" ? t("highlights.tab.likes") : t("highlights.tab.favorites");
+  const imageCandidatesForMemory = (memory: MemoryEntry) => {
+    const candidates = [
+      ...(memoryImageUrlCandidates[memory.id] ?? []),
+      memory.mediaUrl ? memoryImageUrls[memory.mediaUrl] : null,
+    ].filter((value): value is string => Boolean(value));
+
+    return [...new Set(candidates)];
+  };
   const highlightTabs = [
     {
       value: "journey",
@@ -474,6 +669,27 @@ function HighlightsContent() {
       count: contributionItems.length,
     },
   ] as const;
+  const selectedMemoryImageCandidates = selectedMemory
+    ? imageCandidatesForMemory(selectedMemory)
+    : [];
+  const dailyBestMomentsShots = memoryShots.filter(
+    (memoryShot) =>
+      memoryShotTemplateKey(memoryShot) === "memory_shot_daily_best_moments",
+  );
+  const hasGeneratingDailyBestMoments = dailyBestMomentsShots.some(
+    (memoryShot) => memoryShot.status === "generating",
+  );
+  const hasReadyDailyBestMoments = dailyBestMomentsShots.some(
+    (memoryShot) => memoryShot.status === "ready",
+  );
+  const isGenerateDisabled =
+    isGeneratingMemoryShot || hasGeneratingDailyBestMoments;
+  const generateLabel =
+    isGeneratingMemoryShot || hasGeneratingDailyBestMoments
+      ? "Generating..."
+      : hasReadyDailyBestMoments
+        ? "Regenerate"
+        : "Generate";
 
   if (isLoading && !highlightsResource.data) {
     return (
@@ -525,13 +741,113 @@ function HighlightsContent() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-black text-emerald-800">
+              Memory Shots
+            </p>
+            <h2 className="text-xl font-semibold text-stone-950">
+              Daily Best Moments
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={generateDailyBestMoments}
+            disabled={isGenerateDisabled}
+            className="min-h-11 rounded-full bg-stone-950 px-4 py-2 text-sm font-black text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-stone-300"
+          >
+            {generateLabel}
+          </button>
+        </div>
+
+        {memoryShotError ? (
+          <p className="mt-3 rounded-2xl bg-red-50 p-3 text-xs font-bold text-red-700">
+            {memoryShotError}
+          </p>
+        ) : null}
+
+        {memoryShots.length === 0 ? (
+          <div className="mt-4 rounded-2xl border border-dashed border-stone-200 p-4 text-sm text-stone-500">
+            No Memory Shots yet.
+          </div>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {memoryShots.map((memoryShot) => {
+              const sections = memoryShotSections(memoryShot);
+              const previewSources = memoryShotPreviewSources(memoryShot);
+              return (
+                <article
+                  key={memoryShot.id}
+                  className="rounded-2xl border border-stone-200 bg-[#fffdf8] p-4"
+                >
+                  {previewSources.length > 0 ? (
+                    <div className="mb-4 overflow-hidden rounded-2xl border border-stone-200 bg-stone-100">
+                      <FallbackImage
+                        sources={previewSources}
+                        alt={memoryShot.title || "Memory Shot preview"}
+                        className="h-auto w-full object-cover"
+                      />
+                    </div>
+                  ) : null}
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-black uppercase tracking-wide text-emerald-800">
+                        {memoryShot.status}
+                        {memoryShot.renderStatus === "rendering"
+                          ? " · rendering"
+                          : ""}
+                      </p>
+                      <h3 className="mt-1 text-base font-semibold text-stone-950">
+                        {memoryShot.title || "Daily Best Moments"}
+                      </h3>
+                      {memoryShot.subtitle ? (
+                        <p className="mt-1 text-sm leading-6 text-stone-600">
+                          {memoryShot.subtitle}
+                        </p>
+                      ) : null}
+                    </div>
+                    <span className="shrink-0 rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-950">
+                      {memoryShot.visibility}
+                    </span>
+                  </div>
+                  {sections.length > 0 ? (
+                    <ul className="mt-3 space-y-1 text-sm leading-6 text-stone-700">
+                      {sections.map((section) => (
+                        <li key={section}>- {section}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {memoryShot.status === "generating" ? (
+                    <p className="mt-3 rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+                      Generating Memory Shot...
+                    </p>
+                  ) : null}
+                  {memoryShot.status === "failed" ? (
+                    <p className="mt-3 rounded-2xl bg-red-50 p-3 text-xs font-bold text-red-700">
+                      {memoryShotErrorSummary(memoryShot)}
+                    </p>
+                  ) : null}
+                  {memoryShot.renderStatus === "failed" ? (
+                    <p className="mt-3 rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+                      {memoryShot.renderError ||
+                        "Preview render failed. Text fallback is still available."}
+                    </p>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
+        <div className="flex min-w-0 flex-col gap-3">
+          <div>
+            <p className="text-sm font-black text-emerald-800">
               {t("highlights.eyebrow")}
             </p>
             <h2 className="text-xl font-semibold text-stone-950">
               {t("highlights.rankings")}
             </h2>
           </div>
-          <div className="-mx-1 flex max-w-full gap-2 overflow-x-auto px-1 pb-1 text-xs font-black text-stone-600 sm:mx-0 sm:justify-end sm:pb-0">
+          <div className="-mx-1 flex min-w-0 max-w-full gap-2 overflow-x-auto px-1 pb-1 text-xs font-black text-stone-600">
             {highlightTabs.map(({ value, label, count }) => (
               <button
                 key={value}
@@ -725,25 +1041,20 @@ function HighlightsContent() {
 
         {(activeTab === "likes" || activeTab === "favorites") &&
         activeMemoryRank.length > 0 ? (
-          <div className="mt-4 grid grid-cols-3 gap-1 sm:grid-cols-4 lg:grid-cols-6">
-            {activeMemoryRank.map((memory, index) => {
-              const imageUrl = memory.mediaUrl ? memoryImageUrls[memory.mediaUrl] : null;
-              const count =
-                activeTab === "likes"
-                  ? memory.likeCount ?? 0
-                  : memory.favoriteCount ?? 0;
+          <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+            {activeMemoryRank.map((memory) => {
+              const imageCandidates = imageCandidatesForMemory(memory);
 
               return (
                 <button
                   type="button"
                   key={memory.id}
                   onClick={() => setSelectedMemory(memory)}
-                  className="group relative aspect-square overflow-hidden bg-stone-100 text-left"
+                  className="group relative aspect-square overflow-hidden rounded-xl bg-stone-100 text-left shadow-sm transition hover:opacity-95"
                 >
-                  {memory.type === "photo" && imageUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={imageUrl}
+                  {memory.type === "photo" && imageCandidates.length > 0 ? (
+                    <FallbackImage
+                      sources={imageCandidates}
                       alt={memory.content || "Memory"}
                       className="h-full w-full object-cover"
                     />
@@ -777,35 +1088,14 @@ function HighlightsContent() {
                       </span>
                     </span>
                   )}
-                  <span className="absolute left-2 top-2 grid size-7 place-items-center rounded-full bg-white/90 text-xs font-black text-stone-800 shadow-sm">
-                    {index + 1}
-                  </span>
-                  <span className="absolute right-2 top-2 rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-black text-emerald-950 shadow-sm">
-                    {count}
-                  </span>
-                  <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-stone-950/80 to-transparent p-2 text-white opacity-0 transition group-hover:opacity-100">
-                    <span className="line-clamp-2 text-xs font-bold">
-                      {memory.content ? (
-                        <TranslatedText
-                          as="span"
-                          showToggle={false}
-                          sourceField="content"
-                          sourceId={memory.id}
-                          sourceType="memory"
-                          text={memory.content}
-                        />
-                      ) : memory.locationName ? (
-                        <TranslatedText
-                          as="span"
-                          showToggle={false}
-                          sourceField="location_name"
-                          sourceId={memory.id}
-                          sourceType="memory"
-                          text={memory.locationName}
-                        />
-                      ) : (
-                        dateTimeLabel(memory.capturedAt, locale)
-                      )}
+                  <span className="absolute bottom-2 right-2 inline-flex items-center gap-2 rounded-full bg-stone-950/20 px-2 py-1 text-[11px] font-black text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.75)] backdrop-blur-[2px]">
+                    <span className="inline-flex items-center gap-0.5">
+                      <span aria-hidden="true">♡</span>
+                      <span>{memory.likeCount ?? 0}</span>
+                    </span>
+                    <span className="inline-flex items-center gap-0.5">
+                      <span aria-hidden="true">☆</span>
+                      <span>{memory.favoriteCount ?? 0}</span>
                     </span>
                   </span>
                 </button>
@@ -928,13 +1218,11 @@ function HighlightsContent() {
 
             <div className="grid min-h-0 flex-1 place-items-center overflow-hidden rounded-3xl bg-white">
               {selectedMemory.type === "photo" &&
-              selectedMemory.mediaUrl &&
-              memoryImageUrls[selectedMemory.mediaUrl] ? (
+              selectedMemoryImageCandidates.length > 0 ? (
                 <div className="grid h-full w-full min-h-0 gap-0 lg:grid-cols-[minmax(0,1fr)_320px]">
                   <div className="grid min-h-0 place-items-center bg-black">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={memoryImageUrls[selectedMemory.mediaUrl]}
+                    <FallbackImage
+                      sources={selectedMemoryImageCandidates}
                       alt={selectedMemory.content || "Memory"}
                       className="max-h-full max-w-full object-contain"
                     />
@@ -1023,6 +1311,40 @@ function HighlightsContent() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function FallbackImage({
+  sources,
+  alt,
+  className,
+}: {
+  sources: string[];
+  alt: string;
+  className: string;
+}) {
+  const firstSource = sources[0];
+  if (!firstSource) return null;
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      key={sources.join("|")}
+      src={firstSource}
+      alt={alt}
+      className={className}
+      onError={(event) => {
+        const nextIndex = Number(event.currentTarget.dataset.nextIndex ?? "1");
+        const nextSource = sources[nextIndex];
+        if (nextSource) {
+          event.currentTarget.dataset.nextIndex = String(nextIndex + 1);
+          event.currentTarget.src = nextSource;
+          return;
+        }
+
+        event.currentTarget.style.display = "none";
+      }}
+    />
   );
 }
 

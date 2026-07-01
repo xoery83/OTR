@@ -8,6 +8,7 @@ import {
   type FormEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -244,6 +245,27 @@ const itemStatuses: ItineraryItemStatus[] = [
   "cancelled",
   "completed",
   "skipped",
+];
+
+const quickMemoryEmojis = [
+  "😀",
+  "😂",
+  "🥰",
+  "😎",
+  "😭",
+  "👍",
+  "🙏",
+  "🎉",
+  "❤️",
+  "☕",
+  "🍜",
+  "🍻",
+  "✈️",
+  "🚗",
+  "📍",
+  "💸",
+  "✅",
+  "⭐",
 ];
 
 const eventLabelKeys: Partial<Record<string, TranslationKey>> = {
@@ -1368,6 +1390,7 @@ export function PlannerDayCard({
     src: string;
     alt: string;
     memoryId: string;
+    fallbackSrcs?: string[];
   } | null>(null);
   const [previewImageSize, setPreviewImageSize] = useState<ImagePixelSize | null>(
     null,
@@ -1401,6 +1424,10 @@ export function PlannerDayCard({
   >({});
   const [savingMemoryId, setSavingMemoryId] = useState<string | null>(null);
   const [recordingMemoryId, setRecordingMemoryId] = useState<string | null>(null);
+  const [activeInlineComposerItemId, setActiveInlineComposerItemId] = useState<
+    string | null
+  >(null);
+  const [showInlineComposerEmoji, setShowInlineComposerEmoji] = useState(false);
 
   useEffect(() => {
     setPreviewGuestFaceName("");
@@ -1635,6 +1662,25 @@ export function PlannerDayCard({
     };
   }, [imageUrlByMemoryPath, memories, photoMemoryIdKey]);
 
+  const memoryImageUrlCandidates = useMemo(() => {
+    return memories.reduce<Record<string, string[]>>((urls, memory) => {
+      if (memory.type !== "photo") return urls;
+
+      const asset = photoAssetsByMemoryId[memory.id];
+      const candidates = [
+        asset?.displayPreviewUrl,
+        asset?.displayUrl,
+        memory.mediaUrl ? imageUrlByMemoryPath[memory.mediaUrl] : null,
+        asset?.displayFallbackUrl,
+        asset ? `/api/media/assets/${asset.id}/thumbnail` : null,
+        asset ? `/api/media/assets/${asset.id}/preview` : null,
+      ].filter((value): value is string => Boolean(value));
+
+      urls[memory.id] = [...new Set(candidates)];
+      return urls;
+    }, {});
+  }, [imageUrlByMemoryPath, memories, photoAssetsByMemoryId]);
+
   const appendMemoryText = useCallback(
     (itemId: string, nextText: string) => {
       const normalizedText = normalizeVoiceTranscriptForMemory(nextText, aliases);
@@ -1850,6 +1896,118 @@ export function PlannerDayCard({
           new Date(second.createdAt || second.capturedAt).getTime() -
           new Date(first.createdAt || first.capturedAt).getTime(),
       );
+  }
+
+  function renderItemMemories(
+    item: StoryItem,
+    options?: {
+      tone?: "emerald" | "amber" | "sky";
+      className?: string;
+    },
+  ) {
+    const itemMemories = memoriesForItem(item);
+    if (itemMemories.length === 0) return null;
+
+    const tone = options?.tone ?? "emerald";
+    const toneClasses = {
+      emerald: {
+        border: "border-emerald-100",
+        card: "bg-emerald-50",
+        title: "text-emerald-800",
+      },
+      amber: {
+        border: "border-amber-100",
+        card: "bg-amber-50",
+        title: "text-amber-800",
+      },
+      sky: {
+        border: "border-sky-100",
+        card: "bg-sky-50",
+        title: "text-sky-800",
+      },
+    }[tone];
+
+    return (
+      <div
+        className={
+          options?.className ??
+          `mt-3 space-y-2 border-t ${toneClasses.border} pt-3`
+        }
+      >
+        {itemMemories.map((memory) => {
+          const imageCandidates =
+            memoryImageUrlCandidates[memory.id] ??
+            (memory.mediaUrl && imageUrlByMemoryPath[memory.mediaUrl]
+              ? [imageUrlByMemoryPath[memory.mediaUrl]]
+              : []);
+          const imageSrc = imageCandidates[0] ?? "";
+
+          return (
+            <div key={memory.id} className={`rounded-2xl px-3 py-2 ${toneClasses.card}`}>
+              <div className="flex items-center justify-between gap-2">
+                <p className={`min-w-0 truncate text-xs font-semibold ${toneClasses.title}`}>
+                  {memory.contributorName || t("planner.traveler")} ·{" "}
+                  {formatJourneyTime(memory.capturedAt, displayLocale)}
+                </p>
+                <MemoryEngagementActions
+                  memory={memory}
+                  onChange={handleMemoryEngagementChange}
+                  compact
+                />
+              </div>
+              {memory.type === "photo" && imageSrc ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setImagePreview({
+                      src: imageSrc,
+                      alt: memory.content || t("planner.memory.imagePreview"),
+                      memoryId: memory.id,
+                      fallbackSrcs: imageCandidates.slice(1),
+                    })
+                  }
+                  className="mt-2 block w-full overflow-hidden rounded-xl text-left"
+                  title={t("planner.memory.openImage")}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={imageSrc}
+                    alt=""
+                    className="max-h-56 w-full object-cover transition hover:opacity-90"
+                    onError={(event) => {
+                      const fallbacks = imageCandidates.slice(1);
+                      const index = Number(
+                        event.currentTarget.dataset.fallbackIndex ?? "0",
+                      );
+                      const nextSrc = fallbacks[index];
+                      if (nextSrc) {
+                        event.currentTarget.dataset.fallbackIndex = String(index + 1);
+                        event.currentTarget.src = nextSrc;
+                      } else {
+                        event.currentTarget.style.display = "none";
+                      }
+                    }}
+                  />
+                </button>
+              ) : null}
+              {memory.content ? (
+                <TranslatedText
+                  className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700"
+                  protectedEntities={[
+                    memory.locationName,
+                    memory.contributorName,
+                  ]}
+                  sourceField="content"
+                  sourceId={memory.id}
+                  sourceType="memory"
+                  text={memory.content}
+                />
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
   }
 
   function memoryWithEngagement(memory: MemoryEntry): MemoryEntry {
@@ -2260,6 +2418,22 @@ export function PlannerDayCard({
     });
   }
 
+  function appendInlineComposerEmoji(itemId: string, emoji: string) {
+    setMemoryTextByItem((current) => ({
+      ...current,
+      [itemId]: `${current[itemId] ?? ""}${emoji}`,
+    }));
+  }
+
+  function closeInlineComposer() {
+    setActiveInlineComposerItemId(null);
+    setShowInlineComposerEmoji(false);
+    if (typeof document !== "undefined") {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement) activeElement.blur();
+    }
+  }
+
   async function handleInlineAttachmentChange(
     event: ChangeEvent<HTMLInputElement>,
     itemId: string,
@@ -2521,6 +2695,7 @@ export function PlannerDayCard({
             : rangeForStoryItem(item)),
         });
       }
+      closeInlineComposer();
     } catch (error) {
       setMemoryErrorByItem((current) => ({
         ...current,
@@ -2605,6 +2780,337 @@ export function PlannerDayCard({
     }
   }
 
+  function renderInlineMemoryComposer(
+    item: StoryItem,
+    options?: {
+      tone?: "emerald" | "amber" | "sky";
+      compact?: boolean;
+      overlayOnly?: boolean;
+    },
+  ) {
+    const tone = options?.tone ?? "emerald";
+    const compact = Boolean(options?.compact);
+    const attachment = attachmentByItem[item.id];
+    const textValue = memoryTextByItem[item.id] ?? "";
+    const isBusy = savingMemoryId === item.id || transcribingMemoryId === item.id;
+    const isVoiceBusy =
+      savingMemoryId === item.id ||
+      (Boolean(transcribingMemoryId) && transcribingMemoryId !== item.id) ||
+      (voiceRecorder.isRecording && recordingMemoryId !== item.id);
+    const isRecordingThis = recordingMemoryId === item.id;
+    const canSubmit = Boolean(attachment || textValue.trim()) && !isBusy;
+    const mentionItems = mentionOptions(item.id);
+    const displayTime = item.time
+      ? formatJourneyTime(item.time, displayLocale)
+      : "时间未定";
+    const detailBlocks = [
+      item.detail,
+      item.note && item.note.trim() !== item.detail?.trim() ? item.note : null,
+    ].filter((value): value is string => Boolean(value?.trim()));
+    const focusComposer = () => {
+      setActiveInlineComposerItemId(item.id);
+      setShowInlineComposerEmoji(false);
+    };
+    const toneClasses = {
+      emerald: {
+        border: "border-emerald-100",
+        focus: "focus:border-emerald-400",
+        status: "text-emerald-800",
+        chip: "bg-emerald-50 text-emerald-900",
+        attachment: "bg-emerald-50",
+      },
+      amber: {
+        border: "border-amber-100",
+        focus: "focus:border-amber-400",
+        status: "text-amber-800",
+        chip: "bg-amber-50 text-amber-900",
+        attachment: "bg-amber-50",
+      },
+      sky: {
+        border: "border-sky-100",
+        focus: "focus:border-sky-400",
+        status: "text-sky-800",
+        chip: "bg-sky-50 text-sky-900",
+        attachment: "bg-sky-50",
+      },
+    }[tone];
+
+    const voiceButton = (
+      <button
+        type="button"
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={() => void toggleInlineVoice(item.id)}
+        disabled={isVoiceBusy}
+        className={`grid size-11 shrink-0 place-items-center rounded-2xl bg-white text-emerald-800 shadow-sm transition active:scale-95 disabled:text-stone-300 md:size-9 md:rounded-full ${
+          isRecordingThis ? "bg-red-600 text-white" : ""
+        }`}
+        title={t("planner.voiceInput")}
+        aria-label={t("planner.voiceInput")}
+      >
+        {transcribingMemoryId === item.id ? (
+          <span className="text-xs font-bold">...</span>
+        ) : (
+          <MicrophoneIcon className="size-5 md:size-4" />
+        )}
+      </button>
+    );
+
+    const imageButton = (
+      <button
+        type="button"
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={() => fileInputRefs.current[item.id]?.click()}
+        disabled={preparingAttachmentId === item.id}
+        className="grid size-11 shrink-0 place-items-center rounded-2xl bg-white text-3xl font-black text-emerald-800 shadow-sm transition active:scale-95 disabled:text-stone-300 md:size-9 md:rounded-full md:text-2xl"
+        title={t("memory.attachImage")}
+        aria-label={t("memory.attachImage")}
+      >
+        {preparingAttachmentId === item.id ? "..." : "+"}
+      </button>
+    );
+
+    const emojiButton = (
+      <button
+        type="button"
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={() => {
+          setActiveInlineComposerItemId(item.id);
+          setShowInlineComposerEmoji((current) => !current);
+        }}
+        className="grid size-11 shrink-0 place-items-center rounded-2xl bg-white text-2xl font-black text-emerald-800 shadow-sm transition active:scale-95 md:size-9 md:rounded-full"
+        aria-label="表情"
+      >
+        ☺
+      </button>
+    );
+
+    const renderTextarea = (isOverlay: boolean) => (
+      <textarea
+        value={textValue}
+        onFocus={isOverlay ? undefined : focusComposer}
+        onChange={(event) =>
+          setMemoryTextByItem((current) => ({
+            ...current,
+            [item.id]: event.target.value,
+          }))
+        }
+        rows={1}
+        enterKeyHint="enter"
+        placeholder={t("planner.memory.placeholder")}
+        className={`max-h-28 min-h-11 flex-1 resize-none rounded-xl border bg-white px-3 py-2 text-base font-semibold leading-7 text-stone-950 shadow-sm outline-none ${toneClasses.focus} md:min-h-9 md:rounded-2xl md:text-sm md:leading-5`}
+        autoFocus={isOverlay}
+      />
+    );
+
+    const submitButton = (
+      <button
+        type="submit"
+        disabled={!canSubmit}
+        className="hidden h-9 shrink-0 rounded-full bg-emerald-700 px-3 text-xs font-bold text-white disabled:bg-stone-300 md:block"
+        title={t("planner.memory.save")}
+      >
+        {savingMemoryId === item.id ? "..." : t("common.go")}
+      </button>
+    );
+
+    const fileInput = (
+      <input
+        ref={(node) => {
+          fileInputRefs.current[item.id] = node;
+        }}
+        type="file"
+        accept="image/*"
+        className="sr-only"
+        onChange={(event) => handleInlineAttachmentChange(event, item.id)}
+      />
+    );
+
+    const metaContent = (
+      <>
+        {attachment ? (
+          <div className={`mt-2 flex items-center gap-3 rounded-2xl p-2 ${toneClasses.attachment}`}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={attachment.compressedImage.previewUrl}
+              alt=""
+              className="size-12 rounded-xl object-cover"
+            />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-bold text-stone-800">
+                {t("memory.attachmentReady")}
+              </p>
+              <p className="truncate text-xs text-stone-500">{attachment.fileName}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => removeInlineAttachment(item.id)}
+              className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-stone-500"
+            >
+              {t("memory.removeAttachment")}
+            </button>
+          </div>
+        ) : null}
+        {preparingAttachmentId === item.id ? (
+          <p className={`mt-2 text-xs font-medium ${toneClasses.status}`}>
+            {t("memory.compressingImage")}
+          </p>
+        ) : null}
+        {memoryErrorByItem[item.id] ? (
+          <p className="mt-2 text-xs font-medium text-red-700">
+            {memoryErrorByItem[item.id]}
+          </p>
+        ) : null}
+        {indexingStatusByItem[item.id] ? (
+          <p className={`mt-2 text-xs font-medium ${toneClasses.status}`}>
+            {indexingStatusByItem[item.id]}
+          </p>
+        ) : null}
+        {mentionItems.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {mentionItems.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => insertMention(item.id, option.label)}
+                className={`rounded-full px-2.5 py-1 text-xs font-bold ${toneClasses.chip}`}
+              >
+                @{option.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </>
+    );
+
+    const inlineForm = (
+      <form
+        onSubmit={(event) => addInlineMemory(event, item)}
+        className={
+          compact
+            ? "mt-3"
+            : `mt-3 rounded-2xl border ${toneClasses.border} bg-[#fffdf8] p-2 shadow-sm`
+        }
+      >
+        {fileInput}
+        <div className="flex items-end gap-2">
+          {voiceButton}
+          {renderTextarea(false)}
+          <div className="md:hidden">{emojiButton}</div>
+          {imageButton}
+          <div className="hidden md:block">{emojiButton}</div>
+          {submitButton}
+        </div>
+        {metaContent}
+      </form>
+    );
+
+    const overlay =
+      activeInlineComposerItemId === item.id && typeof document !== "undefined"
+        ? createPortal(
+            <div className="fixed inset-0 z-[2147482400] flex flex-col bg-[#dcefe9] md:hidden">
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3 pt-[env(safe-area-inset-top,0px)]">
+                <div className="mx-auto max-w-3xl py-3">
+                  <div className="rounded-3xl border border-emerald-100 bg-white/95 p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs font-black text-emerald-700">
+                          {displayTime}
+                        </div>
+                        <h3 className="mt-1 text-lg font-black leading-snug text-stone-950">
+                          {item.title}
+                        </h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={closeInlineComposer}
+                        className="grid size-10 shrink-0 place-items-center rounded-full bg-stone-100 text-xl font-black text-stone-600"
+                        aria-label={t("common.close")}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    {item.location ? (
+                      <a
+                        href={mapsHref(item.location) || "#"}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-flex max-w-full text-sm font-bold text-emerald-800 underline decoration-emerald-200 underline-offset-4"
+                      >
+                        <span className="truncate">{item.location}</span>
+                      </a>
+                    ) : null}
+                    {detailBlocks.length > 0 ? (
+                      <div className="mt-3 space-y-2 border-t border-emerald-100 pt-3">
+                        {detailBlocks.map((text, index) => (
+                          <p
+                            key={`${item.id}-detail-${index}`}
+                            className="whitespace-pre-wrap text-sm font-semibold leading-6 text-stone-700"
+                          >
+                            <HighlightedText text={text} aliases={aliases} />
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                    {renderItemMemories(item, {
+                      tone: "emerald",
+                      className:
+                        "mt-3 space-y-2 border-t border-emerald-100 pt-3",
+                    })}
+                    {metaContent}
+                  </div>
+                </div>
+              </div>
+              {showInlineComposerEmoji ? (
+                <div className="border-t border-emerald-900/5 bg-[#dcefeb] px-4 py-3">
+                  <div className="mx-auto grid max-w-3xl grid-cols-9 gap-3">
+                    {quickMemoryEmojis.map((emoji, index) => (
+                      <button
+                        key={`${emoji}-${index}`}
+                        type="button"
+                        onClick={() => appendInlineComposerEmoji(item.id, emoji)}
+                        className="text-3xl leading-none"
+                        aria-label={`输入表情 ${emoji}`}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              <form
+                onSubmit={(event) => addInlineMemory(event, item)}
+                className="border-t border-white/40 bg-[#e4f4ef]/95 px-3 pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] pt-2 shadow-[0_-12px_30px_rgba(0,0,0,0.08)] backdrop-blur"
+              >
+                {fileInput}
+                <div className="mx-auto flex max-w-3xl items-end gap-2">
+                  {voiceButton}
+                  {renderTextarea(true)}
+                  {emojiButton}
+                  {imageButton}
+                  <button
+                    type="submit"
+                    disabled={!canSubmit}
+                    className="h-11 shrink-0 rounded-xl bg-emerald-700 px-3 text-sm font-black text-white disabled:hidden"
+                  >
+                    发送
+                  </button>
+                </div>
+              </form>
+            </div>,
+            document.body,
+          )
+        : null;
+
+    if (options?.overlayOnly) return overlay;
+
+    return (
+      <>
+        {inlineForm}
+        {overlay}
+      </>
+    );
+  }
+
   const activePreviewMemory = imagePreview
     ? findMemoryById(imagePreview.memoryId)
     : null;
@@ -2640,13 +3146,28 @@ export function PlannerDayCard({
   const firstUnconfirmedPreviewFace =
     activePreviewFaces.find((face) => face.recognitionStatus !== "confirmed") ??
     null;
-  const activePreviewImageSrc =
-    activePreviewPhoto?.displayPreviewUrl ??
-    activePreviewPhoto?.displayUrl ??
-    imagePreview?.src ??
-    "";
+  const activePreviewImageCandidates = [
+    activePreviewPhoto?.displayPreviewUrl,
+    activePreviewPhoto?.displayUrl,
+    imagePreview?.src,
+    ...(imagePreview?.fallbackSrcs ?? []),
+    activePreviewPhoto?.displayFallbackUrl,
+    activePreviewPhoto ? `/api/media/assets/${activePreviewPhoto.id}/thumbnail` : null,
+    activePreviewPhoto ? `/api/media/assets/${activePreviewPhoto.id}/preview` : null,
+  ].filter((value): value is string => Boolean(value));
+  const activePreviewUniqueImageCandidates = [
+    ...new Set(activePreviewImageCandidates),
+  ];
+  const activePreviewImageSrc = activePreviewUniqueImageCandidates[0] ?? "";
   const activePreviewDriveUrl = activePreviewPhoto
     ? getMediaAssetDriveUrl(activePreviewPhoto)
+    : null;
+  const activeInlineComposerItem = activeInlineComposerItemId
+    ? [
+        ...stayItems.map((item) => item.stayItem),
+        ...story,
+        ...carItems,
+      ].find((item) => item.id === activeInlineComposerItemId) ?? null
     : null;
 
   useEffect(() => {
@@ -2655,6 +3176,11 @@ export function PlannerDayCard({
 
   return (
     <article className="overflow-hidden border-y border-stone-200 bg-white shadow-none md:rounded-[28px] md:border md:shadow-sm">
+      {activeInlineComposerItem
+        ? renderInlineMemoryComposer(activeInlineComposerItem, {
+            overlayOnly: true,
+          })
+        : null}
       <header className="bg-[#fff8ec] px-3 py-4 sm:p-5">
         <div className="grid grid-cols-[72px_1fr_auto] gap-3">
           <div className="grid h-[88px] place-items-center rounded-2xl bg-emerald-800 text-white shadow-sm">
@@ -2948,6 +3474,12 @@ export function PlannerDayCard({
                   </button>
                   <textarea
                     value={memoryTextByItem[stayItem.id] ?? ""}
+                    onFocus={() => {
+                      if (window.matchMedia("(max-width: 767px)").matches) {
+                        setActiveInlineComposerItemId(stayItem.id);
+                        setShowInlineComposerEmoji(false);
+                      }
+                    }}
                     onChange={(event) =>
                       setMemoryTextByItem((current) => ({
                         ...current,
@@ -2956,7 +3488,7 @@ export function PlannerDayCard({
                     }
                     rows={1}
                     placeholder={t("planner.memory.placeholderStay")}
-                    className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm leading-5 text-stone-950 outline-none focus:border-amber-300"
+                    className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-base leading-5 text-stone-950 outline-none focus:border-amber-300 md:text-sm"
                   />
                   <button
                     type="button"
@@ -2992,7 +3524,7 @@ export function PlannerDayCard({
                       (!attachmentByItem[stayItem.id] &&
                         !(memoryTextByItem[stayItem.id] ?? "").trim())
                     }
-                    className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300"
+                    className="hidden size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300 md:grid"
                     title={t("planner.memory.save")}
                   >
                     {savingMemoryId === stayItem.id ? "..." : t("common.go")}
@@ -3566,6 +4098,12 @@ export function PlannerDayCard({
                             </button>
                             <textarea
                               value={memoryTextByItem[item.id] ?? ""}
+                              onFocus={() => {
+                                if (window.matchMedia("(max-width: 767px)").matches) {
+                                  setActiveInlineComposerItemId(item.id);
+                                  setShowInlineComposerEmoji(false);
+                                }
+                              }}
                               onChange={(event) =>
                                 setMemoryTextByItem((current) => ({
                                   ...current,
@@ -3574,7 +4112,7 @@ export function PlannerDayCard({
                               }
                               rows={1}
                               placeholder={t("planner.memory.placeholder")}
-                              className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm leading-5 text-stone-950 outline-none focus:border-emerald-300"
+                              className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-base leading-5 text-stone-950 outline-none focus:border-emerald-300 md:text-sm"
                             />
                             <button
                               type="button"
@@ -3610,7 +4148,7 @@ export function PlannerDayCard({
                                 (!attachmentByItem[item.id] &&
                                   !(memoryTextByItem[item.id] ?? "").trim())
                               }
-                              className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300"
+                              className="hidden size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300 md:grid"
                               title={t("planner.memory.save")}
                             >
                               {savingMemoryId === item.id ? "..." : t("common.go")}
@@ -4053,6 +4591,12 @@ export function PlannerDayCard({
                       </button>
                       <textarea
                         value={memoryTextByItem[item.id] ?? ""}
+                        onFocus={() => {
+                          if (window.matchMedia("(max-width: 767px)").matches) {
+                            setActiveInlineComposerItemId(item.id);
+                            setShowInlineComposerEmoji(false);
+                          }
+                        }}
                         onChange={(event) =>
                           setMemoryTextByItem((current) => ({
                             ...current,
@@ -4061,7 +4605,7 @@ export function PlannerDayCard({
                         }
                         rows={1}
                         placeholder={t("planner.memory.placeholder")}
-                        className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-sm leading-5 text-stone-950 outline-none focus:border-sky-300"
+                        className="min-h-9 flex-1 resize-none rounded-2xl border border-stone-200 bg-white px-3 py-2 text-base leading-5 text-stone-950 outline-none focus:border-sky-300 md:text-sm"
                       />
                       <button
                         type="submit"
@@ -4069,7 +4613,7 @@ export function PlannerDayCard({
                           savingMemoryId === item.id ||
                           !(memoryTextByItem[item.id] ?? "").trim()
                         }
-                        className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300"
+                        className="hidden size-9 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-bold text-white disabled:bg-stone-300 md:grid"
                         title={t("planner.memory.save")}
                       >
                         {savingMemoryId === item.id ? "..." : t("common.go")}
@@ -4356,6 +4900,7 @@ export function PlannerDayCard({
             date={day.dayDate}
             memories={memories.map(memoryWithEngagement)}
             imageUrls={imageUrlByMemoryPath}
+            imageUrlCandidatesByMemoryId={memoryImageUrlCandidates}
             onOpenImage={setImagePreview}
             onEngagementChange={handleMemoryEngagementChange}
           />
@@ -5197,10 +5742,7 @@ export function PlannerDayCard({
                     alt={imagePreview.alt}
                     className="h-full max-h-full w-full object-contain shadow-2xl"
                     onError={(event) => {
-                      const fallbacks = [
-                        activePreviewPhoto?.displayUrl,
-                        activePreviewPhoto?.displayFallbackUrl,
-                      ].filter((value): value is string => Boolean(value));
+                      const fallbacks = activePreviewUniqueImageCandidates.slice(1);
                       const index = Number(
                         event.currentTarget.dataset.fallbackIndex ?? "0",
                       );

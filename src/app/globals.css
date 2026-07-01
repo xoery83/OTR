@@ -4,6 +4,7 @@
 :root {
   --background: #f7f3ea;
   --foreground: #1c1917;
+  --otr-sidebar-width: 12rem;
   color-scheme: light;
 }
 

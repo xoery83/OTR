@@ -413,6 +413,7 @@ function ChatContent() {
   const params = useParams<{ tripId: string }>();
   const tripId = params.tripId;
   const listRef = useRef<HTMLDivElement | null>(null);
+  const olderMessagesSentinelRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -565,6 +566,27 @@ function ChatContent() {
       setIsLoadingOlder(false);
     }
   }, [hasMoreBefore, isLoadingOlder, messages, tripId]);
+
+  useEffect(() => {
+    if (!hasMoreBefore || isLoadingOlder || messages.length === 0) return;
+    const root = listRef.current;
+    const target = olderMessagesSentinelRef.current;
+    if (!root || !target) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        void loadOlderMessages();
+      },
+      {
+        root,
+        rootMargin: "240px 0px 0px 0px",
+      },
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasMoreBefore, isLoadingOlder, loadOlderMessages, messages.length]);
 
   const loadOlderMessagesUntil = useCallback(
     async (targetMessageId: string) => {
@@ -1087,16 +1109,11 @@ function ChatContent() {
     return (
       <div className="space-y-3 px-3 py-4">
         {hasMoreBefore ? (
-          <div className="flex justify-center">
-            <button
-              type="button"
-              onClick={() => void loadOlderMessages()}
-              disabled={isLoadingOlder}
-              className="rounded-full bg-white/85 px-3 py-1 text-xs font-black text-emerald-700 shadow-sm"
-            >
-              {isLoadingOlder ? "加载中..." : "查看更早消息"}
-            </button>
-          </div>
+          <div
+            ref={olderMessagesSentinelRef}
+            className="h-3"
+            aria-hidden="true"
+          />
         ) : null}
         {messages.map((message, index) => {
           const previous = index > 0 ? messages[index - 1] : null;
@@ -1141,7 +1158,6 @@ function ChatContent() {
     hasMoreBefore,
     isLoading,
     isLoadingOlder,
-    loadOlderMessages,
     messages,
     revokeNowMs,
     trip?.destination,

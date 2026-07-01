@@ -1,43 +1,16 @@
 import "server-only";
 
-import { openAiVisionProvider } from "./providers/openai";
-import { qwenVisionProvider } from "./providers/qwen";
+import { analyzeImage as analyzeImageWithModelRouter } from "@/lib/ai/model-router";
 import {
-  emptyVisionAnalysis,
   VisionProviderError,
   type AnalyzeImageInput,
   type VisionAnalysis,
-  type VisionMode,
-  type VisionProvider,
-  type VisionProviderName,
   type VisionProviderResult,
 } from "./types";
 
 const DEFAULT_PROMPT =
   "Analyze this travel photo for search, grouping, memory recall, and timeline context.";
 const DEFAULT_TIMEOUT_MS = 45_000;
-
-const providers: Record<Exclude<VisionProviderName, "local">, VisionProvider> = {
-  openai: openAiVisionProvider,
-  qwen: qwenVisionProvider,
-};
-
-function envProvider() {
-  const provider = process.env.IMAGE_INDEX_VISION_PROVIDER?.toLowerCase();
-  return provider === "openai" || provider === "qwen" ? provider : null;
-}
-
-function defaultProviderForMode(mode: VisionMode): VisionProviderName {
-  if (mode === "basic") return "local";
-  if (mode === "reasoning") return "openai";
-  return "qwen";
-}
-
-function providerForMode(mode: VisionMode): VisionProviderName {
-  if (mode === "basic") return "local";
-  if (mode === "reasoning") return defaultProviderForMode(mode);
-  return envProvider() ?? defaultProviderForMode(mode);
-}
 
 function publicAnalysis(result: VisionProviderResult): VisionAnalysis {
   return {
@@ -65,18 +38,13 @@ export async function analyzeImage({
     throw new VisionProviderError("imageUrl is required.", "router");
   }
 
-  const providerName = providerForMode(mode);
-  if (providerName === "local") {
-    return emptyVisionAnalysis("local", "metadata-only");
-  }
-
-  const provider = providers[providerName];
   return publicAnalysis(
-    await provider.analyzeImage({
+    await analyzeImageWithModelRouter({
       imageUrl,
       prompt,
       mode,
       timeoutMs,
+      task: "legacy_vision_analysis",
     }),
   );
 }
@@ -84,20 +52,16 @@ export async function analyzeImage({
 export async function analyzeImageForDebug(
   input: AnalyzeImageInput,
 ): Promise<VisionProviderResult> {
-  const mode = input.mode ?? "vision";
-  const providerName = providerForMode(mode);
-  if (providerName === "local") {
-    return {
-      ...emptyVisionAnalysis("local", "metadata-only"),
-      rawResponse: null,
-    };
+  if (!input.imageUrl) {
+    throw new VisionProviderError("imageUrl is required.", "router");
   }
 
-  return providers[providerName].analyzeImage({
+  return analyzeImageWithModelRouter({
     imageUrl: input.imageUrl,
     prompt: input.prompt ?? DEFAULT_PROMPT,
-    mode,
+    mode: input.mode ?? "vision",
     timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    task: "legacy_vision_debug",
   });
 }
 

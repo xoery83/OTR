@@ -17,8 +17,15 @@ import {
   getJourneyMembers,
   removeJourneyMember,
   updateJourneyMember,
+  updateOwnJourneyMemberNotes,
 } from "@/lib/supabase/journey-members";
 import type { JourneyMember, JourneyMemberRole, Trip } from "@/types";
+
+type MemberDraft = {
+  displayName: string;
+  notes: string;
+  inviteEmail: string;
+};
 
 function initials(name: string) {
   return name
@@ -41,6 +48,14 @@ function roleHelp(role: JourneyMemberRole, t: ReturnType<typeof useI18n>["t"]) {
   return t("people.role.memberHelp");
 }
 
+function getMemberDraft(member: JourneyMember): MemberDraft {
+  return {
+    displayName: member.displayName,
+    notes: member.notes ?? "",
+    inviteEmail: member.inviteEmail ?? "",
+  };
+}
+
 function MembersPageContent() {
   const { tripId } = useParams<{ tripId: string }>();
   const { t } = useI18n();
@@ -51,8 +66,9 @@ function MembersPageContent() {
   const [role, setRole] = useState<JourneyMemberRole>("group_member");
   const [inviteEmail, setInviteEmail] = useState("");
   const [memberNotes, setMemberNotes] = useState("");
-  const [editDrafts, setEditDrafts] = useState<
-    Record<string, { displayName: string; notes: string; inviteEmail: string }>
+  const [editDrafts, setEditDrafts] = useState<Record<string, MemberDraft>>({});
+  const [failedAvatarMemberIds, setFailedAvatarMemberIds] = useState<
+    Record<string, true>
   >({});
   const [isAdding, setIsAdding] = useState(false);
   const [workingMemberId, setWorkingMemberId] = useState<string | null>(null);
@@ -86,6 +102,15 @@ function MembersPageContent() {
   );
   const canManagePeople =
     currentMember?.role === "owner" || trip?.createdBy === currentUserId;
+  const displayedMembers = useMemo(() => {
+    if (!currentUserId) return members;
+    return [...members].sort((left, right) => {
+      const leftIsCurrentUser = left.userId === currentUserId;
+      const rightIsCurrentUser = right.userId === currentUserId;
+      if (leftIsCurrentUser === rightIsCurrentUser) return 0;
+      return leftIsCurrentUser ? -1 : 1;
+    });
+  }, [currentUserId, members]);
   const unlinkedMembers = members.filter((member) => !member.userId);
   const roleLabels: Record<JourneyMemberRole, string> = {
     owner: t("people.role.owner"),
@@ -144,22 +169,26 @@ function MembersPageContent() {
   }
 
   async function saveMemberDetails(member: JourneyMember) {
-    const draft = editDrafts[member.id] ?? {
-      displayName: member.displayName,
-      notes: member.notes ?? "",
-      inviteEmail: member.inviteEmail ?? "",
-    };
+    const isOwnMember = member.userId === currentUserId;
+    if (!canManagePeople && !isOwnMember) return;
+
+    const draft = editDrafts[member.id] ?? getMemberDraft(member);
 
     setWorkingMemberId(member.id);
     setError(null);
     setNotice(null);
     try {
-      const updated = await updateJourneyMember({
-        memberId: member.id,
-        displayName: draft.displayName,
-        notes: draft.notes,
-        inviteEmail: draft.inviteEmail,
-      });
+      const updated = canManagePeople
+        ? await updateJourneyMember({
+            memberId: member.id,
+            displayName: draft.displayName,
+            notes: draft.notes,
+            inviteEmail: draft.inviteEmail,
+          })
+        : await updateOwnJourneyMemberNotes({
+            memberId: member.id,
+            notes: draft.notes,
+          });
       setMembers((current) =>
         current.map((item) => (item.id === updated.id ? updated : item)),
       );
@@ -330,13 +359,20 @@ function MembersPageContent() {
       ) : null}
 
       <section className="grid gap-4 sm:grid-cols-2">
-        {members.map((member) => {
+        {displayedMembers.map((member) => {
           const isWorking = workingMemberId === member.id;
+          const isOwnMember = member.userId === currentUserId;
           const canClaim =
             !currentMember &&
             !member.userId &&
             member.role !== "owner" &&
             currentUserId;
+          const canEditOwnAlias = isOwnMember && !canManagePeople;
+          const draft = editDrafts[member.id] ?? getMemberDraft(member);
+          const avatarFallback = initials(member.displayName);
+          const avatarUrl = failedAvatarMemberIds[member.id]
+            ? null
+            : member.avatarUrl;
 
           return (
             <article
@@ -354,15 +390,21 @@ function MembersPageContent() {
                         : "bg-stone-100 text-stone-500"
                     }`}
                   >
-                    {member.avatarUrl ? (
+                    {avatarUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-                        src={member.avatarUrl}
+                        src={avatarUrl}
                         alt=""
+                        onError={() =>
+                          setFailedAvatarMemberIds((current) => ({
+                            ...current,
+                            [member.id]: true,
+                          }))
+                        }
                         className="h-full w-full object-cover"
                       />
                     ) : (
-                      initials(member.displayName)
+                      avatarFallback
                     )}
                   </div>
                   <div className="min-w-0">
@@ -404,46 +446,37 @@ function MembersPageContent() {
                 ) : null}
               </div>
 
-              {canManagePeople ? (
+              {canManagePeople || canEditOwnAlias ? (
                 <div className="mt-4 grid gap-2">
-                  <input
-                    value={
-                      editDrafts[member.id]?.displayName ?? member.displayName
-                    }
-                    disabled={isWorking}
-                    onChange={(event) =>
-                      setEditDrafts((current) => ({
-                        ...current,
-                        [member.id]: {
-                          displayName: event.target.value,
-                          notes: current[member.id]?.notes ?? member.notes ?? "",
-                          inviteEmail:
-                            current[member.id]?.inviteEmail ??
-                            member.inviteEmail ??
-                            "",
-                        },
-                      }))
-                    }
-                    className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
-                  />
-                  <label className="space-y-1">
-                    <span className="text-xs font-bold text-stone-600">
-                      {t("people.alias")}
-                    </span>
+                  {canManagePeople ? (
                     <input
-                      value={editDrafts[member.id]?.notes ?? member.notes ?? ""}
+                      value={draft.displayName}
                       disabled={isWorking}
                       onChange={(event) =>
                         setEditDrafts((current) => ({
                           ...current,
                           [member.id]: {
-                            displayName:
-                              current[member.id]?.displayName ?? member.displayName,
+                            ...(current[member.id] ?? getMemberDraft(member)),
+                            displayName: event.target.value,
+                          },
+                        }))
+                      }
+                      className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
+                    />
+                  ) : null}
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-stone-600">
+                      {t("people.alias")}
+                    </span>
+                    <input
+                      value={draft.notes}
+                      disabled={isWorking}
+                      onChange={(event) =>
+                        setEditDrafts((current) => ({
+                          ...current,
+                          [member.id]: {
+                            ...(current[member.id] ?? getMemberDraft(member)),
                             notes: event.target.value,
-                            inviteEmail:
-                              current[member.id]?.inviteEmail ??
-                              member.inviteEmail ??
-                              "",
                           },
                         }))
                       }
@@ -451,22 +484,15 @@ function MembersPageContent() {
                       className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
                     />
                   </label>
-                  {!member.userId ? (
+                  {canManagePeople && !member.userId ? (
                     <input
-                      value={
-                        editDrafts[member.id]?.inviteEmail ??
-                        member.inviteEmail ??
-                        ""
-                      }
+                      value={draft.inviteEmail}
                       disabled={isWorking}
                       onChange={(event) =>
                         setEditDrafts((current) => ({
                           ...current,
                           [member.id]: {
-                            displayName:
-                              current[member.id]?.displayName ??
-                              member.displayName,
-                            notes: current[member.id]?.notes ?? member.notes ?? "",
+                            ...(current[member.id] ?? getMemberDraft(member)),
                             inviteEmail: event.target.value,
                           },
                         }))
@@ -476,18 +502,20 @@ function MembersPageContent() {
                       className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
                     />
                   ) : null}
-                  <select
-                    value={member.role}
-                    disabled={isWorking}
-                    onChange={(event) =>
-                      changeRole(member, event.target.value as JourneyMemberRole)
-                    }
-                    className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
-                  >
-                    <option value="owner">{roleLabels.owner}</option>
-                    <option value="group_member">{roleLabels.group_member}</option>
-                    <option value="guest">{roleLabels.guest}</option>
-                  </select>
+                  {canManagePeople ? (
+                    <select
+                      value={member.role}
+                      disabled={isWorking}
+                      onChange={(event) =>
+                        changeRole(member, event.target.value as JourneyMemberRole)
+                      }
+                      className="rounded-2xl border border-stone-200 bg-[#fffdf8] px-3 py-2 text-sm"
+                    >
+                      <option value="owner">{roleLabels.owner}</option>
+                      <option value="group_member">{roleLabels.group_member}</option>
+                      <option value="guest">{roleLabels.guest}</option>
+                    </select>
+                  ) : null}
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -497,14 +525,16 @@ function MembersPageContent() {
                     >
                       {t("common.save")}
                     </button>
-                    <button
-                      type="button"
-                      disabled={isWorking || member.role === "owner"}
-                      onClick={() => removeMember(member)}
-                      className="rounded-full bg-red-50 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50"
-                    >
-                      {member.userId ? t("people.removeAccess") : t("common.remove")}
-                    </button>
+                    {canManagePeople ? (
+                      <button
+                        type="button"
+                        disabled={isWorking || member.role === "owner"}
+                        onClick={() => removeMember(member)}
+                        className="rounded-full bg-red-50 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50"
+                      >
+                        {member.userId ? t("people.removeAccess") : t("common.remove")}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               ) : null}

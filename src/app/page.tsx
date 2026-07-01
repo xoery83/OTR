@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { OtrLogo } from "@/components/OtrLogo";
 import { TripCard } from "@/components/TripCard";
 import {
   compareTripsByStartDateAsc,
@@ -42,9 +43,7 @@ function PublicLanding() {
   return (
     <div className="space-y-8">
       <section className="rounded-3xl bg-white p-8 shadow-sm">
-        <div className="grid size-14 place-items-center rounded-2xl bg-emerald-700 text-xl font-bold text-white">
-          O
-        </div>
+        <OtrLogo className="size-14 rounded-2xl" />
         <h1 className="mt-6 text-4xl font-semibold text-stone-950">OTR</h1>
         <p className="mt-3 text-lg leading-8 text-stone-600">
           Group travel memories, plans, and stories.
