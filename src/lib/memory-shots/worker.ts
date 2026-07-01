@@ -14,6 +14,8 @@ import type {
 
 type WorkerSupabase = SupabaseClient;
 
+const photoCandidateLimit = 500;
+
 type GenerateDailyBestMomentsInput = {
   supabase: WorkerSupabase;
   journeyId: string;
@@ -412,7 +414,7 @@ async function collectJourneyDayData(
       .eq("trip_id", trip.id)
       .eq("asset_type", "image")
       .order("created_at", { ascending: false })
-      .limit(24),
+      .limit(photoCandidateLimit),
     supabase
       .from("itinerary_events")
       .select("id, title, description, event_type, location_name, planned_start")

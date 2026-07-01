@@ -680,6 +680,13 @@ function ChatContent() {
   }, [isSwitchingToKeyboard, isTextFocused, showEmoji]);
 
   useEffect(() => {
+    document.body.classList.toggle("otr-chat-image-viewer-active", Boolean(activeImage));
+    return () => {
+      document.body.classList.remove("otr-chat-image-viewer-active");
+    };
+  }, [activeImage]);
+
+  useEffect(() => {
     const interval = window.setInterval(() => setRevokeNowMs(Date.now()), 30_000);
     return () => window.clearInterval(interval);
   }, []);

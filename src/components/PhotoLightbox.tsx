@@ -57,7 +57,7 @@ export function PhotoLightbox({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col bg-black/92 text-white"
+      className="fixed inset-0 z-[2147483000] flex flex-col bg-black/92 text-white"
       role="dialog"
       aria-modal="true"
     >

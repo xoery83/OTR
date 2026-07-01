@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useState } from "react";
 import { useCapture2Preview } from "@/components/Capture2PreviewProvider";
 import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
+import { compareTripsByStartDateAsc, getJourneyStatus } from "@/lib/journeys/status";
 import { hasUnreadJourneyChat } from "@/lib/supabase/chat";
 import { supabase } from "@/lib/supabase/client";
+import { getTripsForCurrentUser } from "@/lib/supabase/trips";
+import type { Trip } from "@/types";
 
 type MobileNavIcon =
   | "journeys"
@@ -234,6 +237,7 @@ function CaptureIcon() {
 
 export function BottomNav() {
   const pathname = usePathname();
+  const router = useRouter();
   const { t } = useI18n();
   const { openCapture } = useCaptureModal();
   const { openCapture2 } = useCapture2Preview();
@@ -242,6 +246,8 @@ export function BottomNav() {
   const isChatPage = Boolean(pathname.match(/^\/trips\/[^/]+\/chat$/));
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
   const [capture2ReviewCount, setCapture2ReviewCount] = useState(0);
+  const [capture2JourneyChoices, setCapture2JourneyChoices] = useState<Trip[]>([]);
+  const [isResolvingCapture2Journey, setIsResolvingCapture2Journey] = useState(false);
   const [exploringHref, setExploringHref] = useState<string | null>(null);
   const globalItems: MobileNavItem[] = [
     { labelKey: "nav.journeys", href: "/trips", icon: "journeys" },
@@ -278,6 +284,38 @@ export function BottomNav() {
     return activeTripId
       ? { tripId: activeTripId, entryPoint: "global_capture" as const }
       : { entryPoint: "global_capture" as const };
+  }
+
+  async function openCapture2FromFloatingEntry() {
+    if (activeTripId) {
+      openCapture2({ tripId: activeTripId });
+      return;
+    }
+
+    setIsResolvingCapture2Journey(true);
+    try {
+      const trips = await getTripsForCurrentUser();
+      const activeTrips = trips
+        .filter((trip) => getJourneyStatus(trip) === "active")
+        .sort(compareTripsByStartDateAsc);
+
+      if (activeTrips.length === 0) {
+        window.alert("请先创建一个进行中的行程，再使用 Capture 2.0。");
+        router.push("/trips/new");
+        return;
+      }
+
+      if (activeTrips.length === 1) {
+        openCapture2({ tripId: activeTrips[0].id });
+        return;
+      }
+
+      setCapture2JourneyChoices(activeTrips);
+    } catch {
+      window.alert("暂时无法读取进行中的行程，请进入某个行程后再使用 Capture 2.0。");
+    } finally {
+      setIsResolvingCapture2Journey(false);
+    }
   }
 
   function renderBottomBar(items: MobileNavItem[]) {
@@ -370,29 +408,32 @@ export function BottomNav() {
       <span className="text-xs font-black leading-none">{t("nav.capture")}</span>
     </button>
   );
-  const capture2Button = activeTripId ? (
+  const capture2Button = (
     <div
       className="otr-mobile-capture2-float fixed left-3 z-40 flex items-center gap-2 md:hidden"
     >
       <button
         type="button"
-        onClick={() => openCapture2({ tripId: activeTripId })}
+        onClick={() => void openCapture2FromFloatingEntry()}
+        disabled={isResolvingCapture2Journey}
         className="grid size-11 place-items-center rounded-full border border-stone-200 bg-white/90 text-[11px] font-black uppercase tracking-wide text-stone-500 shadow-lg shadow-stone-950/10 backdrop-blur transition active:scale-95"
         aria-label="Capture Beta"
         title="Capture Beta"
       >
         Beta
       </button>
-      <Link
-        href="/settings/capture2-inbox"
-        className="grid size-11 place-items-center rounded-full border border-emerald-100 bg-emerald-700 text-sm font-black text-white shadow-lg shadow-stone-950/10 transition active:scale-95"
-        aria-label={`${capture2ReviewCount} captures need review`}
-        title="Today Review"
-      >
-        {capture2ReviewCount > 99 ? "99+" : capture2ReviewCount}
-      </Link>
+      {activeTripId ? (
+        <Link
+          href={`/trips/${activeTripId}/capture2`}
+          className="grid size-11 place-items-center rounded-full border border-emerald-100 bg-emerald-700 text-sm font-black text-white shadow-lg shadow-stone-950/10 transition active:scale-95"
+          aria-label={`${capture2ReviewCount} captures need review`}
+          title="Today Review"
+        >
+          {capture2ReviewCount > 99 ? "99+" : capture2ReviewCount}
+        </Link>
+      ) : null}
     </div>
-  ) : null;
+  );
 
   useEffect(() => {
     if (!activeTripId) {
@@ -453,12 +494,58 @@ export function BottomNav() {
     };
   }, [activeTripId, isChatPage]);
 
+  const capture2JourneyPicker =
+    capture2JourneyChoices.length > 0 ? (
+      <div className="fixed inset-0 z-[70] grid place-items-end bg-stone-950/35 p-4 backdrop-blur-sm md:hidden">
+        <div className="w-full rounded-3xl bg-[#fffdf8] p-4 shadow-2xl">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
+                Capture 2.0
+              </p>
+              <h2 className="mt-1 text-xl font-black text-stone-950">
+                选择要记录到哪个行程
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCapture2JourneyChoices([])}
+              className="rounded-full bg-stone-100 px-3 py-2 text-sm font-black text-stone-700"
+            >
+              关闭
+            </button>
+          </div>
+          <div className="mt-4 space-y-2">
+            {capture2JourneyChoices.map((trip) => (
+              <button
+                key={trip.id}
+                type="button"
+                onClick={() => {
+                  setCapture2JourneyChoices([]);
+                  openCapture2({ tripId: trip.id });
+                }}
+                className="w-full rounded-2xl bg-white px-4 py-3 text-left shadow-sm ring-1 ring-stone-100"
+              >
+                <span className="block text-base font-black text-stone-950">
+                  {trip.name}
+                </span>
+                <span className="mt-1 block text-xs font-bold text-stone-500">
+                  {trip.destination || "目的地待定"}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    ) : null;
+
   if (!activeTripId) {
     return (
       <>
         {renderBottomBar(globalItems)}
         {captureButton}
-        {capture2Button}
+        {isChatPage ? null : capture2Button}
+        {isChatPage ? null : capture2JourneyPicker}
       </>
     );
   }
@@ -501,8 +588,9 @@ export function BottomNav() {
   return (
     <>
       {renderBottomBar(journeyItems)}
-      {capture2Button}
+      {isChatPage ? null : capture2Button}
       {isChatPage ? null : captureButton}
+      {isChatPage ? null : capture2JourneyPicker}
     </>
   );
 }

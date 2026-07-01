@@ -372,10 +372,14 @@ input[type="date"] {
   }
 
   body.otr-mobile-search-active [data-mobile-app-header],
+  body.otr-chat-image-viewer-active [data-mobile-app-header],
   body.otr-mobile-search-active [data-mobile-bottom-nav],
+  body.otr-chat-image-viewer-active [data-mobile-bottom-nav],
   body.otr-chat-keyboard-active [data-mobile-bottom-nav],
   body.otr-mobile-search-active [data-mobile-capture-button],
+  body.otr-chat-image-viewer-active [data-mobile-capture-button],
   body.otr-mobile-search-active .otr-mobile-capture2-float,
+  body.otr-chat-image-viewer-active .otr-mobile-capture2-float,
   body.otr-album-immersive [data-mobile-bottom-nav],
   body.otr-album-immersive [data-mobile-capture-button],
   body.otr-album-immersive .otr-mobile-capture2-float,
@@ -384,6 +388,7 @@ input[type="date"] {
   body.otr-planner-immersive [data-mobile-capture-button],
   body.otr-planner-immersive .otr-mobile-capture2-float,
   body.otr-planner-immersive [data-mobile-activity-center],
+  body.otr-chat-image-viewer-active [data-mobile-activity-center],
   body.otr-mobile-search-active [data-mobile-activity-center] {
     display: none !important;
   }

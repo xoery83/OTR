@@ -1,6 +1,12 @@
 import { formatJourneyTime } from "@/lib/format";
+import {
+  allocatedLedgerAmountForDay,
+  getLedgerAllocationDates,
+} from "@/lib/ledger/date-allocation";
+import { getLedgerData } from "@/lib/supabase/ledger";
 import { getPlannerV2, type PlannerV2Day } from "@/lib/supabase/planner-v2";
 import { getTrip } from "@/lib/supabase/trips";
+import type { LedgerEntry } from "@/types";
 
 export type Capture2JourneyQueryAnswer = {
   handled: boolean;
@@ -18,6 +24,7 @@ function dateKey(offsetDays: number) {
 }
 
 function queryDate(input: string) {
+  if (/昨天/.test(input)) return dateKey(-1);
   if (/明天/.test(input)) return dateKey(1);
   if (/后天/.test(input)) return dateKey(2);
   return dateKey(0);
@@ -38,6 +45,85 @@ function itemTime(value: string | null | undefined) {
 
 function itemLine(title: string, startsAt: string | null | undefined) {
   return `${itemTime(startsAt)} · ${title}`;
+}
+
+function money(amount: number, currency: string) {
+  try {
+    return new Intl.NumberFormat("zh-CN", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    return `${amount.toFixed(2)} ${currency}`;
+  }
+}
+
+function dateLabelFromQuery(text: string) {
+  if (/明天/.test(text)) return "明天";
+  if (/后天/.test(text)) return "后天";
+  if (/昨天/.test(text)) return "昨天";
+  return "今天";
+}
+
+function entryTouchesDate(entry: LedgerEntry, date: string) {
+  return getLedgerAllocationDates(entry).includes(date);
+}
+
+async function answerLedgerSpending(input: {
+  tripId: string;
+  text: string;
+  date: string;
+}): Promise<Capture2JourneyQueryAnswer> {
+  const ledgerData = await getLedgerData(input.tripId);
+  const dateText = dateLabelFromQuery(input.text);
+  const entries = ledgerData.entries.filter((entry) => entryTouchesDate(entry, input.date));
+  const dayAmounts = entries
+    .map((entry) => ({
+      entry,
+      baseAmount: allocatedLedgerAmountForDay(entry, input.date),
+      originalAmount:
+        entry.originalAmount / Math.max(getLedgerAllocationDates(entry).length, 1),
+    }))
+    .filter((item) => item.baseAmount > 0);
+
+  if (dayAmounts.length === 0) {
+    return {
+      handled: true,
+      date: input.date,
+      answer: `没有找到${dateText}的消费记录。`,
+    };
+  }
+
+  const totalBase = dayAmounts.reduce((total, item) => total + item.baseAmount, 0);
+  const byOriginalCurrency = new Map<string, number>();
+  dayAmounts.forEach((item) => {
+    byOriginalCurrency.set(
+      item.entry.originalCurrency,
+      (byOriginalCurrency.get(item.entry.originalCurrency) ?? 0) + item.originalAmount,
+    );
+  });
+
+  const originalSummary = [...byOriginalCurrency.entries()]
+    .sort(([leftCurrency], [rightCurrency]) => leftCurrency.localeCompare(rightCurrency))
+    .map(([currency, amount]) => money(amount, currency))
+    .join("，");
+  const topEntries = [...dayAmounts]
+    .sort((left, right) => right.baseAmount - left.baseAmount)
+    .slice(0, 3)
+    .map((item) => `${item.entry.title} ${money(item.baseAmount, ledgerData.ledger.baseCurrency)}`)
+    .join("；");
+
+  return {
+    handled: true,
+    date: input.date,
+    answer: `${dateText}已记录 ${dayAmounts.length} 笔消费，合计 ${money(
+      totalBase,
+      ledgerData.ledger.baseCurrency,
+    )}${originalSummary ? `。原币种小计：${originalSummary}` : ""}${
+      topEntries ? `。主要支出：${topEntries}。` : "。"
+    }`,
+  };
 }
 
 function answerLodging(day: PlannerV2Day | null, date: string): Capture2JourneyQueryAnswer {
@@ -131,6 +217,11 @@ export async function answerCapture2JourneyQuery(input: {
 }): Promise<Capture2JourneyQueryAnswer> {
   const text = input.text.trim();
   const date = queryDate(text);
+
+  if (/(花了多少|多少钱|一共花|总共花|消费多少|费用多少|账本|支出|消费|花费)/.test(text)) {
+    return answerLedgerSpending({ tripId: input.tripId, text, date });
+  }
+
   const trip = await getTrip(input.tripId);
   const planner = await getPlannerV2(trip, { includeMemories: false });
   const day = dayForDate(planner.days, date);

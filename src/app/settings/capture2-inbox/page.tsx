@@ -180,7 +180,7 @@ function mediaFileName(asset: MediaAssetRow) {
   return asset.original_file_path || asset.id;
 }
 
-function InboxContent() {
+export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
   const capture = useCaptureModal();
   const [events, setEvents] = useState<Capture2EventRow[]>([]);
   const [mediaAssets, setMediaAssets] = useState<Record<string, MediaAssetRow>>({});
@@ -188,6 +188,7 @@ function InboxContent() {
   const [workingEventId, setWorkingEventId] = useState<string | null>(null);
   const [expandedActions, setExpandedActions] = useState<Record<string, boolean>>({});
   const [developerMode, setDeveloperMode] = useState(false);
+  const [reviewMode, setReviewMode] = useState<"pending" | "archived">("pending");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -201,13 +202,31 @@ function InboxContent() {
           "id, journey_id, input_type, original_input, transcription_text, referenced_photo_ids, referenced_video_ids, metadata, status, captured_at, created_at",
         )
         .filter("metadata->>source", "eq", "capture2_preview")
-        .not("status", "in", "(archived,processed)")
         .order("created_at", { ascending: false })
-        .limit(100);
+        .limit(150);
 
       if (eventError) throw eventError;
 
-      const rows = ((data ?? []) as Capture2EventRow[]).filter((event) => {
+      const scopedRows = tripId
+        ? ((data ?? []) as Capture2EventRow[]).filter(
+            (event) => event.journey_id === tripId,
+          )
+        : ((data ?? []) as Capture2EventRow[]);
+
+      const rows = scopedRows.filter((event) => {
+        const inbox = event.metadata?.capture2Inbox;
+        const inboxStatus =
+          inbox && typeof inbox === "object"
+            ? (inbox as { status?: unknown }).status
+            : null;
+        const isArchived =
+          event.status === "archived" ||
+          event.status === "processed" ||
+          inboxStatus === "archived" ||
+          inboxStatus === "processed";
+        if (reviewMode === "archived") return isArchived;
+        if (isArchived) return false;
+
         const capture2 = event.metadata?.capture2;
         const safetyClass =
           capture2 && typeof capture2 === "object"
@@ -249,14 +268,18 @@ function InboxContent() {
 
   useEffect(() => {
     void loadEvents();
-  }, []);
+  }, [tripId, reviewMode]);
 
   const mediaCount = useMemo(
     () => events.reduce((count, event) => count + eventMediaIds(event).length, 0),
     [events],
   );
 
-  async function updateEvent(event: Capture2EventRow, status: string, extra: Record<string, unknown>) {
+  async function updateEvent(
+    event: Capture2EventRow,
+    status: string,
+    extra: Record<string, unknown>,
+  ) {
     const metadata = {
       ...(event.metadata ?? {}),
       capture2Inbox: {
@@ -265,9 +288,11 @@ function InboxContent() {
         ...extra,
       },
     };
+    const patch =
+      status === "archived" ? { metadata } : { status, metadata };
     const { error: updateError } = await supabase
       .from("journey_capture_events")
-      .update({ status, metadata })
+      .update(patch)
       .eq("id", event.id);
     if (updateError) throw updateError;
     window.dispatchEvent(new CustomEvent("otr:capture2-changed"));
@@ -283,6 +308,49 @@ function InboxContent() {
       setNotice("已归档。");
     } catch (archiveError) {
       setError(getErrorMessage(archiveError, "Archive failed."));
+    } finally {
+      setWorkingEventId(null);
+    }
+  }
+
+  function processedMemoryEntryId(event: Capture2EventRow) {
+    const inbox = event.metadata?.capture2Inbox;
+    if (inbox && typeof inbox === "object") {
+      const memoryEntryId = (inbox as { memoryEntryId?: unknown }).memoryEntryId;
+      if (typeof memoryEntryId === "string") return memoryEntryId;
+    }
+
+    const capture2 = event.metadata?.capture2;
+    if (capture2 && typeof capture2 === "object") {
+      const memoryEntryId = (capture2 as { memoryEntryId?: unknown }).memoryEntryId;
+      if (typeof memoryEntryId === "string") return memoryEntryId;
+    }
+    return null;
+  }
+
+  async function undoArchivedEvent(event: Capture2EventRow) {
+    setWorkingEventId(event.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const memoryEntryId = processedMemoryEntryId(event);
+      if (memoryEntryId) {
+        const { error: deleteError } = await supabase
+          .from("memory_entries")
+          .delete()
+          .eq("id", memoryEntryId)
+          .eq("journey_id", event.journey_id);
+        if (deleteError) throw deleteError;
+      }
+      await updateEvent(event, "raw", {
+        action: "restore_to_review",
+        restoredAt: new Date().toISOString(),
+        deletedMemoryEntryId: memoryEntryId,
+      });
+      setEvents((current) => current.filter((item) => item.id !== event.id));
+      setNotice("已取消操作，条目已回到待整理。");
+    } catch (undoError) {
+      setError(getErrorMessage(undoError, "Undo failed."));
     } finally {
       setWorkingEventId(null);
     }
@@ -394,10 +462,36 @@ function InboxContent() {
             </p>
             <h1 className="mt-2 text-3xl font-black">Today Review</h1>
             <p className="mt-2 text-sm font-semibold text-stone-600">
-              今天还有 {events.length} 条 Capture 等待整理 · {mediaCount} 个媒体
+              {reviewMode === "pending"
+                ? `今天还有 ${events.length} 条 Capture 等待整理`
+                : `已归档 ${events.length} 条 Capture`}
+              {" · "}
+              {mediaCount} 个媒体
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setReviewMode("pending")}
+              className={`rounded-lg px-4 py-3 text-sm font-black ${
+                reviewMode === "pending"
+                  ? "bg-emerald-700 text-white"
+                  : "bg-white text-stone-800 shadow-sm"
+              }`}
+            >
+              待整理
+            </button>
+            <button
+              type="button"
+              onClick={() => setReviewMode("archived")}
+              className={`rounded-lg px-4 py-3 text-sm font-black ${
+                reviewMode === "archived"
+                  ? "bg-emerald-700 text-white"
+                  : "bg-white text-stone-800 shadow-sm"
+              }`}
+            >
+              已归档
+            </button>
             <button
               type="button"
               onClick={() => setDeveloperMode((value) => !value)}
@@ -441,7 +535,9 @@ function InboxContent() {
 
           {!isLoading && events.length === 0 ? (
             <div className="rounded-lg bg-white p-5 text-sm font-bold text-stone-600">
-              今天没有等待整理的 Capture。
+              {reviewMode === "pending"
+                ? "今天没有等待整理的 Capture。"
+                : "还没有归档的 Capture。"}
             </div>
           ) : null}
 
@@ -455,6 +551,7 @@ function InboxContent() {
             const isWorking = workingEventId === event.id;
             const suggestion = primarySuggestion(event, classification);
             const isExpanded = Boolean(expandedActions[event.id]);
+            const isArchivedMode = reviewMode === "archived";
 
             return (
               <article
@@ -536,21 +633,32 @@ function InboxContent() {
 
                 <div className="mt-4 border-t border-stone-100 pt-4">
                   <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">
-                    AI 建议
+                    {isArchivedMode ? "已处理" : "AI 建议"}
                   </p>
                   <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
                     <p className="text-lg font-black text-stone-950">
-                      {suggestion.label}
+                      {isArchivedMode ? "已归档，可取消操作" : suggestion.label}
                     </p>
                     <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handlePrimaryAction(event, suggestion)}
-                        disabled={isWorking || (suggestion.kind === "memory" && !text.trim())}
-                        className="rounded-lg bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:bg-stone-300"
-                      >
-                        {suggestion.buttonLabel}
-                      </button>
+                      {isArchivedMode ? (
+                        <button
+                          type="button"
+                          onClick={() => void undoArchivedEvent(event)}
+                          disabled={isWorking}
+                          className="rounded-lg bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:bg-stone-300"
+                        >
+                          取消操作
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handlePrimaryAction(event, suggestion)}
+                          disabled={isWorking || (suggestion.kind === "memory" && !text.trim())}
+                          className="rounded-lg bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:bg-stone-300"
+                        >
+                          {suggestion.buttonLabel}
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => toggleActions(event.id)}
@@ -559,14 +667,16 @@ function InboxContent() {
                       >
                         换一种
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => void archiveEvent(event)}
-                        disabled={isWorking}
-                        className="rounded-lg bg-stone-100 px-4 py-3 text-sm font-black text-stone-800 disabled:bg-stone-200"
-                      >
-                        归档
-                      </button>
+                      {!isArchivedMode ? (
+                        <button
+                          type="button"
+                          onClick={() => void archiveEvent(event)}
+                          disabled={isWorking}
+                          className="rounded-lg bg-stone-100 px-4 py-3 text-sm font-black text-stone-800 disabled:bg-stone-200"
+                        >
+                          归档
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -577,38 +687,51 @@ function InboxContent() {
                       换一种处理
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void convertToMemory(event)}
-                        disabled={isWorking || !text.trim()}
-                        className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
-                      >
-                        保存为记忆
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openExpenseForm(event)}
-                        disabled={isWorking}
-                        className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
-                      >
-                        添加消费
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openPlannerForm(event)}
-                        disabled={isWorking}
-                        className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
-                      >
-                        添加行程
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void archiveEvent(event)}
-                        disabled={isWorking}
-                        className="rounded-lg bg-stone-200 px-3 py-2 text-xs font-black text-stone-800 disabled:bg-stone-100"
-                      >
-                        归档
-                      </button>
+                      {isArchivedMode ? (
+                        <button
+                          type="button"
+                          onClick={() => void undoArchivedEvent(event)}
+                          disabled={isWorking}
+                          className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
+                        >
+                          取消操作并回到待整理
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void convertToMemory(event)}
+                            disabled={isWorking || !text.trim()}
+                            className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
+                          >
+                            保存为记忆
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openExpenseForm(event)}
+                            disabled={isWorking}
+                            className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
+                          >
+                            添加消费
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openPlannerForm(event)}
+                            disabled={isWorking}
+                            className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
+                          >
+                            添加行程
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void archiveEvent(event)}
+                            disabled={isWorking}
+                            className="rounded-lg bg-stone-200 px-3 py-2 text-xs font-black text-stone-800 disabled:bg-stone-100"
+                          >
+                            归档
+                          </button>
+                        </>
+                      )}
                     </div>
 
                     <details className="mt-4 rounded-lg bg-stone-950 p-3 text-white" open={developerMode}>
@@ -661,5 +784,5 @@ function InboxContent() {
 }
 
 export default function Capture2InboxPage() {
-  return <AuthGate>{() => <InboxContent />}</AuthGate>;
+  return <AuthGate>{() => <Capture2InboxContent />}</AuthGate>;
 }

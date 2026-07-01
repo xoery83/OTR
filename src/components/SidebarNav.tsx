@@ -419,7 +419,7 @@ export function SidebarNav() {
               {label}
             </span>
           </button>
-          {tripId ? (
+          {tripId && !isChatPage ? (
             <button
               type="button"
               onClick={() => openCapture2({ tripId })}
