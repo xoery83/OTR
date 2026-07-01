@@ -5,7 +5,6 @@ import { usePathname, useRouter } from "next/navigation";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useState } from "react";
 import { useCapture2Preview } from "@/components/Capture2PreviewProvider";
-import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
 import { compareTripsByStartDateAsc, getJourneyStatus } from "@/lib/journeys/status";
@@ -239,7 +238,6 @@ export function BottomNav() {
   const pathname = usePathname();
   const router = useRouter();
   const { t } = useI18n();
-  const { openCapture } = useCaptureModal();
   const { openCapture2 } = useCapture2Preview();
   const activeTripId = getActiveTripId(pathname);
   const isMapPage = Boolean(pathname.match(/^\/trips\/[^/]+\/map$/));
@@ -278,12 +276,6 @@ export function BottomNav() {
   function endNavExploration(event: ReactPointerEvent<HTMLAnchorElement>) {
     if (event.pointerType === "mouse") return;
     setExploringHref(null);
-  }
-
-  function captureOptions() {
-    return activeTripId
-      ? { tripId: activeTripId, entryPoint: "global_capture" as const }
-      : { entryPoint: "global_capture" as const };
   }
 
   async function openCapture2FromFloatingEntry() {
@@ -394,44 +386,38 @@ export function BottomNav() {
   }
 
   const captureButton = (
-    <button
-      type="button"
+    <div
       data-mobile-capture-button
-      onClick={() => openCapture(captureOptions())}
-      className={`fixed right-4 z-40 flex h-16 min-w-20 flex-col items-center justify-center gap-0.5 rounded-[22px] bg-emerald-700 px-4 text-white shadow-2xl shadow-emerald-950/25 transition active:scale-95 md:hidden ${
+      className={`fixed right-4 z-40 w-[86px] overflow-hidden rounded-[26px] bg-white/90 shadow-2xl shadow-emerald-950/25 ring-1 ring-emerald-900/10 backdrop-blur md:hidden ${
         isMapPage ? "bottom-20" : "bottom-24"
       }`}
-      aria-label={t("nav.capture")}
-      title={t("nav.capture")}
-    >
-      <CaptureIcon />
-      <span className="text-xs font-black leading-none">{t("nav.capture")}</span>
-    </button>
-  );
-  const capture2Button = (
-    <div
-      className="otr-mobile-capture2-float fixed left-3 z-40 flex items-center gap-2 md:hidden"
     >
       <button
         type="button"
         onClick={() => void openCapture2FromFloatingEntry()}
         disabled={isResolvingCapture2Journey}
-        className="grid size-11 place-items-center rounded-full border border-stone-200 bg-white/90 text-[11px] font-black uppercase tracking-wide text-stone-500 shadow-lg shadow-stone-950/10 backdrop-blur transition active:scale-95"
-        aria-label="Capture Beta"
-        title="Capture Beta"
+        className="flex h-[72px] w-full flex-col items-center justify-center gap-1 bg-emerald-700 text-white transition hover:bg-emerald-800 active:scale-[0.98] disabled:bg-stone-300"
+        aria-label={t("nav.capture")}
+        title={t("nav.capture")}
       >
-        Beta
+        <CaptureIcon />
+        <span className="text-[13px] font-black leading-none">{t("nav.capture")}</span>
       </button>
       {activeTripId ? (
         <Link
           href={`/trips/${activeTripId}/capture2`}
-          className="grid size-11 place-items-center rounded-full border border-emerald-100 bg-emerald-700 text-sm font-black text-white shadow-lg shadow-stone-950/10 transition active:scale-95"
+          className="relative flex h-10 w-full items-center justify-center bg-stone-200 text-lg font-black leading-none text-stone-800 transition hover:bg-stone-300 active:scale-[0.98]"
           aria-label={`${capture2ReviewCount} captures need review`}
           title="Today Review"
         >
+          {capture2ReviewCount > 0 ? (
+            <span className="absolute right-4 top-2 size-2 rounded-full bg-rose-500 shadow-sm ring-2 ring-stone-200" />
+          ) : null}
           {capture2ReviewCount > 99 ? "99+" : capture2ReviewCount}
         </Link>
-      ) : null}
+      ) : (
+        <div className="h-2 bg-stone-200" aria-hidden="true" />
+      )}
     </div>
   );
 
@@ -544,7 +530,6 @@ export function BottomNav() {
       <>
         {renderBottomBar(globalItems)}
         {captureButton}
-        {isChatPage ? null : capture2Button}
         {isChatPage ? null : capture2JourneyPicker}
       </>
     );
@@ -588,7 +573,6 @@ export function BottomNav() {
   return (
     <>
       {renderBottomBar(journeyItems)}
-      {isChatPage ? null : capture2Button}
       {isChatPage ? null : captureButton}
       {isChatPage ? null : capture2JourneyPicker}
     </>

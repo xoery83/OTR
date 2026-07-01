@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 type UseVoiceRecorderOptions = {
   onRecordingComplete: (file: File) => void;
   onError: (error: Error) => void;
+  onNoSpeech?: () => void;
   maxDurationMs?: number;
   silenceMs?: number;
   volumeThreshold?: number;
@@ -13,6 +14,7 @@ type UseVoiceRecorderOptions = {
 export function useVoiceRecorder({
   onRecordingComplete,
   onError,
+  onNoSpeech,
   maxDurationMs = 60_000,
   silenceMs = 1400,
   volumeThreshold = 0.035,
@@ -30,12 +32,14 @@ export function useVoiceRecorder({
   const hasQueuedRecordingRef = useRef(false);
   const onRecordingCompleteRef = useRef(onRecordingComplete);
   const onErrorRef = useRef(onError);
+  const onNoSpeechRef = useRef(onNoSpeech);
   const [isRecording, setIsRecording] = useState(false);
 
   useEffect(() => {
     onRecordingCompleteRef.current = onRecordingComplete;
     onErrorRef.current = onError;
-  }, [onRecordingComplete, onError]);
+    onNoSpeechRef.current = onNoSpeech;
+  }, [onRecordingComplete, onError, onNoSpeech]);
 
   const cleanup = useCallback(() => {
     if (silenceTimerRef.current) {
@@ -156,8 +160,14 @@ export function useVoiceRecorder({
       };
       recorder.onstop = () => {
         const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        const heardSpeech = heardSpeechRef.current;
         cleanup();
         setIsRecording(false);
+
+        if (!heardSpeech) {
+          onNoSpeechRef.current?.();
+          return;
+        }
 
         if (blob.size > 0 && !hasQueuedRecordingRef.current) {
           hasQueuedRecordingRef.current = true;

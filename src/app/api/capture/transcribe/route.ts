@@ -27,6 +27,29 @@ function sttEndpoint(baseUrl: string) {
   return `${baseUrl.replace(/\/$/, "")}/stt/transcribe`;
 }
 
+function isLikelyEmptyCapture2Transcript(value: string) {
+  const normalized = value
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[，,。.!！?？、]/g, "");
+  if (!normalized) return true;
+
+  const promptSamples = [
+    "今天都有什么行程",
+    "今天有什么安排",
+    "导航去酒店",
+    "停车50欧",
+    "加油100欧",
+    "今晚订了酒店",
+  ];
+  const sampleHits = promptSamples.filter((sample) =>
+    normalized.includes(sample.replace(/\s+/g, "")),
+  ).length;
+  if (sampleHits >= 3) return true;
+
+  return /^(嗯+|啊+|呃+|额+|唔+|silence|blank|nospeech)$/i.test(normalized);
+}
+
 function getSupabaseForRequest(request: Request) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -236,6 +259,9 @@ export async function POST(request: Request) {
       prompt: isCapture2Preview ? CAPTURE2_TRANSCRIPTION_PROMPT : undefined,
     });
     if (!transcript.text) {
+      return jsonError("No speech was detected.", 422);
+    }
+    if (isCapture2Preview && isLikelyEmptyCapture2Transcript(transcript.text)) {
       return jsonError("No speech was detected.", 422);
     }
     const safeClassification =

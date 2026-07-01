@@ -46,6 +46,9 @@ type Capture2OpenOptions = {
   tripId?: string | null;
   memoryDateKey?: string | null;
   memoryContextLabel?: string | null;
+  mode?: Capture2Mode;
+  plannerKind?: Capture2PlannerKind;
+  quickFormPrefill?: Partial<Capture2QuickFormState>;
 };
 
 type Capture2ContextValue = {
@@ -239,7 +242,7 @@ function parseCapture2MoneyInput(value: string, fallbackCurrency = "NZD") {
   const trimmed = value.trim();
   if (!trimmed) return null;
   const currencyPattern =
-    "(¥|￥|€|\\$|£|[A-Z]{3}|RMB|CNY|NZD|AUD|USD|EUR|GBP|JPY|DKK|ISK|CHF|CAD|HKD|SGD|THB|韩元|日元|人民币|元|纽币|新西兰元|澳币|澳元|美元|美金|欧元|欧|英镑|丹麦克朗|冰岛克朗|瑞士法郎|港币|新币|泰铢)";
+    "(¥|￥|€|\\$|£|[A-Z]{3}|RMB|CNY|NZD|AUD|USD|EUR|GBP|JPY|DKK|ISK|CHF|CAD|HKD|SGD|THB|韩元|日元|人民币|元|块|纽币|新西兰元|澳币|澳元|美元|美金|欧元|欧|英镑|丹麦克朗|冰岛克朗|瑞士法郎|港币|新币|泰铢)";
   const amountPattern = "(\\d{1,3}(?:,\\d{3})+(?:\\.\\d+)?|\\d+(?:[.,]\\d+)?)";
   const before = new RegExp(`^\\s*${currencyPattern}\\s*${amountPattern}\\s*$`, "i");
   const after = new RegExp(`^\\s*${amountPattern}\\s*${currencyPattern}\\s*$`, "i");
@@ -258,6 +261,29 @@ function parseCapture2MoneyInput(value: string, fallbackCurrency = "NZD") {
     };
   }
   return null;
+}
+
+function isLikelyEmptyVoiceTranscript(value: string) {
+  const normalized = value
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[，,。.!！?？、]/g, "");
+  if (!normalized) return true;
+
+  const promptSamples = [
+    "今天都有什么行程",
+    "今天有什么安排",
+    "导航去酒店",
+    "停车50欧",
+    "加油100欧",
+    "今晚订了酒店",
+  ];
+  const sampleHits = promptSamples.filter((sample) =>
+    normalized.includes(sample.replace(/\s+/g, "")),
+  ).length;
+  if (sampleHits >= 3) return true;
+
+  return /^(嗯+|啊+|呃+|额+|唔+|silence|blank|nospeech)$/i.test(normalized);
 }
 
 function addDateDays(date: string, days: number) {
@@ -380,6 +406,33 @@ function plannerKindForClassification(classification: Capture2SafeClassification
   if (reservationType === "car") return "car";
   if (reservationType === "reservation") return "reservation";
   return "activity";
+}
+
+function plannerKindForText(
+  value: string,
+  classification: Capture2SafeClassification,
+): Capture2PlannerKind {
+  const text = value.toLowerCase();
+  if (/住宿|民宿|公寓|airbnb|lodging|accommodation/.test(text)) return "lodging";
+  if (/酒店|hotel/.test(text)) return "hotel";
+  if (/机票|航班|飞机|flight/.test(text)) return "flight";
+  if (/餐厅|饭店|晚饭|午饭|早餐|restaurant|dinner|lunch|meal/.test(text)) {
+    return "restaurant";
+  }
+  if (/船票|渡轮|ferry/.test(text)) return "ferry";
+  if (/租车|取车|还车|car rental|rental car/.test(text)) return "car";
+  if (/门票|票|预订|预约|booking|ticket|reservation/.test(text)) return "reservation";
+  return plannerKindForClassification(classification);
+}
+
+function extractedTitleOrDefault(
+  value: string,
+  extractedTitle: string | undefined,
+  fallbackTitle: string,
+) {
+  const title = extractedTitle?.trim();
+  if (title && title !== value.trim()) return title;
+  return fallbackTitle;
 }
 
 function mediaKind(file: File): Capture2UploadItem["kind"] {
@@ -631,6 +684,13 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
       setLastAudioFile(file);
       void transcribeAndSave(file);
     },
+    onNoSpeech: () => {
+      setLastAudioFile(null);
+      setText("");
+      setInterpretation(null);
+      setStatus(null);
+      setError(t("capture2.error.noSpeech"));
+    },
     onError: (recordError) => {
       setError(getErrorMessage(recordError, t("capture2.error.recording")));
     },
@@ -855,12 +915,20 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
 
   function openCapture2(options?: Capture2OpenOptions) {
     const resolvedMemoryContext = resolveMemoryContext(options);
+    const nextMode = options?.mode ?? "home";
+    const nextQuickForm =
+      nextMode === "expense" || nextMode === "planner"
+        ? defaultCapture2QuickForm(options?.plannerKind ?? "activity", {
+            date: resolvedMemoryContext.dateKey,
+            ...options?.quickFormPrefill,
+          })
+        : defaultCapture2QuickForm();
     setTripId(resolveTripId(options));
     setMemoryContext(resolvedMemoryContext);
     setJourneyMemoryContext(
       resolvedMemoryContext.source === "journey_day" ? resolvedMemoryContext : null,
     );
-    setMode("home");
+    setMode(nextMode);
     setTextDestination("inbox");
     setText("");
     setSelectedTextIntent(null);
@@ -868,7 +936,7 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
     setError(null);
     setUploadItems([]);
     setInterpretation(null);
-    setQuickForm(defaultCapture2QuickForm());
+    setQuickForm(nextQuickForm);
     setIsOpen(true);
   }
 
@@ -1162,7 +1230,11 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
     if (classification.action === "open_expense_form") {
       setQuickForm(
         defaultCapture2QuickForm("activity", {
-          title: classification.extracted.title || t("capture2.prefill.expenseTitle"),
+          title: extractedTitleOrDefault(
+            value,
+            classification.extracted.title,
+            t("capture2.prefill.expenseTitle"),
+          ),
           amount: classification.extracted.amount || "",
           currency: normalizeCapture2Currency(
             classification.extracted.currency || "NZD",
@@ -1178,14 +1250,20 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
     }
 
     if (classification.action === "open_planner_form") {
-      const plannerKind = plannerKindForClassification(classification);
+      const plannerKind = plannerKindForText(value, classification);
+      const plannerDefaults = plannerKindDefaults(plannerKind, todayDate());
       setQuickForm(
         defaultCapture2QuickForm(plannerKind, {
-          title: classification.extracted.title || value,
-          eventType: (classification.extracted.eventType ?? "activity") as never,
-          reservationType: (classification.extracted.reservationType ?? "other") as never,
+          title: extractedTitleOrDefault(
+            value,
+            classification.extracted.title,
+            plannerDefaults.title,
+          ),
+          eventType: (classification.extracted.eventType ??
+            plannerDefaults.eventType) as ItineraryEventType,
+          reservationType: (classification.extracted.reservationType ??
+            plannerDefaults.reservationType) as ItineraryReservationType,
           date: todayDate(),
-          endDate: todayDate(),
           description: value,
         }),
       );
@@ -1362,18 +1440,26 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
               },
             }
           : intent === "planner"
-            ? {
-                ...classification,
-                intent: "planner",
-                action: "open_planner_form",
-                extracted: {
-                  ...classification.extracted,
-                  title: classification.extracted.title || value,
-                  eventType: classification.extracted.eventType || "activity",
-                  target: "planner",
-                  layer1: "command",
-                },
-              }
+            ? (() => {
+                const plannerKind = plannerKindForText(value, classification);
+                const plannerDefaults = plannerKindDefaults(plannerKind, todayDate());
+                return {
+                  ...classification,
+                  intent: "planner",
+                  action: "open_planner_form",
+                  extracted: {
+                    ...classification.extracted,
+                    title: classification.extracted.title || value,
+                    eventType:
+                      classification.extracted.eventType || plannerDefaults.eventType,
+                    reservationType:
+                      classification.extracted.reservationType ||
+                      plannerDefaults.reservationType,
+                    target: "planner",
+                    layer1: "command",
+                  },
+                };
+              })()
             : {
                 ...classification,
                 intent: "navigation",
@@ -1423,6 +1509,14 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
           },
         },
       });
+      if (isLikelyEmptyVoiceTranscript(result.transcript)) {
+        setLastAudioFile(null);
+        setText("");
+        setInterpretation(null);
+        setStatus(null);
+        setError(t("capture2.error.noSpeech"));
+        return;
+      }
       setText(result.transcript);
       await classifyAndRouteText({
         value: result.transcript,
@@ -1901,7 +1995,7 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
       {isOpen
         ? createPortal(
             <div
-              className="fixed inset-0 z-[80] bg-stone-950/45 p-3 backdrop-blur-sm md:p-6"
+              className="fixed inset-0 z-[80] bg-stone-950/70 p-3 backdrop-blur-xl md:p-6"
               onMouseDown={(event) => {
                 const target = event.target;
                 if (
@@ -1912,9 +2006,9 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
                 }
               }}
             >
-              <div className="mx-auto flex min-h-full max-w-lg flex-col justify-end gap-4 md:justify-center">
+              <div className="mx-auto flex h-full max-w-lg flex-col justify-center gap-4 py-2">
                 {interpretation && currentFeedbackKind ? (
-                  <div className="pointer-events-none fixed inset-0 z-[90] grid place-items-center px-5 py-8">
+                  <div className="pointer-events-none fixed inset-0 z-[90] grid place-items-center bg-stone-950/70 px-5 py-8 backdrop-blur-xl">
                     <div
                       data-capture2-panel
                       className="pointer-events-auto w-full max-w-md rounded-[26px] bg-[#fffdf8] p-5 text-stone-950 shadow-2xl shadow-stone-950/35"
@@ -2170,7 +2264,7 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
                 ) : null}
                 <section
                   data-capture2-panel
-                  className="w-full rounded-[28px] bg-[#fffdf8] p-5 shadow-2xl shadow-stone-950/25"
+                  className="max-h-[calc(100svh-2rem)] w-full overflow-y-auto overscroll-contain rounded-[28px] bg-[#fffdf8] p-5 shadow-2xl shadow-stone-950/25"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div>
@@ -2613,10 +2707,10 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
                             setSelectedTextIntent(null);
                           }
                         }}
-                        rows={12}
+                        rows={6}
                         autoFocus
                         placeholder={t("capture2.text.memoryPlaceholder")}
-                        className="mt-4 w-full resize-none rounded-3xl border border-stone-200 bg-white p-4 text-base font-semibold leading-7 text-stone-950 outline-none focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100"
+                        className="mt-4 max-h-[28svh] min-h-40 w-full resize-y rounded-3xl border border-stone-200 bg-white p-4 text-base font-semibold leading-7 text-stone-950 outline-none focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100 sm:min-h-56"
                       />
 
                       <div className="mt-3 space-y-2">
@@ -2678,19 +2772,31 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
                         type="button"
                         onPointerDown={(event) => {
                           event.preventDefault();
+                          event.currentTarget.setPointerCapture?.(event.pointerId);
                           if (!isBusy && canUseJourney) void recorder.start();
                         }}
                         onPointerUp={(event) => {
                           event.preventDefault();
+                          event.currentTarget.releasePointerCapture?.(event.pointerId);
                           if (recorder.isRecording) recorder.stop();
                         }}
-                        onPointerCancel={() => {
+                        onPointerCancel={(event) => {
+                          event.currentTarget.releasePointerCapture?.(event.pointerId);
                           if (recorder.isRecording) recorder.stop();
                         }}
+                        onContextMenu={(event) => event.preventDefault()}
+                        onDragStart={(event) => event.preventDefault()}
                         onClick={() => {
                           if (!canUseJourney) setError(t("capture2.error.noJourney"));
                         }}
-                        className={`mx-auto flex aspect-square w-40 flex-col items-center justify-center rounded-full text-white shadow-2xl transition active:scale-95 ${
+                        draggable={false}
+                        style={{
+                          WebkitTouchCallout: "none",
+                          WebkitTapHighlightColor: "transparent",
+                          WebkitUserSelect: "none",
+                          userSelect: "none",
+                        }}
+                        className={`mx-auto flex aspect-square w-40 touch-none select-none flex-col items-center justify-center rounded-full text-white shadow-2xl transition active:scale-95 ${
                           recorder.isRecording
                             ? "bg-red-600 shadow-red-950/25"
                             : "bg-emerald-700 shadow-emerald-950/25"

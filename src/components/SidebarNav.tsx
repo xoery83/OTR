@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useCapture2Preview } from "@/components/Capture2PreviewProvider";
-import { useCaptureModal } from "@/components/CaptureModalProvider";
 import { useI18n } from "@/components/I18nProvider";
 import { OtrLogo } from "@/components/OtrLogo";
 import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
@@ -240,7 +239,6 @@ function Icon({ name }: { name: NavIcon }) {
 export function SidebarNav() {
   const pathname = usePathname();
   const { t } = useI18n();
-  const { openCapture } = useCaptureModal();
   const { openCapture2 } = useCapture2Preview();
   const tripId = getActiveTripId(pathname);
   const isChatPage = Boolean(pathname.match(/^\/trips\/[^/]+\/chat$/));
@@ -406,31 +404,19 @@ export function SidebarNav() {
 
     if (item.icon === "capture") {
       return (
-        <div key={item.labelKey} className="space-y-1">
-          <button
-            type="button"
-            onClick={() => openCapture({ tripId, entryPoint: "global_capture" })}
-            className={itemClass(isActive(item.href))}
-            title={label}
-            aria-label={label}
-          >
-            <Icon name={item.icon} />
-            <span className="min-w-0 truncate">
-              {label}
-            </span>
-          </button>
-          {tripId && !isChatPage ? (
-            <button
-              type="button"
-              onClick={() => openCapture2({ tripId })}
-              className="ml-8 rounded-full border border-stone-200 bg-stone-50 px-2 py-0.5 text-left text-[10px] font-black uppercase tracking-[0.12em] text-stone-500 transition hover:bg-stone-100"
-              title="Capture Beta"
-              aria-label="Capture Beta"
-            >
-              Beta
-            </button>
-          ) : null}
-        </div>
+        <button
+          key={item.labelKey}
+          type="button"
+          onClick={() => openCapture2({ tripId })}
+          className={itemClass(isActive(item.href))}
+          title={label}
+          aria-label={label}
+        >
+          <Icon name={item.icon} />
+          <span className="min-w-0 truncate">
+            {label}
+          </span>
+        </button>
       );
     }
 

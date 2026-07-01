@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
-import { useCaptureModal } from "@/components/CaptureModalProvider";
+import { useCapture2Preview } from "@/components/Capture2PreviewProvider";
 import {
   classifyCapture2SafeIntent,
   type Capture2SafeClassification,
@@ -59,6 +59,11 @@ function formatDate(value: string) {
 
 function todayDate() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function eventDate(event: Capture2EventRow) {
+  const value = event.captured_at || event.created_at;
+  return value ? new Date(value).toISOString().slice(0, 10) : todayDate();
 }
 
 function metadataMediaIds(metadata: Record<string, unknown>) {
@@ -180,8 +185,34 @@ function mediaFileName(asset: MediaAssetRow) {
   return asset.original_file_path || asset.id;
 }
 
+function plannerKindForInboxEvent(
+  text: string,
+  classification: Capture2SafeClassification,
+) {
+  const normalized = text.toLowerCase();
+  if (/住宿|民宿|公寓|airbnb|lodging|accommodation/.test(normalized)) return "lodging";
+  if (/酒店|hotel/.test(normalized)) return "hotel";
+  if (/机票|航班|飞机|flight/.test(normalized)) return "flight";
+  if (/餐厅|饭店|晚饭|午饭|早餐|restaurant|dinner|lunch|meal/.test(normalized)) {
+    return "restaurant";
+  }
+  if (/船票|渡轮|ferry/.test(normalized)) return "ferry";
+  if (/租车|取车|还车|car rental|rental car/.test(normalized)) return "car";
+  if (/门票|票|预订|预约|booking|ticket|reservation/.test(normalized)) {
+    return "reservation";
+  }
+
+  const reservationType = classification.extracted.reservationType;
+  if (reservationType === "hotel") return "hotel";
+  if (reservationType === "flight") return "flight";
+  if (reservationType === "restaurant") return "restaurant";
+  if (reservationType === "ferry") return "ferry";
+  if (reservationType === "car") return "car";
+  return "activity";
+}
+
 export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
-  const capture = useCaptureModal();
+  const capture2 = useCapture2Preview();
   const [events, setEvents] = useState<Capture2EventRow[]>([]);
   const [mediaAssets, setMediaAssets] = useState<Record<string, MediaAssetRow>>({});
   const [isLoading, setIsLoading] = useState(true);
@@ -386,41 +417,35 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
 
   function openExpenseForm(event: Capture2EventRow) {
     const classification = safeClassification(event);
-    capture.openCapture({
+    const text = rawText(event);
+    capture2.openCapture2({
       tripId: event.journey_id,
-      quickRecordType: "expense",
-      quickRecordPrefill: {
-        title: classification.extracted.title || rawText(event) || "费用支出",
+      mode: "expense",
+      quickFormPrefill: {
+        title: classification.extracted.title || "新消费",
         amount: classification.extracted.amount ?? "",
         currency: classification.extracted.currency || "NZD",
         category: (classification.extracted.category ?? "other") as never,
-        date: todayDate(),
-        description: rawText(event),
+        date: eventDate(event),
+        description: text,
       },
     });
   }
 
   function openPlannerForm(event: Capture2EventRow) {
     const classification = safeClassification(event);
-    const reservationType = classification.extracted.reservationType;
-    const quickRecordType =
-      reservationType === "hotel"
-        ? "hotel"
-        : reservationType === "flight"
-          ? "flight"
-          : reservationType === "reservation"
-            ? "reservation"
-            : "schedule";
-    capture.openCapture({
+    const text = rawText(event);
+    const plannerKind = plannerKindForInboxEvent(text, classification);
+    capture2.openCapture2({
       tripId: event.journey_id,
-      quickRecordType,
-      quickRecordPrefill: {
-        title: classification.extracted.title || rawText(event) || "新的行程",
+      mode: "planner",
+      plannerKind,
+      quickFormPrefill: {
+        title: classification.extracted.title || text || "新行程",
         eventType: (classification.extracted.eventType ?? "activity") as never,
-        reservationType: (reservationType ?? "other") as never,
-        date: todayDate(),
-        endDate: todayDate(),
-        description: rawText(event),
+        reservationType: (classification.extracted.reservationType ?? "other") as never,
+        date: eventDate(event),
+        description: text,
       },
     });
   }
