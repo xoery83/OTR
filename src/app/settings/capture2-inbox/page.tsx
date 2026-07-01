@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { useCapture2Preview } from "@/components/Capture2PreviewProvider";
+import { useI18n } from "@/components/I18nProvider";
 import {
   classifyCapture2SafeIntent,
   type Capture2SafeClassification,
@@ -44,6 +45,9 @@ type MediaAssetRow = {
   ai_metadata: Record<string, unknown> | null;
   created_at: string;
 };
+
+const REVIEW_PAGE_SIZE = 20;
+const REVIEW_FETCH_BATCH_SIZE = 50;
 
 function asStringArray(value: unknown) {
   return Array.isArray(value)
@@ -105,8 +109,6 @@ function eventMediaIds(event: Capture2EventRow) {
 
 type PrimarySuggestion = {
   kind: "memory" | "expense" | "planner" | "photos" | "later";
-  label: string;
-  buttonLabel: string;
 };
 
 function inputIcon(event: Capture2EventRow, ids: string[]) {
@@ -137,15 +139,15 @@ function primarySuggestion(
   const ids = eventMediaIds(event);
 
   if (classification.intent === "expense" && classification.action === "open_expense_form") {
-    return { kind: "expense", label: "添加消费", buttonLabel: "添加消费" };
+    return { kind: "expense" };
   }
 
   if (classification.intent === "planner" && classification.action === "open_planner_form") {
-    return { kind: "planner", label: "添加行程", buttonLabel: "添加行程" };
+    return { kind: "planner" };
   }
 
   if (!text && ids.length > 0) {
-    return { kind: "photos", label: "整理照片", buttonLabel: "整理照片" };
+    return { kind: "photos" };
   }
 
   if (
@@ -153,15 +155,15 @@ function primarySuggestion(
     text &&
     isRecordLikeStatement(text, classification)
   ) {
-    return { kind: "memory", label: "保存为记忆", buttonLabel: "保存为记忆" };
+    return { kind: "memory" };
   }
 
-  return { kind: "later", label: "稍后处理", buttonLabel: "保持待处理" };
+  return { kind: "later" };
 }
 
-function previewText(value: string) {
+function previewText(value: string, emptyText: string) {
   const trimmed = value.trim();
-  if (!trimmed) return "没有文字内容";
+  if (!trimmed) return emptyText;
   return trimmed.length > 86 ? `${trimmed.slice(0, 86)}...` : trimmed;
 }
 
@@ -213,9 +215,13 @@ function plannerKindForInboxEvent(
 
 export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
   const capture2 = useCapture2Preview();
+  const { t } = useI18n();
   const [events, setEvents] = useState<Capture2EventRow[]>([]);
   const [mediaAssets, setMediaAssets] = useState<Record<string, MediaAssetRow>>({});
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMoreEvents, setHasMoreEvents] = useState(false);
+  const [nextEventCursor, setNextEventCursor] = useState<string | null>(null);
   const [workingEventId, setWorkingEventId] = useState<string | null>(null);
   const [expandedActions, setExpandedActions] = useState<Record<string, boolean>>({});
   const [developerMode, setDeveloperMode] = useState(false);
@@ -223,88 +229,169 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function loadEvents() {
-    setIsLoading(true);
+  function eventMatchesReviewMode(event: Capture2EventRow) {
+    const inbox = event.metadata?.capture2Inbox;
+    const inboxStatus =
+      inbox && typeof inbox === "object"
+        ? (inbox as { status?: unknown }).status
+        : null;
+    const isArchived =
+      event.status === "archived" ||
+      event.status === "processed" ||
+      inboxStatus === "archived" ||
+      inboxStatus === "processed";
+    if (reviewMode === "archived") return isArchived;
+    if (isArchived) return false;
+
+    const capture2 = event.metadata?.capture2;
+    const safetyClass =
+      capture2 && typeof capture2 === "object"
+        ? (capture2 as { safetyClass?: unknown }).safetyClass
+        : null;
+    return (
+      event.status === "raw" ||
+      event.status === "deferred" ||
+      safetyClass === "deferred"
+    );
+  }
+
+  async function loadMediaAssetsForRows(rows: Capture2EventRow[], append: boolean) {
+    const ids = [...new Set(rows.flatMap(eventMediaIds))];
+    if (ids.length === 0) {
+      if (!append) setMediaAssets({});
+      return;
+    }
+
+    const { data: mediaData, error: mediaError } = await supabase
+      .from("media_assets")
+      .select(
+        "id, asset_type, mime_type, original_file_size, original_file_path, original_drive_file_id, original_drive_web_url, provider_file_id, provider_web_url, provider_thumbnail_url, thumbnail_url, preview_url, width, height, processing_status, ai_metadata, created_at",
+      )
+      .in("id", ids);
+
+    if (mediaError) throw mediaError;
+    const nextAssets = Object.fromEntries(
+      ((mediaData ?? []) as MediaAssetRow[]).map((asset) => [asset.id, asset]),
+    );
+    setMediaAssets((current) => (append ? { ...current, ...nextAssets } : nextAssets));
+  }
+
+  async function loadEvents(options: { append?: boolean } = {}) {
+    const append = Boolean(options.append);
+    if (append && (!hasMoreEvents || isLoadingMore)) return;
+    if (append) setIsLoadingMore(true);
+    else setIsLoading(true);
     setError(null);
     try {
-      const { data, error: eventError } = await supabase
-        .from("journey_capture_events")
-        .select(
-          "id, journey_id, input_type, original_input, transcription_text, referenced_photo_ids, referenced_video_ids, metadata, status, captured_at, created_at",
-        )
-        .filter("metadata->>source", "eq", "capture2_preview")
-        .order("created_at", { ascending: false })
-        .limit(150);
+      let cursor = append ? nextEventCursor : null;
+      const matchedRows: Capture2EventRow[] = [];
+      let lastBatchLength = 0;
+      let batchesRead = 0;
 
-      if (eventError) throw eventError;
-
-      const scopedRows = tripId
-        ? ((data ?? []) as Capture2EventRow[]).filter(
-            (event) => event.journey_id === tripId,
+      while (matchedRows.length < REVIEW_PAGE_SIZE && batchesRead < 4) {
+        batchesRead += 1;
+        let query = supabase
+          .from("journey_capture_events")
+          .select(
+            "id, journey_id, input_type, original_input, transcription_text, referenced_photo_ids, referenced_video_ids, metadata, status, captured_at, created_at",
           )
-        : ((data ?? []) as Capture2EventRow[]);
+          .filter("metadata->>source", "eq", "capture2_preview")
+          .order("created_at", { ascending: false })
+          .limit(REVIEW_FETCH_BATCH_SIZE);
 
-      const rows = scopedRows.filter((event) => {
-        const inbox = event.metadata?.capture2Inbox;
-        const inboxStatus =
-          inbox && typeof inbox === "object"
-            ? (inbox as { status?: unknown }).status
-            : null;
-        const isArchived =
-          event.status === "archived" ||
-          event.status === "processed" ||
-          inboxStatus === "archived" ||
-          inboxStatus === "processed";
-        if (reviewMode === "archived") return isArchived;
-        if (isArchived) return false;
+        if (tripId) query = query.eq("journey_id", tripId);
+        if (cursor) query = query.lt("created_at", cursor);
 
-        const capture2 = event.metadata?.capture2;
-        const safetyClass =
-          capture2 && typeof capture2 === "object"
-            ? (capture2 as { safetyClass?: unknown }).safetyClass
-            : null;
-        return (
-          event.status === "raw" ||
-          event.status === "deferred" ||
-          safetyClass === "deferred"
-        );
-      });
-      setEvents(rows);
+        const { data, error: eventError } = await query;
+        if (eventError) throw eventError;
 
-      const ids = [...new Set(rows.flatMap(eventMediaIds))];
-      if (ids.length === 0) {
-        setMediaAssets({});
-        return;
+        const batch = (data ?? []) as Capture2EventRow[];
+        lastBatchLength = batch.length;
+        if (batch.length === 0) break;
+
+        cursor = batch[batch.length - 1]?.created_at ?? cursor;
+        matchedRows.push(...batch.filter(eventMatchesReviewMode));
+
+        if (batch.length < REVIEW_FETCH_BATCH_SIZE) break;
       }
 
-      const { data: mediaData, error: mediaError } = await supabase
-        .from("media_assets")
-        .select(
-          "id, asset_type, mime_type, original_file_size, original_file_path, original_drive_file_id, original_drive_web_url, provider_file_id, provider_web_url, provider_thumbnail_url, thumbnail_url, preview_url, width, height, processing_status, ai_metadata, created_at",
-        )
-        .in("id", ids);
-
-      if (mediaError) throw mediaError;
-      setMediaAssets(
-        Object.fromEntries(
-          ((mediaData ?? []) as MediaAssetRow[]).map((asset) => [asset.id, asset]),
-        ),
-      );
+      const pageRows = matchedRows.slice(0, REVIEW_PAGE_SIZE);
+      setEvents((current) => {
+        if (!append) return pageRows;
+        const seen = new Set(current.map((event) => event.id));
+        return [...current, ...pageRows.filter((event) => !seen.has(event.id))];
+      });
+      setNextEventCursor(cursor);
+      setHasMoreEvents(lastBatchLength === REVIEW_FETCH_BATCH_SIZE);
+      await loadMediaAssetsForRows(pageRows, append);
     } catch (loadError) {
-      setError(getErrorMessage(loadError, "Could not load Capture Inbox."));
+      setError(getErrorMessage(loadError, t("captureInbox.error.load")));
     } finally {
-      setIsLoading(false);
+      if (append) setIsLoadingMore(false);
+      else setIsLoading(false);
     }
   }
 
   useEffect(() => {
+    setEvents([]);
+    setMediaAssets({});
+    setNextEventCursor(null);
+    setHasMoreEvents(false);
     void loadEvents();
   }, [tripId, reviewMode]);
+
+  useEffect(() => {
+    if (!hasMoreEvents || isLoading || isLoadingMore) return;
+    const sentinel = document.querySelector("[data-capture-inbox-load-more]");
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void loadEvents({ append: true });
+        }
+      },
+      { rootMargin: "480px 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMoreEvents, isLoading, isLoadingMore, nextEventCursor, tripId, reviewMode]);
 
   const mediaCount = useMemo(
     () => events.reduce((count, event) => count + eventMediaIds(event).length, 0),
     [events],
   );
+
+  function suggestionCopy(suggestion: PrimarySuggestion) {
+    if (suggestion.kind === "memory") {
+      return {
+        label: t("captureInbox.suggestion.memory"),
+        buttonLabel: t("captureInbox.action.saveMemory"),
+      };
+    }
+    if (suggestion.kind === "expense") {
+      return {
+        label: t("captureInbox.suggestion.expense"),
+        buttonLabel: t("captureInbox.action.addExpense"),
+      };
+    }
+    if (suggestion.kind === "planner") {
+      return {
+        label: t("captureInbox.suggestion.planner"),
+        buttonLabel: t("captureInbox.action.addPlan"),
+      };
+    }
+    if (suggestion.kind === "photos") {
+      return {
+        label: t("captureInbox.suggestion.photos"),
+        buttonLabel: t("captureInbox.action.organizePhotos"),
+      };
+    }
+    return {
+      label: t("captureInbox.suggestion.later"),
+      buttonLabel: t("captureInbox.action.keepPending"),
+    };
+  }
 
   async function updateEvent(
     event: Capture2EventRow,
@@ -336,9 +423,9 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
     try {
       await updateEvent(event, "archived", { action: "archive" });
       setEvents((current) => current.filter((item) => item.id !== event.id));
-      setNotice("已归档。");
+      setNotice(t("captureInbox.notice.archived"));
     } catch (archiveError) {
-      setError(getErrorMessage(archiveError, "Archive failed."));
+      setError(getErrorMessage(archiveError, t("captureInbox.error.archive")));
     } finally {
       setWorkingEventId(null);
     }
@@ -379,9 +466,9 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
         deletedMemoryEntryId: memoryEntryId,
       });
       setEvents((current) => current.filter((item) => item.id !== event.id));
-      setNotice("已取消操作，条目已回到待整理。");
+      setNotice(t("captureInbox.notice.restored"));
     } catch (undoError) {
-      setError(getErrorMessage(undoError, "Undo failed."));
+      setError(getErrorMessage(undoError, t("captureInbox.error.undo")));
     } finally {
       setWorkingEventId(null);
     }
@@ -390,7 +477,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
   async function convertToMemory(event: Capture2EventRow) {
     const text = rawText(event).trim();
     if (!text) {
-      setError("这条 capture 没有可转换的文字。");
+      setError(t("captureInbox.error.noText"));
       return;
     }
 
@@ -407,9 +494,9 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
         memoryEntryId: memory.id,
       });
       setEvents((current) => current.filter((item) => item.id !== event.id));
-      setNotice("已转换为 Memory。");
+      setNotice(t("captureInbox.notice.memory"));
     } catch (convertError) {
-      setError(getErrorMessage(convertError, "Convert to Memory failed."));
+      setError(getErrorMessage(convertError, t("captureInbox.error.memory")));
     } finally {
       setWorkingEventId(null);
     }
@@ -422,7 +509,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
       tripId: event.journey_id,
       mode: "expense",
       quickFormPrefill: {
-        title: classification.extracted.title || "新消费",
+        title: classification.extracted.title || t("capture2.prefill.expenseTitle"),
         amount: classification.extracted.amount ?? "",
         currency: classification.extracted.currency || "NZD",
         category: (classification.extracted.category ?? "other") as never,
@@ -441,7 +528,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
       mode: "planner",
       plannerKind,
       quickFormPrefill: {
-        title: classification.extracted.title || text || "新行程",
+        title: classification.extracted.title || text || t("captureInbox.prefill.plan"),
         eventType: (classification.extracted.eventType ?? "activity") as never,
         reservationType: (classification.extracted.reservationType ?? "other") as never,
         date: eventDate(event),
@@ -464,10 +551,10 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
       return;
     }
     if (suggestion.kind === "photos") {
-      setNotice("照片和视频已经安全保存，稍后可以继续整理。");
+      setNotice(t("captureInbox.notice.mediaSaved"));
       return;
     }
-    setNotice("已保留在 Today Review，不会自动执行。");
+    setNotice(t("captureInbox.notice.kept"));
   }
 
   function toggleActions(eventId: string) {
@@ -483,15 +570,19 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-700">
-              Capture 2.0
+              {t("captureInbox.eyebrow")}
             </p>
-            <h1 className="mt-2 text-3xl font-black">Today Review</h1>
+            <h1 className="mt-2 text-3xl font-black">{t("captureInbox.title")}</h1>
             <p className="mt-2 text-sm font-semibold text-stone-600">
               {reviewMode === "pending"
-                ? `今天还有 ${events.length} 条 Capture 等待整理`
-                : `已归档 ${events.length} 条 Capture`}
-              {" · "}
-              {mediaCount} 个媒体
+                ? t("captureInbox.summary.pending", {
+                    count: events.length,
+                    media: mediaCount,
+                  })
+                : t("captureInbox.summary.archived", {
+                    count: events.length,
+                    media: mediaCount,
+                  })}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -504,7 +595,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                   : "bg-white text-stone-800 shadow-sm"
               }`}
             >
-              待整理
+              {t("captureInbox.tab.pending")}
             </button>
             <button
               type="button"
@@ -515,7 +606,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                   : "bg-white text-stone-800 shadow-sm"
               }`}
             >
-              已归档
+              {t("captureInbox.tab.archived")}
             </button>
             <button
               type="button"
@@ -526,7 +617,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                   : "bg-white text-stone-800 shadow-sm"
               }`}
             >
-              查看开发信息
+              {t("captureInbox.action.developer")}
             </button>
             <button
               type="button"
@@ -534,7 +625,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
               disabled={isLoading}
               className="rounded-lg bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:bg-stone-300"
             >
-              {isLoading ? "刷新中..." : "刷新"}
+              {isLoading ? t("captureInbox.action.refreshing") : t("captureInbox.action.refresh")}
             </button>
           </div>
         </div>
@@ -554,15 +645,15 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
         <div className="mt-6 space-y-3">
           {isLoading && events.length === 0 ? (
             <div className="rounded-lg bg-white p-5 text-sm font-bold text-stone-600">
-              正在读取 Today Review...
+              {t("captureInbox.loading")}
             </div>
           ) : null}
 
           {!isLoading && events.length === 0 ? (
             <div className="rounded-lg bg-white p-5 text-sm font-bold text-stone-600">
               {reviewMode === "pending"
-                ? "今天没有等待整理的 Capture。"
-                : "还没有归档的 Capture。"}
+                ? t("captureInbox.empty.pending")
+                : t("captureInbox.empty.archived")}
             </div>
           ) : null}
 
@@ -577,6 +668,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
             const suggestion = primarySuggestion(event, classification);
             const isExpanded = Boolean(expandedActions[event.id]);
             const isArchivedMode = reviewMode === "archived";
+            const suggestionText = suggestionCopy(suggestion);
 
             return (
               <article
@@ -594,12 +686,12 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                       </span>
                       {ids.length > 0 ? (
                         <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-bold text-stone-600">
-                          {ids.length} 个媒体
+                          {t("captureInbox.media.count", { count: ids.length })}
                         </span>
                       ) : null}
                     </div>
                     <p className="mt-2 text-base font-black leading-7 text-stone-950">
-                      {previewText(text)}
+                      {previewText(text, t("captureInbox.emptyText"))}
                     </p>
                   </div>
                 </div>
@@ -631,7 +723,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                             )}
                             {isVideo ? (
                               <span className="absolute bottom-2 left-2 rounded-full bg-stone-950/75 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-white">
-                                Video
+                                {t("capture2.media.video")}
                               </span>
                             ) : null}
                           </div>
@@ -642,7 +734,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                             <p className="mt-0.5 truncate text-[11px] font-bold text-stone-500">
                               {formatBytes(asset.original_file_size) ||
                                 asset.processing_status ||
-                                "媒体"}
+                                t("captureInbox.media.generic")}
                             </p>
                           </div>
                         </div>
@@ -658,11 +750,15 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
 
                 <div className="mt-4 border-t border-stone-100 pt-4">
                   <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">
-                    {isArchivedMode ? "已处理" : "AI 建议"}
+                    {isArchivedMode
+                      ? t("captureInbox.section.processed")
+                      : t("captureInbox.section.suggestion")}
                   </p>
                   <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
                     <p className="text-lg font-black text-stone-950">
-                      {isArchivedMode ? "已归档，可取消操作" : suggestion.label}
+                      {isArchivedMode
+                        ? t("captureInbox.status.archivedUndoable")
+                        : suggestionText.label}
                     </p>
                     <div className="flex flex-wrap gap-2">
                       {isArchivedMode ? (
@@ -672,7 +768,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                           disabled={isWorking}
                           className="rounded-lg bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:bg-stone-300"
                         >
-                          取消操作
+                          {t("captureInbox.action.undo")}
                         </button>
                       ) : (
                         <button
@@ -681,7 +777,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                           disabled={isWorking || (suggestion.kind === "memory" && !text.trim())}
                           className="rounded-lg bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:bg-stone-300"
                         >
-                          {suggestion.buttonLabel}
+                          {suggestionText.buttonLabel}
                         </button>
                       )}
                       <button
@@ -690,7 +786,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                         disabled={isWorking}
                         className="rounded-lg bg-stone-100 px-4 py-3 text-sm font-black text-stone-800 disabled:bg-stone-200"
                       >
-                        换一种
+                        {t("captureInbox.action.more")}
                       </button>
                       {!isArchivedMode ? (
                         <button
@@ -699,7 +795,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                           disabled={isWorking}
                           className="rounded-lg bg-stone-100 px-4 py-3 text-sm font-black text-stone-800 disabled:bg-stone-200"
                         >
-                          归档
+                          {t("captureInbox.action.archive")}
                         </button>
                       ) : null}
                     </div>
@@ -709,7 +805,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                 {isExpanded ? (
                   <div className="mt-4 border-t border-stone-100 pt-4">
                     <p className="text-xs font-black uppercase tracking-[0.14em] text-stone-500">
-                      换一种处理
+                      {t("captureInbox.section.moreActions")}
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {isArchivedMode ? (
@@ -719,7 +815,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                           disabled={isWorking}
                           className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
                         >
-                          取消操作并回到待整理
+                          {t("captureInbox.action.undoToPending")}
                         </button>
                       ) : (
                         <>
@@ -729,7 +825,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                             disabled={isWorking || !text.trim()}
                             className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
                           >
-                            保存为记忆
+                            {t("captureInbox.action.saveMemory")}
                           </button>
                           <button
                             type="button"
@@ -737,7 +833,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                             disabled={isWorking}
                             className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
                           >
-                            添加消费
+                            {t("captureInbox.action.addExpense")}
                           </button>
                           <button
                             type="button"
@@ -745,7 +841,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                             disabled={isWorking}
                             className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white disabled:bg-stone-300"
                           >
-                            添加行程
+                            {t("captureInbox.action.addPlan")}
                           </button>
                           <button
                             type="button"
@@ -753,7 +849,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                             disabled={isWorking}
                             className="rounded-lg bg-stone-200 px-3 py-2 text-xs font-black text-stone-800 disabled:bg-stone-100"
                           >
-                            归档
+                            {t("captureInbox.action.archive")}
                           </button>
                         </>
                       )}
@@ -761,7 +857,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
 
                     <details className="mt-4 rounded-lg bg-stone-950 p-3 text-white" open={developerMode}>
                       <summary className="cursor-pointer text-xs font-black uppercase tracking-[0.14em] text-stone-200">
-                        查看技术信息
+                        {t("captureInbox.section.technical")}
                       </summary>
                       <div className="mt-3 space-y-3">
                         <div className="rounded-lg bg-white/10 p-3">
@@ -773,13 +869,15 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                         <div className="rounded-lg bg-white/10 p-3">
                           <p className="text-xs font-black text-stone-300">raw_text</p>
                           <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-white">
-                            {text || "No raw text"}
+                            {text || t("captureInbox.technical.noRawText")}
                           </p>
                         </div>
                         <div className="rounded-lg bg-white/10 p-3">
                           <p className="text-xs font-black text-stone-300">media_asset_ids</p>
                           <p className="mt-1 break-all font-mono text-xs text-white">
-                            {ids.length > 0 ? ids.join(", ") : "none"}
+                            {ids.length > 0
+                              ? ids.join(", ")
+                              : t("captureInbox.technical.none")}
                           </p>
                         </div>
                         <pre className="max-h-72 overflow-auto rounded-lg bg-black/40 p-3 text-xs leading-5 text-stone-50">
@@ -802,6 +900,28 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
               </article>
             );
           })}
+          <div
+            data-capture-inbox-load-more
+            className="flex min-h-16 items-center justify-center"
+          >
+            {isLoadingMore ? (
+              <div className="rounded-lg bg-white px-4 py-3 text-sm font-black text-stone-600 shadow-sm">
+                {t("captureInbox.loadingMore")}
+              </div>
+            ) : hasMoreEvents ? (
+              <button
+                type="button"
+                onClick={() => void loadEvents({ append: true })}
+                className="rounded-lg bg-white px-4 py-3 text-sm font-black text-stone-800 shadow-sm"
+              >
+                {t("captureInbox.action.loadMore")}
+              </button>
+            ) : events.length > 0 ? (
+              <p className="text-xs font-bold text-stone-500">
+                {t("captureInbox.noMore")}
+              </p>
+            ) : null}
+          </div>
         </div>
       </div>
     </main>

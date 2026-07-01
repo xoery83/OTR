@@ -1622,7 +1622,7 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
           await createRawCaptureEvent({
             tripId: activeTripId,
             inputType: "photo",
-            originalInput: `Capture 2.0 photo upload: ${imageFile.name || "photo"}`,
+            originalInput: `Capture photo upload: ${imageFile.name || "photo"}`,
             capturedAt: new Date().toISOString(),
             metadata: {
               source: "capture2_photo_memory",
@@ -1648,7 +1648,7 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
         await createRawCaptureEvent({
           tripId: activeTripId,
           inputType: "photo",
-          originalInput: `Capture 2.0 photo upload: ${imageIndexes.length} file(s)`,
+          originalInput: `Capture photo upload: ${imageIndexes.length} file(s)`,
           capturedAt: new Date().toISOString(),
           metadata: {
             source: "capture2_photo_memory",
@@ -1995,7 +1995,7 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
       {isOpen
         ? createPortal(
             <div
-              className="fixed inset-0 z-[80] bg-stone-950/70 p-3 backdrop-blur-xl md:p-6"
+              className="fixed inset-0 z-[2147483200] bg-stone-950/70 p-3 backdrop-blur-xl md:p-6"
               onMouseDown={(event) => {
                 const target = event.target;
                 if (
@@ -2008,7 +2008,7 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
             >
               <div className="mx-auto flex h-full max-w-lg flex-col justify-center gap-4 py-2">
                 {interpretation && currentFeedbackKind ? (
-                  <div className="pointer-events-none fixed inset-0 z-[90] grid place-items-center bg-stone-950/70 px-5 py-8 backdrop-blur-xl">
+                  <div className="pointer-events-none fixed inset-0 z-[2147483300] grid place-items-center bg-stone-950/70 px-5 py-8 backdrop-blur-xl">
                     <div
                       data-capture2-panel
                       className="pointer-events-auto w-full max-w-md rounded-[26px] bg-[#fffdf8] p-5 text-stone-950 shadow-2xl shadow-stone-950/35"

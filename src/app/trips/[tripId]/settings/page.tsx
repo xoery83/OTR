@@ -475,19 +475,6 @@ function SettingsContent() {
         </p>
       ) : null}
 
-      <Link
-        href={`/trips/${tripId}/capture2`}
-        className="block rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50"
-      >
-        <p className="text-sm font-semibold text-emerald-700">Capture 2.0</p>
-        <h2 className="mt-1 text-xl font-semibold text-stone-950">
-          Today Review
-        </h2>
-        <p className="mt-2 text-sm leading-6 text-stone-600">
-          整理这个旅行里等待处理的 Capture，归档或转成记忆、消费和行程。
-        </p>
-      </Link>
-
       {canManageJourney ? (
         <SettingsDisclosure
           title={t("journeySettings.nameTitle")}
@@ -843,6 +830,21 @@ function SettingsContent() {
           </button>
         </SettingsDisclosure>
       ) : null}
+
+      <Link
+        href={`/trips/${tripId}/capture2`}
+        className="block rounded-3xl border border-stone-200 bg-white p-5 shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50"
+      >
+        <p className="text-sm font-semibold text-emerald-700">
+          {t("journeySettings.captureReviewEyebrow")}
+        </p>
+        <h2 className="mt-1 text-xl font-semibold text-stone-950">
+          {t("journeySettings.captureReviewTitle")}
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-stone-600">
+          {t("journeySettings.captureReviewDescription")}
+        </p>
+      </Link>
 
       <Link
         href={`/trips/${tripId}/planner`}
