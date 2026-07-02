@@ -447,6 +447,79 @@ function getAiModelInfo(asset: PhotoAssetWithMemory) {
   return { provider, modelUsed, model, confidence };
 }
 
+function getPhotoIndexV2(asset?: PhotoAssetWithMemory | null) {
+  const metadata = asset?.aiMetadata ?? {};
+  const value = metadata.photoIndexV2 ?? metadata.photo_index_v2;
+  return getRecord(value);
+}
+
+function hasCompletePhotoIndexV2(asset: PhotoAssetWithMemory) {
+  return Boolean(
+    getPhotoIndexV2Record(asset, "designMetadata") &&
+      getPhotoIndexV2Number(
+        asset,
+        "posterSuitability",
+        "computedCoverScore",
+      ) !== null,
+  );
+}
+
+function getPhotoIndexV2Record(
+  asset: PhotoAssetWithMemory,
+  ...path: string[]
+) {
+  let current: unknown = getPhotoIndexV2(asset);
+  for (const key of path) {
+    const record = getRecord(current);
+    if (!record) return null;
+    current = record[key];
+  }
+  return getRecord(current);
+}
+
+function getPhotoIndexV2String(
+  asset: PhotoAssetWithMemory,
+  ...path: string[]
+) {
+  if (path.length === 0) return null;
+  const parent = getPhotoIndexV2Record(asset, ...path.slice(0, -1));
+  return getMetadataString(parent, path[path.length - 1]);
+}
+
+function getPhotoIndexV2Number(
+  asset: PhotoAssetWithMemory,
+  ...path: string[]
+) {
+  if (path.length === 0) return null;
+  const parent = getPhotoIndexV2Record(asset, ...path.slice(0, -1));
+  return getMetadataNumber(parent, path[path.length - 1]);
+}
+
+function getPhotoIndexV2Boolean(
+  asset: PhotoAssetWithMemory,
+  ...path: string[]
+) {
+  if (path.length === 0) return null;
+  const parent = getPhotoIndexV2Record(asset, ...path.slice(0, -1));
+  return getMetadataBoolean(parent, path[path.length - 1]);
+}
+
+function getPhotoIndexV2StringArray(
+  asset: PhotoAssetWithMemory,
+  ...path: string[]
+) {
+  if (path.length === 0) return [];
+  const parent = getPhotoIndexV2Record(asset, ...path.slice(0, -1));
+  const value = parent?.[path[path.length - 1]];
+  return Array.isArray(value)
+    ? value.map((item) => stringifyAiMetadataValue(item)).filter(Boolean)
+    : [];
+}
+
+function formatDebugScore(value: number | null) {
+  return value === null ? "n/a" : String(Math.round(value));
+}
+
 function normalizeSearch(value: string) {
   return value.trim().toLowerCase();
 }
@@ -3562,6 +3635,29 @@ function useDriveThumbnailRepair(tripId: string) {
   );
 }
 
+function mergePhotoAssetsById(
+  current: PhotoAssetWithMemory[],
+  incoming: PhotoAssetWithMemory[],
+) {
+  const next = new Map<string, PhotoAssetWithMemory>();
+
+  for (const photo of current) {
+    next.set(photo.id, photo);
+  }
+
+  for (const photo of incoming) {
+    next.set(photo.id, {
+      ...next.get(photo.id),
+      ...photo,
+    });
+  }
+
+  return [...next.values()].sort(
+    (left, right) =>
+      new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+  );
+}
+
 function PhotoGalleryView({
   photos,
   facesByAssetId,
@@ -3581,6 +3677,19 @@ function PhotoGalleryView({
   const targetPhotoRef = useRef<HTMLElement | null>(null);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [activeFacePhotoId, setActiveFacePhotoId] = useState<string | null>(null);
+  const [debugSortMode, setDebugSortMode] = useState<
+    | "uploaded"
+    | "cover"
+    | "hero"
+    | "background"
+    | "collage"
+    | "aesthetic"
+    | "lighting"
+    | "titleSpace"
+  >("uploaded");
+  const [debugPanelByPhotoId, setDebugPanelByPhotoId] = useState<
+    Record<string, "v2" | "indexing">
+  >({});
   const [selectedFace, setSelectedFace] = useState<{
     assetId: string;
     face: PhotoFace;
@@ -3674,6 +3783,68 @@ function PhotoGalleryView({
 
   const indexedCount = photos.filter((photo) => photo.aiStatus === "indexed").length;
   const driveCount = photos.filter((photo) => photo.isOriginalPreserved).length;
+  const debugSortOptions = [
+    ["uploaded", "最新上传"],
+    ["cover", "Cover"],
+    ["hero", "Hero"],
+    ["background", "Background"],
+    ["collage", "Collage"],
+    ["aesthetic", "Aesthetic"],
+    ["lighting", "Lighting"],
+    ["titleSpace", "Title Space"],
+  ] as const;
+  const debugPhotos = useMemo(() => {
+    const uniquePhotos = new Map<string, PhotoAssetWithMemory>();
+    for (const photo of photos) {
+      const existing = uniquePhotos.get(photo.id);
+      if (
+        !existing ||
+        new Date(photo.createdAt).getTime() > new Date(existing.createdAt).getTime()
+      ) {
+        uniquePhotos.set(photo.id, photo);
+      }
+    }
+    const uploadedScore = (photo: PhotoAssetWithMemory) =>
+      new Date(photo.createdAt).getTime();
+    const score = (photo: PhotoAssetWithMemory) => {
+      if (debugSortMode === "cover") {
+        return getPhotoIndexV2Number(photo, "posterSuitability", "coverScore") ?? -1;
+      }
+      if (debugSortMode === "hero") {
+        return getPhotoIndexV2Number(photo, "posterSuitability", "heroScore") ?? -1;
+      }
+      if (debugSortMode === "background") {
+        return (
+          getPhotoIndexV2Number(photo, "posterSuitability", "backgroundScore") ?? -1
+        );
+      }
+      if (debugSortMode === "collage") {
+        return getPhotoIndexV2Number(photo, "posterSuitability", "collageScore") ?? -1;
+      }
+      if (debugSortMode === "aesthetic") {
+        return getPhotoIndexV2Number(photo, "visualQuality", "overallAesthetic") ?? -1;
+      }
+      if (debugSortMode === "lighting") {
+        return getPhotoIndexV2Number(photo, "visualQuality", "lightingQuality") ?? -1;
+      }
+      if (debugSortMode === "titleSpace") {
+        return getPhotoIndexV2Boolean(
+          photo,
+          "posterSuitability",
+          "supportsLargeTitle",
+        )
+          ? 1
+          : 0;
+      }
+      return uploadedScore(photo);
+    };
+
+    return [...uniquePhotos.values()].sort((left, right) => {
+      const scoreDelta = score(right) - score(left);
+      if (scoreDelta !== 0) return scoreDelta;
+      return uploadedScore(right) - uploadedScore(left);
+    });
+  }, [debugSortMode, photos]);
 
   useEffect(() => {
     if (!targetAssetId) return;
@@ -3703,16 +3874,34 @@ function PhotoGalleryView({
               {t("timeline.debug.driveIndexed", { driveCount, indexedCount })}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={indexPendingPhotos}
-            disabled={activePhotoId !== null || photos.length === indexedCount}
-            className="rounded-full bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
-          >
-            {activePhotoId
-              ? t("timeline.debug.indexing")
-              : t("timeline.debug.indexPending")}
-          </button>
+          <div className="flex flex-col items-stretch gap-2 sm:items-end">
+            <button
+              type="button"
+              onClick={indexPendingPhotos}
+              disabled={activePhotoId !== null || photos.length === indexedCount}
+              className="rounded-full bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-stone-300"
+            >
+              {activePhotoId
+                ? t("timeline.debug.indexing")
+                : t("timeline.debug.indexPending")}
+            </button>
+          </div>
+        </div>
+        <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
+          {debugSortOptions.map(([mode, label]) => (
+            <button
+              type="button"
+              key={mode}
+              onClick={() => setDebugSortMode(mode)}
+              className={`shrink-0 rounded-full px-3 py-2 text-xs font-black ${
+                debugSortMode === mode
+                  ? "bg-stone-950 text-white"
+                  : "bg-stone-100 text-stone-700"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
         {error ? (
           <div className="mt-4 rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">
@@ -3728,13 +3917,146 @@ function PhotoGalleryView({
       ) : null}
 
       <div className="grid gap-4 md:grid-cols-2">
-        {photos.map((photo, index) => {
+        {debugPhotos.map((photo, index) => {
             const summary = getAiSummary(photo);
             const aiError = getAiError(photo);
             const locationHints = getLocationHints(photo);
             const modelInfo = getAiModelInfo(photo);
             const faces = facesByAssetId[photo.id] ?? [];
             const driveUrl = getMediaAssetDriveUrl(photo);
+            const photoIndexV2 = getPhotoIndexV2(photo);
+            const v2SceneType = getPhotoIndexV2String(photo, "content", "sceneType");
+            const v2Orientation = getPhotoIndexV2String(
+              photo,
+              "composition",
+              "orientation",
+            );
+            const v2ShotType = getPhotoIndexV2String(
+              photo,
+              "composition",
+              "shotType",
+            );
+            const v2NegativeSpace = getPhotoIndexV2String(
+              photo,
+              "composition",
+              "negativeSpace",
+            );
+            const v2CoverScore = getPhotoIndexV2Number(
+              photo,
+              "posterSuitability",
+              "coverScore",
+            );
+            const v2ComputedCoverScore =
+              getPhotoIndexV2Number(
+                photo,
+                "posterSuitability",
+                "computedCoverScore",
+              ) ?? v2CoverScore;
+            const v2HeroScore = getPhotoIndexV2Number(
+              photo,
+              "posterSuitability",
+              "heroScore",
+            );
+            const v2ComputedHeroScore =
+              getPhotoIndexV2Number(
+                photo,
+                "posterSuitability",
+                "computedHeroScore",
+              ) ?? v2HeroScore;
+            const v2ScoreGap =
+              v2ComputedCoverScore !== null && v2ComputedHeroScore !== null
+                ? Math.round((v2ComputedCoverScore - v2ComputedHeroScore) * 10) /
+                  10
+                : null;
+            const v2Aesthetic = getPhotoIndexV2Number(
+              photo,
+              "visualQuality",
+              "overallAesthetic",
+            );
+            const v2TypographySpace = getPhotoIndexV2Number(
+              photo,
+              "designMetadata",
+              "typographySpace",
+            );
+            const v2TypographySpacePosition = getPhotoIndexV2String(
+              photo,
+              "designMetadata",
+              "typographySpacePosition",
+            );
+            const v2ClutterLevel = getPhotoIndexV2Number(
+              photo,
+              "designMetadata",
+              "clutterLevel",
+            );
+            const v2CropFlexibility = getPhotoIndexV2Number(
+              photo,
+              "designMetadata",
+              "cropFlexibility",
+            );
+            const v2PublicShareRisk = getPhotoIndexV2Number(
+              photo,
+              "designMetadata",
+              "publicShareRisk",
+            );
+            const v2CompositionType = getPhotoIndexV2String(
+              photo,
+              "designMetadata",
+              "compositionType",
+            );
+            const v2PrimarySubjectType = getPhotoIndexV2String(
+              photo,
+              "designMetadata",
+              "primarySubjectType",
+            );
+            const v2ReasonForCoverScore = getPhotoIndexV2String(
+              photo,
+              "posterSuitability",
+              "reasonForCoverScore",
+            );
+            const v2ReasonForHeroScore = getPhotoIndexV2String(
+              photo,
+              "posterSuitability",
+              "reasonForHeroScore",
+            );
+            const v2RawCoverScore = getPhotoIndexV2Number(
+              photo,
+              "posterSuitability",
+              "rawModelScores",
+              "coverScore",
+            );
+            const v2RawHeroScore = getPhotoIndexV2Number(
+              photo,
+              "posterSuitability",
+              "rawModelScores",
+              "heroScore",
+            );
+            const v2SupportsLargeTitle = getPhotoIndexV2Boolean(
+              photo,
+              "posterSuitability",
+              "supportsLargeTitle",
+            );
+            const v2SuggestedLayouts = getPhotoIndexV2StringArray(
+              photo,
+              "posterSuitability",
+              "suggestedLayouts",
+            );
+            const v2AvoidReason = getPhotoIndexV2String(
+              photo,
+              "posterSuitability",
+              "avoidAsCoverReason",
+            );
+            const v2Sensitive = getPhotoIndexV2Boolean(
+              photo,
+              "safety",
+              "isSensitive",
+            );
+            const v2SensitiveReasons = getPhotoIndexV2StringArray(
+              photo,
+              "safety",
+              "sensitiveReasons",
+            );
+            const isCompletePhotoIndexV2 = hasCompletePhotoIndexV2(photo);
+            const activeDebugPanel = debugPanelByPhotoId[photo.id] ?? "v2";
           const capturedAt = photo.memory?.capturedAt
             ? new Date(photo.memory.capturedAt)
             : new Date(photo.createdAt);
@@ -3750,30 +4072,36 @@ function PhotoGalleryView({
                   : ""
               }`}
             >
-              <div
-                className="relative bg-stone-100"
-                style={{
-                  aspectRatio:
-                    photo.width && photo.height
-                      ? `${photo.width} / ${photo.height}`
-                      : "4 / 3",
-                }}
-              >
-                {photo.displayUrl ? (
-                  <MediaAssetPoster
-                    asset={photo}
-                    alt={photo.memory?.content || t("timeline.photo.alt")}
-                    className="h-full w-full object-cover"
-                    loading={index < 12 ? "eager" : "lazy"}
-                    fetchPriority={index < 12 ? "high" : "auto"}
-                    onPrimaryError={() => requestRepair(photo)}
-                  />
-                ) : (
-                  <div className="grid h-full place-items-center text-sm font-semibold text-stone-400">
-                    {t("timeline.debug.noPreview")}
-                  </div>
-                )}
-                {isVideoAsset(photo) ? <VideoPlayBadge /> : null}
+              <div className="grid place-items-center bg-stone-100 p-3">
+                <div
+                  className="relative w-full overflow-hidden rounded-2xl bg-stone-100"
+                  style={{
+                    aspectRatio:
+                      photo.width && photo.height
+                        ? `${photo.width} / ${photo.height}`
+                        : "4 / 3",
+                    maxHeight: 520,
+                    maxWidth:
+                      photo.width && photo.height
+                        ? Math.min(9999, 520 * (photo.width / photo.height))
+                        : undefined,
+                  }}
+                >
+                  {photo.displayUrl ? (
+                    <MediaAssetPoster
+                      asset={photo}
+                      alt={photo.memory?.content || t("timeline.photo.alt")}
+                      className="h-full w-full object-contain"
+                      loading={index < 12 ? "eager" : "lazy"}
+                      fetchPriority={index < 12 ? "high" : "auto"}
+                      onPrimaryError={() => requestRepair(photo)}
+                    />
+                  ) : (
+                    <div className="grid h-full place-items-center text-sm font-semibold text-stone-400">
+                      {t("timeline.debug.noPreview")}
+                    </div>
+                  )}
+                  {isVideoAsset(photo) ? <VideoPlayBadge /> : null}
                 {faces.map((face, index) => {
                   const boxStyle = getFaceBoxStyle(face, photo);
                   if (!boxStyle) return null;
@@ -3824,9 +4152,10 @@ function PhotoGalleryView({
                     </button>
                   );
                 })}
-                <span className="absolute right-3 top-3 rounded-full bg-white/90 px-3 py-1 text-xs font-bold capitalize text-stone-800">
-                  {photo.aiStatus ?? "pending"}
-                </span>
+                  <span className="absolute right-3 top-3 rounded-full bg-white/90 px-3 py-1 text-xs font-bold capitalize text-stone-800">
+                    {photo.aiStatus ?? "pending"}
+                  </span>
+                </div>
               </div>
 
               <div className="space-y-4 p-4">
@@ -3878,6 +4207,33 @@ function PhotoGalleryView({
                   </span>
                 </div>
 
+                <div className="flex rounded-2xl bg-stone-100 p-1">
+                  {[
+                    ["v2", "V2"],
+                    ["indexing", "Indexing"],
+                  ].map(([panel, label]) => (
+                    <button
+                      type="button"
+                      key={panel}
+                      onClick={() =>
+                        setDebugPanelByPhotoId((current) => ({
+                          ...current,
+                          [photo.id]: panel as "v2" | "indexing",
+                        }))
+                      }
+                      className={`flex-1 rounded-xl px-3 py-2 text-xs font-black ${
+                        activeDebugPanel === panel
+                          ? "bg-white text-emerald-800 shadow-sm"
+                          : "text-stone-500"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {activeDebugPanel === "indexing" ? (
+                  <>
                 {faces.length > 0 ? (
                   <div className="rounded-2xl bg-stone-50 p-3">
                     <p className="text-xs font-bold uppercase tracking-[0.16em] text-stone-500">
@@ -4018,19 +4374,190 @@ function PhotoGalleryView({
                     ) : null}
                   </div>
                 ) : null}
+                  </>
+                ) : null}
 
-                {photo.ocrText ? (
+                {activeDebugPanel === "v2" ? (
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-800">
+                        Photo Index V2
+                      </p>
+                      <p className="mt-1 text-xs font-semibold text-emerald-950/70">
+                        {photoIndexV2
+                          ? isCompletePhotoIndexV2
+                            ? "Poster cover / hero selection metadata"
+                            : "Legacy/basic V2 fallback. Re-index to generate full design metadata."
+                          : "No V2 output yet. Re-index this photo to generate it."}
+                      </p>
+                    </div>
+                    <span
+                      className={`rounded-full px-3 py-1 text-xs font-black ${
+                        photoIndexV2
+                          ? isCompletePhotoIndexV2
+                            ? "bg-emerald-700 text-white"
+                            : "bg-amber-100 text-amber-800"
+                          : "bg-white text-stone-500"
+                      }`}
+                    >
+                      {photoIndexV2
+                        ? isCompletePhotoIndexV2
+                          ? "v2 ready"
+                          : "legacy/basic"
+                        : "missing"}
+                    </span>
+                  </div>
+
+                  {photoIndexV2 && !isCompletePhotoIndexV2 ? (
+                    <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold leading-5 text-amber-900">
+                      这张图只有旧版/basic indexing 结果，所以分数会重复、字段会是 n/a。请重新 Re-index 生成完整 V2。
+                      <button
+                        type="button"
+                        onClick={() => indexPhoto(photo)}
+                        disabled={activePhotoId === photo.id}
+                        className="mt-2 rounded-full bg-amber-700 px-3 py-1.5 text-xs font-black text-white disabled:bg-stone-300"
+                      >
+                        {activePhotoId === photo.id
+                          ? t("timeline.debug.queued")
+                          : t("timeline.debug.reindex")}
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {photoIndexV2 ? (
+                    <>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-bold text-emerald-950 sm:grid-cols-3">
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          scene {v2SceneType ?? "n/a"}
+                        </span>
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          cover {formatDebugScore(v2ComputedCoverScore)}
+                        </span>
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          hero {formatDebugScore(v2ComputedHeroScore)}
+                        </span>
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          gap {formatDebugScore(v2ScoreGap)}
+                        </span>
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          aesthetic {formatDebugScore(v2Aesthetic)}
+                        </span>
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          {v2Orientation ?? "n/a"} · {v2ShotType ?? "n/a"}
+                        </span>
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          space {v2NegativeSpace ?? "n/a"}
+                        </span>
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          typeSpace {formatDebugScore(v2TypographySpace)} ·{" "}
+                          {v2TypographySpacePosition ?? "n/a"}
+                        </span>
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          clutter {formatDebugScore(v2ClutterLevel)}
+                        </span>
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          crop {formatDebugScore(v2CropFlexibility)}
+                        </span>
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          public risk {formatDebugScore(v2PublicShareRisk)}
+                        </span>
+                        <span className="rounded-xl bg-white/80 px-3 py-2">
+                          title {v2SupportsLargeTitle ? "yes" : "no"}
+                        </span>
+                        <span
+                          className={`rounded-xl px-3 py-2 ${
+                            v2Sensitive
+                              ? "bg-red-100 text-red-800"
+                              : "bg-white/80 text-emerald-950"
+                          }`}
+                        >
+                          safety {v2Sensitive ? "sensitive" : "ok"}
+                        </span>
+                      </div>
+
+                      {v2SuggestedLayouts.length > 0 ? (
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          {v2SuggestedLayouts.map((layout) => (
+                            <span
+                              key={layout}
+                              className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-emerald-900"
+                            >
+                              {layout}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+
+                      <div className="mt-3 rounded-xl bg-white/80 px-3 py-2 text-xs font-semibold leading-5 text-stone-700">
+                        <p>
+                          <span className="font-black text-emerald-800">
+                            Design:
+                          </span>{" "}
+                          {v2CompositionType ?? "n/a"} · subject{" "}
+                          {v2PrimarySubjectType ?? "n/a"}
+                        </p>
+                        {v2ReasonForCoverScore ? (
+                          <p className="mt-1">
+                            <span className="font-black text-emerald-800">
+                              Cover reason:
+                            </span>{" "}
+                            {v2ReasonForCoverScore}
+                          </p>
+                        ) : null}
+                        {v2ReasonForHeroScore ? (
+                          <p className="mt-1">
+                            <span className="font-black text-emerald-800">
+                              Hero reason:
+                            </span>{" "}
+                            {v2ReasonForHeroScore}
+                          </p>
+                        ) : null}
+                        {v2RawCoverScore !== null || v2RawHeroScore !== null ? (
+                          <p className="mt-1 text-stone-500">
+                            raw/model kept for debug: cover{" "}
+                            {formatDebugScore(v2RawCoverScore)} · hero{" "}
+                            {formatDebugScore(v2RawHeroScore)}
+                          </p>
+                        ) : null}
+                      </div>
+
+                      {v2AvoidReason || v2SensitiveReasons.length > 0 ? (
+                        <p className="mt-3 rounded-xl bg-white/80 px-3 py-2 text-xs font-semibold leading-5 text-stone-700">
+                          {v2AvoidReason ? `Avoid as cover: ${v2AvoidReason}` : null}
+                          {v2AvoidReason && v2SensitiveReasons.length > 0 ? " · " : null}
+                          {v2SensitiveReasons.length > 0
+                            ? `Sensitive: ${v2SensitiveReasons.join(", ")}`
+                            : null}
+                        </p>
+                      ) : null}
+
+                      <details className="mt-3 rounded-xl bg-stone-950 p-3 text-xs text-emerald-50">
+                        <summary className="cursor-pointer font-black text-emerald-200">
+                          Raw photoIndexV2 JSON
+                        </summary>
+                        <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5">
+                          {JSON.stringify(photoIndexV2, null, 2)}
+                        </pre>
+                      </details>
+                    </>
+                  ) : null}
+                </div>
+                ) : null}
+
+                {activeDebugPanel === "indexing" && photo.ocrText ? (
                   <p className="rounded-2xl bg-stone-50 p-3 text-sm leading-6 text-stone-700">
                     {t("timeline.debug.ocr")} {photo.ocrText}
                   </p>
                 ) : null}
 
-                {aiError ? (
+                {activeDebugPanel === "indexing" && aiError ? (
                   <p className="rounded-2xl bg-red-50 p-3 text-sm font-semibold text-red-700">
                     {aiError}
                   </p>
                 ) : null}
 
+                {activeDebugPanel === "indexing" ? (
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -4067,6 +4594,7 @@ function PhotoGalleryView({
                     </a>
                   ) : null}
                 </div>
+                ) : null}
               </div>
             </article>
           );
@@ -4172,7 +4700,7 @@ function TimelineContent({ user }: { user: User }) {
     await repairCurrentUserOrphanPhotoMemories(tripId).catch(() => 0);
     const { memoryPage, assetData, signedUrls, faceData } = await loadMemoryPage();
     setMemories(memoryPage.memories);
-    setPhotoAssets(assetData);
+    setPhotoAssets((current) => mergePhotoAssetsById(current, assetData));
     setFacesByAssetId(faceData);
     setImageUrls(signedUrls);
     setNextMemoryCursor(memoryPage.nextCursor);
@@ -4776,7 +5304,7 @@ function TimelineContent({ user }: { user: User }) {
         }`}
       >
         <div
-          className={`grid-cols-3 gap-1 rounded-2xl border border-stone-200 bg-white p-1 md:grid ${
+          className={`grid-cols-4 gap-1 rounded-2xl border border-stone-200 bg-white p-1 md:grid ${
             isMobileSearchActive ? "hidden" : "grid"
           }`}
         >
@@ -4784,6 +5312,7 @@ function TimelineContent({ user }: { user: User }) {
             ["album", t("timeline.tab.album")],
             ["timeline", t("timeline.tab.timeline")],
             ["favorites", t("timeline.tab.favorites")],
+            ["debug", "Debug"],
           ].map(([mode, label]) => (
             <button
               type="button"
@@ -4987,7 +5516,7 @@ function TimelineContent({ user }: { user: User }) {
 
       {view === "debug" ? (
         <PhotoGalleryView
-          photos={filteredPhotos}
+          photos={photoAssets}
           facesByAssetId={facesByAssetId}
           members={members}
           tripId={tripId}

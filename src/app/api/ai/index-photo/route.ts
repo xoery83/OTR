@@ -2,6 +2,11 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { analyzeImageForDebug } from "@/lib/ai/vision/router";
 import type { Locale } from "@/lib/i18n/dictionaries";
+import {
+  buildBasicPhotoIndexV2,
+  extractPhotoIndexV2FromRawResponse,
+  photoIndexV2Prompt,
+} from "@/lib/photo-indexing/photo-index-v2";
 import type { MediaAsset } from "@/types";
 
 type IndexPhotoRequest = {
@@ -197,6 +202,32 @@ function indexLanguageInstruction(locale: Locale) {
     : "Return English captions, scenes, objects, and search tags. Keep OCR text in the original visible language.";
 }
 
+function basicPhotoIndexMetadata(asset: MediaAssetRow) {
+  return {
+    width: asset.width,
+    height: asset.height,
+    blurScore: asset.blur_score,
+    sceneTags: asset.scene_tags ?? [],
+    summary:
+      typeof asset.ai_metadata?.summary === "string"
+        ? asset.ai_metadata.summary
+        : null,
+    objects: Array.isArray(asset.ai_metadata?.objects)
+      ? asset.ai_metadata.objects.map(String)
+      : [],
+    locationHints: Array.isArray(asset.ai_metadata?.locationHints)
+      ? asset.ai_metadata.locationHints.map(String)
+      : [],
+    activities: Array.isArray(asset.ai_metadata?.activities)
+      ? asset.ai_metadata.activities.map(String)
+      : [],
+    confidence:
+      typeof asset.ai_metadata?.confidence === "number"
+        ? asset.ai_metadata.confidence
+        : null,
+  };
+}
+
 async function callImageIndexService(input: {
   asset: MediaAssetRow;
   imageUrl: string;
@@ -263,7 +294,7 @@ async function indexWithVisionFallback(input: {
     imageUrl: input.imageUrl,
     mode: "vision",
     prompt:
-      `Analyze this travel photo for OTR image indexing. Prefer concrete visible details for search and album grouping. ${indexLanguageInstruction(input.locale)}`,
+      `${photoIndexV2Prompt} Also keep V1-compatible summary, tags, people, locationHints, activities, objects, food, ocrText, confidence. ${indexLanguageInstruction(input.locale)}`,
   });
   const sceneTags = [
     ...analysis.tags,
@@ -275,6 +306,17 @@ async function indexWithVisionFallback(input: {
 
   const aiMetadata = {
     ...(input.asset.ai_metadata ?? {}),
+    photoIndexV2: extractPhotoIndexV2FromRawResponse(
+      analysis.rawResponse,
+      {
+        ...basicPhotoIndexMetadata(input.asset),
+        summary: analysis.summary,
+        objects: analysis.objects,
+        locationHints: analysis.locationHints,
+        activities: analysis.activities,
+        confidence: analysis.confidence,
+      },
+    ),
     summary: analysis.summary,
     locationHints: analysis.locationHints,
     peopleDescription:
@@ -321,6 +363,56 @@ async function indexWithVisionFallback(input: {
       analysis.confidence < 0.7 ? "low_vision_confidence" : null,
     model_used: `${analysis.provider}_vision`,
     model_version: analysis.model,
+  } satisfies PhotoIndexResult;
+}
+
+async function indexWithBasicFallback(input: {
+  supabase: ReturnType<typeof getSupabaseForRequest>;
+  asset: MediaAssetRow;
+  locale: Locale;
+  error: unknown;
+}) {
+  const message =
+    input.error instanceof Error ? input.error.message : "Photo indexing fallback used.";
+  const photoIndexV2 = buildBasicPhotoIndexV2(basicPhotoIndexMetadata(input.asset));
+  const aiMetadata = {
+    ...(input.asset.ai_metadata ?? {}),
+    photoIndexV2,
+    indexingFallback: {
+      reason: message,
+      usedAt: new Date().toISOString(),
+    },
+    language: input.locale,
+  };
+
+  await input.supabase
+    .from("media_assets")
+    .update({
+      ai_status: "indexed",
+      ai_metadata: aiMetadata,
+      indexed_at: new Date().toISOString(),
+    })
+    .eq("id", input.asset.id)
+    .eq("trip_id", input.asset.trip_id);
+
+  return {
+    media_asset_id: input.asset.id,
+    status: "indexed_local",
+    caption: photoIndexV2.caption,
+    scene: photoIndexV2.content.sceneType,
+    objects: photoIndexV2.content.objects,
+    ocr_text: input.asset.ocr_text ?? null,
+    people: [],
+    image_hash: "",
+    duplicate_hash: "",
+    blur_score: input.asset.blur_score ?? 0,
+    brightness_score: 0,
+    dominant_colors: [],
+    quality_score: photoIndexV2.visualQuality.overallAesthetic,
+    needs_llm_review: true,
+    llm_review_reason: "vision_unavailable_basic_v2_fallback",
+    model_used: "local_metadata_v2_fallback",
+    model_version: "photo-index-v2-basic",
   } satisfies PhotoIndexResult;
 }
 
@@ -389,6 +481,12 @@ export async function POST(request: Request) {
         .update({
           ai_metadata: {
             ...currentMetadata,
+            photoIndexV2: buildBasicPhotoIndexV2({
+              ...basicPhotoIndexMetadata(asset),
+              summary: result.caption,
+              objects: result.objects,
+              confidence: result.quality_score,
+            }),
             provider: "otr-ai-server",
             modelUsed: result.model_used,
             model: result.model_version,
@@ -401,13 +499,22 @@ export async function POST(request: Request) {
         })
         .eq("id", asset.id)
         .eq("trip_id", asset.trip_id);
-    } catch {
-      result = await indexWithVisionFallback({
-        supabase,
-        asset,
-        imageUrl,
-        locale,
-      });
+    } catch (indexServiceError) {
+      try {
+        result = await indexWithVisionFallback({
+          supabase,
+          asset,
+          imageUrl,
+          locale,
+        });
+      } catch (visionError) {
+        result = await indexWithBasicFallback({
+          supabase,
+          asset,
+          locale,
+          error: visionError instanceof Error ? visionError : indexServiceError,
+        });
+      }
     }
     const { data: updatedRow, error: updateError } = await supabase
       .from("media_assets")

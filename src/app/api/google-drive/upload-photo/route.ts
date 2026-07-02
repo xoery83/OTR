@@ -13,6 +13,9 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+const GOOGLE_DRIVE_RECONNECT_REQUIRED_MESSAGE =
+  "Google Drive 连接已失效，请到行程设置重新连接云盘后再上传。";
+
 type StorageConnectionRow = {
   token_reference: string | null;
   journey_folder_id: string | null;
@@ -30,6 +33,40 @@ type StorageConnectionRow = {
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
+}
+
+function isGoogleDriveTokenExpiredError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /token has been expired or revoked|invalid_grant|expired|revoked/i.test(
+    message,
+  );
+}
+
+async function markGoogleDriveConnectionError(input: {
+  supabase: ReturnType<typeof getSupabaseForRequest>;
+  tripId: string;
+  metadata: Record<string, unknown> | null;
+  reason: string;
+}) {
+  const metadata = {
+    ...(input.metadata ?? {}),
+    health: {
+      status: "error",
+      checkedAt: new Date().toISOString(),
+      reason: input.reason,
+    },
+  };
+  await Promise.allSettled([
+    input.supabase
+      .from("journey_storage_connections")
+      .update({ status: "error", metadata })
+      .eq("trip_id", input.tripId)
+      .eq("provider", "google_drive"),
+    input.supabase
+      .from("trips")
+      .update({ photo_storage_status: "error" })
+      .eq("id", input.tripId),
+  ]);
 }
 
 function getSupabaseForRequest(request: Request) {
@@ -205,9 +242,24 @@ export async function POST(request: Request) {
       return jsonError("Google Drive is not connected for original uploads.", 409);
     }
 
-    const refreshToken = decryptGoogleToken(connection.token_reference);
-    const accessToken = await refreshGoogleDriveAccessToken(refreshToken);
     const connectionRow = connection as StorageConnectionRow;
+    const refreshToken = decryptGoogleToken(connection.token_reference);
+    let accessToken: string;
+    try {
+      accessToken = await refreshGoogleDriveAccessToken(refreshToken);
+    } catch (refreshError) {
+      await markGoogleDriveConnectionError({
+        supabase,
+        tripId,
+        metadata: connectionRow.metadata ?? null,
+        reason:
+          refreshError instanceof Error ? refreshError.message : "Could not refresh token.",
+      });
+      if (isGoogleDriveTokenExpiredError(refreshError)) {
+        return jsonError(GOOGLE_DRIVE_RECONNECT_REQUIRED_MESSAGE, 409);
+      }
+      throw refreshError;
+    }
     const mediaFolders = await ensureMediaFolders({
       accessToken,
       supabase,
@@ -304,6 +356,10 @@ export async function POST(request: Request) {
       previewSize: variants.preview.file_size,
     });
   } catch (error) {
+    if (isGoogleDriveTokenExpiredError(error)) {
+      return jsonError(GOOGLE_DRIVE_RECONNECT_REQUIRED_MESSAGE, 409);
+    }
+
     const message =
       error instanceof Error ? error.message : "Could not upload original photo.";
     return jsonError(message, 500);

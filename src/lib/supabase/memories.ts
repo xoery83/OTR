@@ -87,6 +87,8 @@ const memorySelect =
   "id, trip_id, trip_day_id, itinerary_event_id, itinerary_reservation_id, user_id, type, content, media_url, location_name, captured_at, created_at";
 export const GOOGLE_DRIVE_PHOTO_STORAGE_REQUIRED_MESSAGE =
   "为了避免照片占用 OTR 云存储，请先连接 Google Drive。连接后照片会保存到你自己的 Google Drive，并可正常使用 Timeline、Gallery、人脸识别等功能。";
+export const GOOGLE_DRIVE_RECONNECT_REQUIRED_MESSAGE =
+  "Google Drive 连接已失效，请到行程设置重新连接云盘后再上传。";
 
 function encodeMemoryContent(content: string, parentMemoryId?: string | null) {
   const trimmed = content.trim();
@@ -105,6 +107,60 @@ function decodeMemoryContent(content: string | null, parentMemoryId?: string | n
     content: raw.slice(match[0].length),
     parentMemoryId: parentMemoryId ?? match[1],
   };
+}
+
+function isGoogleDriveTokenExpiredError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /token has been expired or revoked|invalid_grant|expired|revoked/i.test(
+    message,
+  );
+}
+
+function photoDriveUploadErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : "Unknown error";
+  if (message.includes(GOOGLE_DRIVE_RECONNECT_REQUIRED_MESSAGE)) {
+    return GOOGLE_DRIVE_RECONNECT_REQUIRED_MESSAGE;
+  }
+  if (isGoogleDriveTokenExpiredError(error)) {
+    return GOOGLE_DRIVE_RECONNECT_REQUIRED_MESSAGE;
+  }
+
+  return `照片上传到 Google Drive 失败：${message}`;
+}
+
+async function cleanupFailedPhotoMemory(input: {
+  memoryId: string;
+  mediaAssetId: string;
+  userId: string;
+}) {
+  try {
+    await supabase
+      .from("journey_chat_messages")
+      .delete()
+      .or(
+        `memory_entry_id.eq.${input.memoryId},source_id.eq.${input.memoryId},media_asset_id.eq.${input.mediaAssetId}`,
+      );
+  } catch {
+    // Best effort cleanup.
+  }
+  try {
+    await supabase
+      .from("media_assets")
+      .delete()
+      .eq("id", input.mediaAssetId)
+      .eq("user_id", input.userId);
+  } catch {
+    // Best effort cleanup.
+  }
+  try {
+    await supabase
+      .from("memory_entries")
+      .delete()
+      .eq("id", input.memoryId)
+      .eq("user_id", input.userId);
+  } catch {
+    // Best effort cleanup.
+  }
 }
 
 function isSystemCaptureUploadMemoryContent(content: string | null) {
@@ -669,10 +725,9 @@ export async function createPhotoMemory(
 
   const { data: connection, error: connectionError } = await supabase
     .from("journey_storage_connections")
-    .select("id")
+    .select("id, status")
     .eq("trip_id", tripId)
     .eq("provider", "google_drive")
-    .eq("status", "connected")
     .maybeSingle();
 
   if (connectionError) {
@@ -680,6 +735,12 @@ export async function createPhotoMemory(
   }
 
   if (!connection) {
+    throw new Error(GOOGLE_DRIVE_PHOTO_STORAGE_REQUIRED_MESSAGE);
+  }
+  if ((connection as { status?: string }).status === "error") {
+    throw new Error(GOOGLE_DRIVE_RECONNECT_REQUIRED_MESSAGE);
+  }
+  if ((connection as { status?: string }).status !== "connected") {
     throw new Error(GOOGLE_DRIVE_PHOTO_STORAGE_REQUIRED_MESSAGE);
   }
 
@@ -782,15 +843,12 @@ export async function createPhotoMemory(
 
     await uploadPhotoFormToDrive(form, accessToken, options?.onUploadProgress);
   } catch (driveUploadError) {
-    await supabase
-      .from("media_assets")
-      .update({ processing_status: "failed" })
-      .eq("id", mediaAssetId);
-    throw new Error(
-      `Google Drive photo upload failed: ${
-        driveUploadError instanceof Error ? driveUploadError.message : "Unknown error"
-      }`,
-    );
+    await cleanupFailedPhotoMemory({
+      memoryId,
+      mediaAssetId,
+      userId: user.id,
+    });
+    throw new Error(photoDriveUploadErrorMessage(driveUploadError));
   }
 
   await enqueueMediaProcessingJobs({

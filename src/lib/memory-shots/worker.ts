@@ -153,8 +153,8 @@ function photoDisplayUrl(photo: {
     photo.thumbnailUrl,
     photo.providerThumbnailUrl,
     photo.thumbnailDriveWebUrl,
-    photo.id ? `/api/media/assets/${photo.id}/preview` : null,
     photo.signedStorageUrl,
+    photo.id ? `/api/media/assets/${photo.id}/preview` : null,
   ]);
 }
 

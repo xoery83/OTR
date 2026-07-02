@@ -22,14 +22,17 @@ const originalWidth = 1080;
 const originalHeight = 1440;
 const previewWidth = 720;
 const thumbnailWidth = 360;
-const rendererVersion = "sharp-svg-story-poster-v3";
+const rendererVersion = "standard-poster-cinematic-full-bleed-v1";
+const cinematicFullBleedLayoutKey = "cinematic_full_bleed";
 
 type RendererSupabase = SupabaseClient;
+type PosterLayoutKey = typeof cinematicFullBleedLayoutKey;
 
 type RenderMemoryShotInput = {
   supabase: RendererSupabase;
   memoryShotId: string;
   force?: boolean;
+  layoutKey?: PosterLayoutKey;
 };
 
 type MemoryShotRow = {
@@ -100,6 +103,11 @@ function storyBeats(content: Record<string, unknown>) {
   const fromScript = stringArray(storyScript(content).storyBeats).slice(0, 4);
   if (fromScript.length > 0) return fromScript;
   return stringArray(content.sections).slice(0, 4);
+}
+
+function assertPosterLayoutKey(value: string | null | undefined): PosterLayoutKey {
+  if (!value || value === cinematicFullBleedLayoutKey) return cinematicFullBleedLayoutKey;
+  throw new Error(`Unsupported poster layoutKey: ${value}.`);
 }
 
 async function imageDataUri(url: string | null) {
@@ -178,7 +186,136 @@ function textLinesSvg(input: {
     .join("");
 }
 
-async function renderShell(content: Record<string, unknown>) {
+function posterTextLinesSvg(input: {
+  lines: string[];
+  x: number;
+  y: number;
+  lineHeight: number;
+  size: number;
+  weight?: number;
+  fill: string;
+  className?: string;
+}) {
+  return input.lines
+    .map(
+      (line, index) =>
+        `<text class="${input.className ?? "poster-serif"}" x="${input.x}" y="${input.y + index * input.lineHeight}" font-size="${input.size}" font-weight="${input.weight ?? 400}" fill="${input.fill}">${escapeHtml(line)}</text>`,
+    )
+    .join("");
+}
+
+function compactStoryLine(value: string) {
+  return value
+    .replace(/^\s*[-•]\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function posterDesignDecision(content: Record<string, unknown>) {
+  return {
+    layoutKey: cinematicFullBleedLayoutKey,
+    variantKey: "poster_01",
+    composition: {
+      hero: heroImageUrl(content) ? "photo" : "none",
+      title: "huge",
+      story: "one_line",
+      metadata: "date_place",
+      footer: "logo",
+      overlay: "bottom_gradient",
+    },
+    narrativeDensity: "minimal",
+  };
+}
+
+async function renderCinematicFullBleed(content: Record<string, unknown>) {
+  const title = textValue(content.title, "Journey Story");
+  const subtitle = textValue(content.subtitle, "");
+  const firstStory = storyBeats(content).map(compactStoryLine).find(Boolean) ?? "";
+  const heroDataUri = await imageDataUri(heroImageUrl(content));
+  const titleLines = wrapText(title, 18, 3);
+  const titleSize = titleLines.length >= 3 ? 66 : 74;
+  const titleLineHeight = titleLines.length >= 3 ? 76 : 84;
+  const titleY = titleLines.length >= 3 ? 790 : 820;
+  const subtitleLines = subtitle ? wrapText(subtitle, 36, 1) : [];
+  const subtitleY = titleY + titleLines.length * titleLineHeight + 38;
+  const storyLines = firstStory ? wrapText(firstStory, 34, 2) : [];
+  const storyY = subtitleY + (subtitleLines.length > 0 ? 70 : 30);
+  const brandY = 1320;
+  const heroLayer = heroDataUri
+    ? `<image x="0" y="0" width="${originalWidth}" height="${originalHeight}" href="${escapeHtml(heroDataUri)}" xlink:href="${escapeHtml(heroDataUri)}" preserveAspectRatio="xMidYMid slice"/>`
+    : '<rect width="100%" height="100%" fill="url(#fallback-bg)"/>';
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg width="${originalWidth}" height="${originalHeight}" viewBox="0 0 ${originalWidth} ${originalHeight}" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <defs>
+    <style>
+      .poster-serif { font-family: Georgia, "Times New Roman", "Songti SC", "Noto Serif CJK SC", serif; }
+      .poster-sans { font-family: Arial, "PingFang SC", "Noto Sans CJK SC", sans-serif; }
+    </style>
+    <linearGradient id="fallback-bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#14342c"/>
+      <stop offset="46%" stop-color="#27342f"/>
+      <stop offset="100%" stop-color="#0a0a08"/>
+    </linearGradient>
+    <linearGradient id="bottom-overlay" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="42%" stop-color="#000000" stop-opacity="0.2"/>
+      <stop offset="68%" stop-color="#000000" stop-opacity="0.64"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.9"/>
+    </linearGradient>
+    <radialGradient id="edge-vignette" cx="50%" cy="38%" r="82%">
+      <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.42"/>
+    </radialGradient>
+  </defs>
+  ${heroLayer}
+  <rect width="100%" height="100%" fill="url(#edge-vignette)"/>
+  <rect width="100%" height="100%" fill="url(#bottom-overlay)"/>
+  <text class="poster-sans" x="72" y="94" font-size="25" font-weight="850" fill="#fffdf8" fill-opacity="0.92">OTR STORY</text>
+  ${posterTextLinesSvg({
+    lines: titleLines,
+    x: 72,
+    y: titleY,
+    lineHeight: titleLineHeight,
+    size: titleSize,
+    weight: 850,
+    fill: "#ffffff",
+  })}
+  ${posterTextLinesSvg({
+    lines: subtitleLines,
+    x: 74,
+    y: subtitleY,
+    lineHeight: 42,
+    size: 30,
+    weight: 520,
+    fill: "#fff7ed",
+    className: "poster-sans",
+  })}
+  ${storyLines.length > 0
+    ? `<line x1="74" x2="280" y1="${storyY - 34}" y2="${storyY - 34}" stroke="#fffdf8" stroke-opacity="0.55" stroke-width="2"/>`
+    : ""}
+  ${posterTextLinesSvg({
+    lines: storyLines,
+    x: 74,
+    y: storyY,
+    lineHeight: 38,
+    size: 29,
+    weight: 620,
+    fill: "#fffdf8",
+    className: "poster-sans",
+  })}
+  <text class="poster-sans" x="74" y="${brandY}" font-size="26" font-weight="900" fill="#fffdf8">OTR</text>
+</svg>`;
+}
+
+async function renderShell(
+  content: Record<string, unknown>,
+  layoutKey: PosterLayoutKey,
+) {
+  if (layoutKey === cinematicFullBleedLayoutKey) {
+    return renderCinematicFullBleed(content);
+  }
+
   const title = textValue(content.title, "Daily Best Moments");
   const subtitle = textValue(content.subtitle, "Generated from your Journey moments.");
   const sections = storyBeats(content);
@@ -390,6 +527,7 @@ async function loadMemoryShot(
 async function ensurePosterArtifact(
   supabase: RendererSupabase,
   memoryShot: MemoryShotRow,
+  layoutKey: PosterLayoutKey,
 ) {
   const [existing] = await listMemoryShotArtifacts(memoryShot.id, {
     supabase,
@@ -408,10 +546,12 @@ async function ensurePosterArtifact(
           ...(existing.metadata ?? {}),
           renderer: {
             version: rendererVersion,
+            layoutKey,
             width: originalWidth,
             height: originalHeight,
             contentSource: "memory_shots.content.htmlPreview",
           },
+          designDecision: posterDesignDecision(memoryShot.content),
         },
       },
       { supabase },
@@ -428,10 +568,12 @@ async function ensurePosterArtifact(
       metadata: {
         renderer: {
           version: rendererVersion,
+          layoutKey,
           width: originalWidth,
           height: originalHeight,
           contentSource: "memory_shots.content.htmlPreview",
         },
+        designDecision: posterDesignDecision(memoryShot.content),
       },
     },
     { supabase },
@@ -441,9 +583,10 @@ async function ensurePosterArtifact(
 async function tryEnsurePosterArtifact(
   supabase: RendererSupabase,
   memoryShot: MemoryShotRow,
+  layoutKey: PosterLayoutKey,
 ) {
   try {
-    return await ensurePosterArtifact(supabase, memoryShot);
+    return await ensurePosterArtifact(supabase, memoryShot, layoutKey);
   } catch {
     return null;
   }
@@ -523,6 +666,7 @@ export async function renderMemoryShotPreview(
   input: RenderMemoryShotInput,
 ) {
   const memoryShot = await loadMemoryShot(input.supabase, input.memoryShotId);
+  const layoutKey = assertPosterLayoutKey(input.layoutKey);
   let posterArtifact: MemoryShotArtifact | null = null;
 
   if (memoryShot.status !== "ready") {
@@ -537,7 +681,7 @@ export async function renderMemoryShotPreview(
     render_error: null,
     render_warning: null,
   });
-  posterArtifact = await tryEnsurePosterArtifact(input.supabase, memoryShot);
+  posterArtifact = await tryEnsurePosterArtifact(input.supabase, memoryShot, layoutKey);
 
   try {
     const htmlPreview = getHtmlPreview(memoryShot.content);
@@ -545,7 +689,7 @@ export async function renderMemoryShotPreview(
       throw new Error("Memory Shot content.htmlPreview is missing.");
     }
 
-    const svg = await renderShell(memoryShot.content);
+    const svg = await renderShell(memoryShot.content, layoutKey);
     const originalPngBuffer = await sharp(Buffer.from(svg), {
       density: 144,
       failOn: "none",
@@ -610,6 +754,8 @@ export async function renderMemoryShotPreview(
       ...(memoryShot.metadata ?? {}),
       render: {
         renderer: rendererVersion,
+        layoutKey,
+        designDecision: posterDesignDecision(memoryShot.content),
         originalRender: {
           provider: originalRender.provider,
           path: originalRender.path,
@@ -703,10 +849,12 @@ export async function renderMemoryShotPreview(
               ...(posterArtifact.metadata ?? {}),
               renderer: {
                 version: rendererVersion,
+                layoutKey,
                 original: { width: originalWidth, height: originalHeight },
                 preview: { width: previewWidth, height: previewHeight },
                 thumbnail: { width: thumbnailWidth, height: thumbnailHeight },
               },
+              designDecision: posterDesignDecision(memoryShot.content),
               contentSource: "memory_shots.content.htmlPreview",
               fallbackProviderInfo: {
                 original: {

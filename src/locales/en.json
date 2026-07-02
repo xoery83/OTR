@@ -181,6 +181,8 @@
   "journeySettings.storage.nextStep": "Current photo upload still uses Capture and the existing compressed image flow. Google Drive connection creates folders now; original-photo streaming comes next.",
   "journeySettings.storage.status.notConnected": "not connected",
   "journeySettings.storage.status.connected": "connected",
+  "journeySettings.storage.status.error": "connection expired",
+  "journeySettings.storage.reconnectRequired": "Google Drive authorization has expired. Reconnect cloud storage before uploading photos or videos.",
   "journeySettings.exchangeTitle": "Exchange rates",
   "journeySettings.exchangeDescription": "Expenses keep their original currency and are converted into {baseCurrency} using this journey's rate snapshot when created or edited. Refreshing rates will not recalculate historical expenses.",
   "journeySettings.exchangeSnapshot": "Current snapshot:",

@@ -14,6 +14,7 @@ import { CurrencyCombobox } from "@/components/CurrencyCombobox";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { useI18n } from "@/components/I18nProvider";
 import { compressImageFile } from "@/lib/images";
+import { checkGoogleDriveHealth } from "@/lib/google-drive-health";
 import { findCurrencyMatch, normalizeCurrencyCode } from "@/lib/currencies";
 import type { TranslationKey } from "@/lib/i18n/dictionaries";
 import {
@@ -1614,6 +1615,7 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
     setLastMediaFiles(files);
     setIsUploading(true);
     try {
+      await checkGoogleDriveHealth(activeTripId);
       const metadata = await Promise.all(files.map(getClientFileMetadata));
       const videoCount = files.filter((file) => mediaKind(file) === "video").length;
       const baseItems = files.map((file, index): Capture2UploadItem => {
@@ -3094,7 +3096,15 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
                   ) : null}
                   {error ? (
                     <div className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-sm font-bold text-red-800">
-                      {error}
+                      <div>{error}</div>
+                      {tripId && /Google Drive|云盘|云端/i.test(error) ? (
+                        <a
+                          href={`/trips/${tripId}/settings`}
+                          className="mt-3 inline-flex rounded-full bg-red-100 px-3 py-1.5 text-xs font-black text-red-900"
+                        >
+                          重新连接云盘
+                        </a>
+                      ) : null}
                     </div>
                   ) : null}
 

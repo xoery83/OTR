@@ -180,6 +180,8 @@
   "journeySettings.storage.nextStep": "当前照片上传仍使用 Capture 和现有压缩图流程。Google Drive 现在会创建文件夹；原图流式上传会在下一步接入。",
   "journeySettings.storage.status.notConnected": "未连接",
   "journeySettings.storage.status.connected": "已连接",
+  "journeySettings.storage.status.error": "连接已失效",
+  "journeySettings.storage.reconnectRequired": "Google Drive 授权已失效。请重新连接云盘后再上传照片或视频。",
   "journeySettings.exchangeTitle": "汇率管理",
   "journeySettings.exchangeDescription": "本 Journey 的费用会保留原币种金额，并在新增或编辑费用时按这里的汇率固化为 {baseCurrency}。刷新不会改动历史费用。",
   "journeySettings.exchangeSnapshot": "当前快照：",

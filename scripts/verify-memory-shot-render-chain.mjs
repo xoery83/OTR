@@ -22,6 +22,15 @@ Motion Story only:
     --motion-story-only \\
     --token <current-user-access-token>
 
+Poster 01 rerender only:
+  node scripts/verify-memory-shot-render-chain.mjs \\
+    --base-url http://localhost:3000 \\
+    --journey-id <journey-id> \\
+    --memory-shot-id <ready-memory-shot-id> \\
+    --layout-key cinematic_full_bleed \\
+    --poster-only \\
+    --token <current-user-access-token>
+
 Required:
   --journey-id  Journey/trip id to generate in.
   --date        Date to generate, in YYYY-MM-DD format, unless --memory-shot-id is provided.
@@ -34,6 +43,7 @@ Env alternatives:
   MEMORY_SHOT_DATE
   OTR_ACCESS_TOKEN, SUPABASE_ACCESS_TOKEN, or MEMORY_SHOT_VERIFY_TOKEN
   MEMORY_SHOT_LANGUAGE
+  MEMORY_SHOT_LAYOUT_KEY
 
 Get token from the logged-in browser console:
   const key = Object.keys(localStorage).find((k) => k.startsWith("sb-") && k.endsWith("-auth-token"));
@@ -54,7 +64,9 @@ function parseArgs(argv) {
       process.env.MEMORY_SHOT_VERIFY_TOKEN ||
       "",
     language: process.env.MEMORY_SHOT_LANGUAGE || "en",
+    layoutKey: process.env.MEMORY_SHOT_LAYOUT_KEY || "cinematic_full_bleed",
     motionStoryOnly: false,
+    posterOnly: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -65,6 +77,10 @@ function parseArgs(argv) {
     }
     if (key === "--motion-story-only") {
       args.motionStoryOnly = true;
+      continue;
+    }
+    if (key === "--poster-only") {
+      args.posterOnly = true;
       continue;
     }
     const value = argv[index + 1];
@@ -82,6 +98,7 @@ function parseArgs(argv) {
     else if (key === "--date") args.date = value;
     else if (key === "--token") args.token = value;
     else if (key === "--language") args.language = value;
+    else if (key === "--layout-key" || key === "--layoutKey") args.layoutKey = value;
     else throw new Error(`Unknown option: ${key}`);
   }
 
@@ -357,7 +374,9 @@ async function main() {
         memoryShotId: args.memoryShotId || null,
         date: args.date,
         language: args.language,
+        layoutKey: args.layoutKey,
         motionStoryOnly: args.motionStoryOnly,
+        posterOnly: args.posterOnly,
       },
       null,
       2,
@@ -403,7 +422,13 @@ async function main() {
     `/api/journeys/${encodeURIComponent(args.journeyId)}/memory-shots/${encodeURIComponent(
       generatedShot.id,
     )}/render`,
-    { method: "POST", body: JSON.stringify({ force: true }) },
+    {
+      method: "POST",
+      body: JSON.stringify({
+        force: true,
+        layoutKey: args.layoutKey,
+      }),
+    },
   );
 
   console.log("Render Retry Result");
@@ -419,6 +444,10 @@ async function main() {
 
   console.log("Final Storage Summary");
   console.log(JSON.stringify(renderSummary(latestShot), null, 2));
+
+  if (args.posterOnly) {
+    return;
+  }
 
   await verifyMotionStory(args, generatedShot.id);
 }

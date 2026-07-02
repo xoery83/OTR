@@ -602,6 +602,8 @@ function SettingsContent() {
           <span className="rounded-full bg-stone-100 px-3 py-2 text-xs font-bold text-stone-600">
             {trip?.photoStorageStatus === "connected"
               ? t("journeySettings.storage.status.connected")
+              : trip?.photoStorageStatus === "error"
+                ? t("journeySettings.storage.status.error")
               : t("journeySettings.storage.status.notConnected")}
           </span>
         }
@@ -609,7 +611,11 @@ function SettingsContent() {
         <div className="mb-5 rounded-2xl border border-stone-200 bg-white p-4">
           <p className="text-xs font-bold uppercase tracking-[0.16em] text-stone-500">
             Google Drive{" "}
-            {trip?.photoStorageStatus === "connected" ? "Connected" : "Not Connected"}
+            {trip?.photoStorageStatus === "connected"
+              ? "Connected"
+              : trip?.photoStorageStatus === "error"
+                ? "Connection Expired"
+                : "Not Connected"}
           </p>
           <p className="mt-2 text-base font-bold text-stone-950">
             Current image storage: Google Drive
@@ -618,6 +624,15 @@ function SettingsContent() {
             Your photos are stored in your own Google Drive. OTR only stores metadata.
           </p>
         </div>
+
+        {storageConnection?.status === "error" ||
+        trip?.photoStorageStatus === "error" ? (
+          <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+            <p className="text-sm font-bold text-amber-900">
+              {t("journeySettings.storage.reconnectRequired")}
+            </p>
+          </div>
+        ) : null}
 
         <div className="grid gap-3">
           {storageProviders.map((provider) => {
@@ -709,7 +724,9 @@ function SettingsContent() {
               >
                 {isConnectingStorage
                   ? t("journeySettings.storage.connecting")
-                  : storageConnection?.status === "connected"
+                  : storageConnection?.status === "connected" ||
+                      storageConnection?.status === "error" ||
+                      trip?.photoStorageStatus === "error"
                     ? t("journeySettings.storage.reconnect")
                     : t("journeySettings.storage.connect")}
               </button>

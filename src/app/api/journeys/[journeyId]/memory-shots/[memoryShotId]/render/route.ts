@@ -2,6 +2,10 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { renderMemoryShotPreview } from "@/lib/memory-shots/renderer-worker";
 
+type RenderRequest = {
+  layoutKey?: string | null;
+};
+
 class HttpError extends Error {
   status: number;
 
@@ -91,6 +95,10 @@ export async function POST(
 ) {
   try {
     const { journeyId, memoryShotId } = await context.params;
+    const body = (await request.json().catch(() => ({}))) as RenderRequest;
+    if (body.layoutKey && body.layoutKey !== "cinematic_full_bleed") {
+      return jsonError("Only layoutKey=cinematic_full_bleed is supported.", 400);
+    }
     const supabase = getSupabaseForRequest(request);
     const { data: userData, error: userError } = await supabase.auth.getUser();
     if (userError || !userData.user) {
@@ -104,6 +112,7 @@ export async function POST(
       supabase,
       memoryShotId,
       force: true,
+      layoutKey: body.layoutKey === "cinematic_full_bleed" ? body.layoutKey : undefined,
     });
 
     return NextResponse.json(result);

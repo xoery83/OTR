@@ -15,6 +15,41 @@ function metadataText(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function metadataRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function metadataNumber(record: Record<string, unknown> | null, key: string) {
+  const value = record?.[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function metadataString(record: Record<string, unknown> | null, key: string) {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function metadataBoolean(record: Record<string, unknown> | null, key: string) {
+  const value = record?.[key];
+  return typeof value === "boolean" ? value : null;
+}
+
+function photoIndexV2(photo?: PhotoAssetWithMemory | null) {
+  const metadata = photo?.aiMetadata ?? {};
+  return metadataRecord(metadata.photoIndexV2 ?? metadata.photo_index_v2);
+}
+
+function debugScore(value: number | null) {
+  return value === null ? "n/a" : String(Math.round(value));
+}
+
 function faceLabel(face: PhotoFace, index: number) {
   const baseName = face.recognizedName || `人脸 ${index + 1}`;
   if (face.recognitionStatus === "recognized") return `可能是 ${baseName}`;
@@ -43,6 +78,12 @@ export function PhotoLightbox({
   const [showInfo, setShowInfo] = useState(!isMinimal);
   const driveUrl = photo ? getMediaAssetDriveUrl(photo) : null;
   const summary = metadataText(photo?.aiMetadata?.summary);
+  const indexV2 = photoIndexV2(photo);
+  const indexV2Content = metadataRecord(indexV2?.content);
+  const indexV2Composition = metadataRecord(indexV2?.composition);
+  const indexV2Quality = metadataRecord(indexV2?.visualQuality);
+  const indexV2Poster = metadataRecord(indexV2?.posterSuitability);
+  const indexV2Safety = metadataRecord(indexV2?.safety);
   const locationHints = Array.isArray(photo?.aiMetadata?.locationHints)
     ? photo.aiMetadata.locationHints.filter(
         (hint): hint is string => typeof hint === "string" && hint.trim().length > 0,
@@ -231,6 +272,62 @@ export function PhotoLightbox({
                     位置线索：{locationHints.slice(0, 3).join(", ")}
                   </div>
                 ) : null}
+
+                <details className="rounded-xl bg-stone-100 px-3 py-2 text-xs font-semibold text-stone-700">
+                  <summary className="cursor-pointer font-black text-emerald-800">
+                    Photo Index V2 Debug
+                  </summary>
+                  {indexV2 ? (
+                    <div className="mt-3 space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <span className="rounded-lg bg-white px-2 py-1">
+                          scene {metadataString(indexV2Content, "sceneType") ?? "n/a"}
+                        </span>
+                        <span className="rounded-lg bg-white px-2 py-1">
+                          cover {debugScore(metadataNumber(indexV2Poster, "coverScore"))}
+                        </span>
+                        <span className="rounded-lg bg-white px-2 py-1">
+                          hero {debugScore(metadataNumber(indexV2Poster, "heroScore"))}
+                        </span>
+                        <span className="rounded-lg bg-white px-2 py-1">
+                          aesthetic{" "}
+                          {debugScore(
+                            metadataNumber(indexV2Quality, "overallAesthetic"),
+                          )}
+                        </span>
+                        <span className="rounded-lg bg-white px-2 py-1">
+                          {metadataString(indexV2Composition, "orientation") ?? "n/a"} ·{" "}
+                          {metadataString(indexV2Composition, "shotType") ?? "n/a"}
+                        </span>
+                        <span className="rounded-lg bg-white px-2 py-1">
+                          title{" "}
+                          {metadataBoolean(indexV2Poster, "supportsLargeTitle")
+                            ? "yes"
+                            : "no"}
+                        </span>
+                        <span
+                          className={`rounded-lg px-2 py-1 ${
+                            metadataBoolean(indexV2Safety, "isSensitive")
+                              ? "bg-red-100 text-red-700"
+                              : "bg-white"
+                          }`}
+                        >
+                          safety{" "}
+                          {metadataBoolean(indexV2Safety, "isSensitive")
+                            ? "sensitive"
+                            : "ok"}
+                        </span>
+                      </div>
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-stone-950 p-3 text-[11px] leading-5 text-emerald-50">
+                        {JSON.stringify(indexV2, null, 2)}
+                      </pre>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-stone-500">
+                      还没有 V2 输出。重新索引这张照片后会写入 ai_metadata.photoIndexV2。
+                    </p>
+                  )}
+                </details>
 
                 {photo?.ocrText ? (
                   <div className="line-clamp-2 rounded-xl bg-stone-100 px-3 py-2 text-xs font-semibold text-stone-600">

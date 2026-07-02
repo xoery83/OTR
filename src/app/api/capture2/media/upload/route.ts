@@ -23,6 +23,8 @@ const RECOMMENDED_VIDEO_BYTES = 100 * 1024 * 1024;
 const HARD_VIDEO_BYTES = 300 * 1024 * 1024;
 const RECOMMENDED_VIDEO_SECONDS = 30;
 const HARD_VIDEO_SECONDS = 120;
+const GOOGLE_DRIVE_RECONNECT_REQUIRED_MESSAGE =
+  "Google Drive 连接已失效，请到行程设置重新连接云盘后再上传。";
 
 const RESERVED_VIDEO_JOB_TYPES = [
   "video_thumbnail",
@@ -207,6 +209,40 @@ async function upsertMediaChatMessage(input: {
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
+}
+
+function isGoogleDriveTokenExpiredError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /token has been expired or revoked|invalid_grant|expired|revoked/i.test(
+    message,
+  );
+}
+
+async function markGoogleDriveConnectionError(input: {
+  supabase: ReturnType<typeof getSupabaseForRequest>;
+  tripId: string;
+  metadata: Record<string, unknown> | null;
+  reason: string;
+}) {
+  const metadata = {
+    ...(input.metadata ?? {}),
+    health: {
+      status: "error",
+      checkedAt: new Date().toISOString(),
+      reason: input.reason,
+    },
+  };
+  await Promise.allSettled([
+    input.supabase
+      .from("journey_storage_connections")
+      .update({ status: "error", metadata })
+      .eq("trip_id", input.tripId)
+      .eq("provider", "google_drive"),
+    input.supabase
+      .from("trips")
+      .update({ photo_storage_status: "error" })
+      .eq("id", input.tripId),
+  ]);
 }
 
 function getSupabaseForRequest(request: Request) {
@@ -416,7 +452,22 @@ export async function POST(request: Request) {
     }
 
     const refreshToken = decryptGoogleToken(connection.token_reference);
-    const accessToken = await refreshGoogleDriveAccessToken(refreshToken);
+    let accessToken: string;
+    try {
+      accessToken = await refreshGoogleDriveAccessToken(refreshToken);
+    } catch (refreshError) {
+      await markGoogleDriveConnectionError({
+        supabase,
+        tripId,
+        metadata: (connection as StorageConnectionRow).metadata ?? null,
+        reason:
+          refreshError instanceof Error ? refreshError.message : "Could not refresh token.",
+      });
+      if (isGoogleDriveTokenExpiredError(refreshError)) {
+        return jsonError(GOOGLE_DRIVE_RECONNECT_REQUIRED_MESSAGE, 409);
+      }
+      throw refreshError;
+    }
     const mediaFolders = await ensureMediaFolders({
       accessToken,
       supabase,

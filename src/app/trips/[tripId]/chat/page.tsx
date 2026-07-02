@@ -8,6 +8,7 @@ import { PhotoLightbox } from "@/components/PhotoLightbox";
 import { TranslatedText } from "@/components/TranslatedText";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { getErrorMessage } from "@/lib/errors";
+import { checkGoogleDriveHealth } from "@/lib/google-drive-health";
 import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
 import {
   journeyResourceKey,
@@ -575,6 +576,7 @@ function ChatContent() {
   const [activeImage, setActiveImage] = useState<JourneyChatMessage | null>(null);
   const [activeImageFaces, setActiveImageFaces] = useState<PhotoFace[]>([]);
   const [revokeNowMs, setRevokeNowMs] = useState(() => Date.now());
+  const [driveHealthError, setDriveHealthError] = useState<string | null>(null);
 
   const chatResource = useJourneyCachedResource({
     cacheKey: journeyResourceKey.chat(tripId),
@@ -638,6 +640,21 @@ function ChatContent() {
     },
     [applyChatSnapshot, chatResource],
   );
+
+  const verifyGoogleDrive = useCallback(async () => {
+    try {
+      await checkGoogleDriveHealth(tripId);
+      setDriveHealthError(null);
+      return true;
+    } catch (healthError) {
+      const message = getErrorMessage(
+        healthError,
+        "Google Drive 当前不可用，请到行程设置重新连接云盘后再上传。",
+      );
+      setDriveHealthError(message);
+      return false;
+    }
+  }, [tripId]);
 
   function isNearBottom() {
     const list = listRef.current;
@@ -793,6 +810,10 @@ function ChatContent() {
     void markJourneyChatRead(tripId).catch(() => null);
     window.dispatchEvent(new CustomEvent("otr:chat-changed"));
   }, [messages.length, tripId]);
+
+  useEffect(() => {
+    void verifyGoogleDrive();
+  }, [verifyGoogleDrive]);
 
   useEffect(() => {
     if (!isLoading && messages.length > 0 && initialAutoScrollUntilRef.current > Date.now()) {
@@ -1061,6 +1082,11 @@ function ChatContent() {
       file.type.startsWith("image/"),
     );
     if (files.length === 0) return;
+    if (!(await verifyGoogleDrive())) {
+      setError("请先重新连接 Google Drive 后再发送图片。");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
 
     const caption = text.trim();
     const now = Date.now();
@@ -1337,6 +1363,17 @@ function ChatContent() {
         ref={listRef}
         className="otr-chat-message-list min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(0,105,82,0.24),rgba(0,105,82,0.12)),linear-gradient(135deg,#b9e5d8,#e8f5ef_48%,#bfded5)] pb-[176px] pt-20 md:pb-4 md:pt-2"
       >
+        {driveHealthError ? (
+          <div className="sticky top-3 z-30 mx-3 mb-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900 shadow-lg md:mx-auto md:max-w-3xl">
+            <div>{driveHealthError}</div>
+            <a
+              href={`/trips/${tripId}/settings`}
+              className="mt-2 inline-flex rounded-full bg-amber-400 px-3 py-1.5 text-xs font-black text-amber-950"
+            >
+              重新连接云盘
+            </a>
+          </div>
+        ) : null}
         {content}
       </div>
 
