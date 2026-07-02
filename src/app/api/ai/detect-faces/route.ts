@@ -7,15 +7,28 @@ type DetectFacesRequest = {
   tripId?: string;
 };
 
+type DetectionSource = {
+  url: string;
+  width: number | null;
+  height: number | null;
+  sourceType: "image" | "video_thumbnail";
+  sourceIndex: number | null;
+};
+
 type MediaAssetRow = {
   id: string;
   trip_id: string;
   asset_type: "image" | "video";
   compressed_file_path: string | null;
+  width?: number | null;
+  height?: number | null;
+  thumbnail_width?: number | null;
+  thumbnail_height?: number | null;
   thumbnail_url?: string | null;
   preview_url?: string | null;
   thumbnail_drive_web_url?: string | null;
   provider_thumbnail_url?: string | null;
+  ai_metadata?: Record<string, unknown> | null;
 };
 
 type FaceServiceResponse = {
@@ -76,9 +89,26 @@ type CurrentJourneyMemberIdentity = {
 
 const FACE_MATCH_THRESHOLD = 0.42;
 const GLOBAL_FACE_MATCH_THRESHOLD = 0.5;
+const VIDEO_FACE_SOURCE_LIMIT = 4;
+const SAME_VIDEO_FACE_THRESHOLD = 0.78;
 
 function normalizeEmail(email?: string | null) {
   return email?.trim().toLowerCase() || null;
+}
+
+function getRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function getNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
 }
 
 function publicImageUrlForAi(asset: MediaAssetRow, requestUrl: string) {
@@ -98,6 +128,156 @@ function publicImageUrlForAi(asset: MediaAssetRow, requestUrl: string) {
     asset.thumbnail_drive_web_url ??
     new URL(`/api/media/assets/${asset.id}/preview`, requestUrl).toString()
   );
+}
+
+function videoDetectionSources(asset: MediaAssetRow, requestUrl: string) {
+  const video = getRecord(asset.ai_metadata?.video);
+  const thumbnails = video?.thumbnails;
+  const sources: DetectionSource[] = [];
+  const seen = new Set<string>();
+
+  if (Array.isArray(thumbnails)) {
+    thumbnails.slice(0, VIDEO_FACE_SOURCE_LIMIT).forEach((thumbnail, index) => {
+      const record = getRecord(thumbnail);
+      if (!record) return;
+      const url = record?.url;
+      if (typeof url !== "string" || !url.trim() || seen.has(url)) return;
+      seen.add(url);
+      sources.push({
+        url,
+        width: getNumber(record.width),
+        height: getNumber(record.height),
+        sourceType: "video_thumbnail",
+        sourceIndex: index,
+      });
+    });
+  }
+
+  const fallbackUrl = publicImageUrlForAi(asset, requestUrl);
+  if (!seen.has(fallbackUrl)) {
+    sources.unshift({
+      url: fallbackUrl,
+      width: asset.thumbnail_width ?? asset.width ?? null,
+      height: asset.thumbnail_height ?? asset.height ?? null,
+      sourceType: "video_thumbnail",
+      sourceIndex: null,
+    });
+  }
+
+  return sources.slice(0, VIDEO_FACE_SOURCE_LIMIT);
+}
+
+function detectionSourcesForAsset(asset: MediaAssetRow, requestUrl: string) {
+  if (asset.asset_type === "video") {
+    return videoDetectionSources(asset, requestUrl);
+  }
+
+  return [
+    {
+      url: publicImageUrlForAi(asset, requestUrl),
+      width: asset.width ?? asset.thumbnail_width ?? null,
+      height: asset.height ?? asset.thumbnail_height ?? null,
+      sourceType: "image",
+      sourceIndex: null,
+    },
+  ] satisfies DetectionSource[];
+}
+
+function faceBoundingBoxForSource(
+  face: FaceServiceResponse["faces"][number],
+  asset: MediaAssetRow,
+  source: DetectionSource,
+) {
+  const sourceWidth =
+    source.width ??
+    (asset.asset_type === "video"
+      ? asset.thumbnail_width ?? asset.width ?? null
+      : asset.width ?? asset.thumbnail_width ?? null);
+  const sourceHeight =
+    source.height ??
+    (asset.asset_type === "video"
+      ? asset.thumbnail_height ?? asset.height ?? null
+      : asset.height ?? asset.thumbnail_height ?? null);
+
+  return {
+    ...face.bounding_box,
+    ...(sourceWidth
+      ? { sourceWidth, source_width: sourceWidth }
+      : {}),
+    ...(sourceHeight
+      ? { sourceHeight, source_height: sourceHeight }
+      : {}),
+    sourceType: source.sourceType,
+    sourceIndex: source.sourceIndex,
+    sourceUrl: source.url,
+  };
+}
+
+function faceRank(face: FaceServiceResponse["faces"][number]) {
+  return face.quality_score ?? face.confidence ?? 0;
+}
+
+function mergeVideoFaces(
+  faces: {
+    face: FaceServiceResponse["faces"][number];
+    modelName: string;
+    embeddingVersion: string;
+    source: DetectionSource;
+  }[],
+) {
+  const merged: typeof faces = [];
+
+  for (const candidate of faces) {
+    const duplicateIndex = merged.findIndex((existing) => {
+      if (
+        existing.face.embedding.length === 0 ||
+        candidate.face.embedding.length === 0
+      ) {
+        return false;
+      }
+      return (
+        cosineSimilarity(existing.face.embedding, candidate.face.embedding) >=
+        SAME_VIDEO_FACE_THRESHOLD
+      );
+    });
+
+    if (duplicateIndex === -1) {
+      merged.push(candidate);
+      continue;
+    }
+
+    if (faceRank(candidate.face) > faceRank(merged[duplicateIndex].face)) {
+      merged[duplicateIndex] = candidate;
+    }
+  }
+
+  return merged;
+}
+
+async function detectFacesForAsset(asset: MediaAssetRow, requestUrl: string) {
+  const sources = detectionSourcesForAsset(asset, requestUrl);
+  const detectedFaces: {
+    face: FaceServiceResponse["faces"][number];
+    modelName: string;
+    embeddingVersion: string;
+    source: DetectionSource;
+  }[] = [];
+
+  for (const source of sources) {
+    const detected = await callFaceService(source.url);
+    detectedFaces.push(
+      ...detected.faces.map((face) => ({
+        face,
+        modelName: detected.model_name,
+        embeddingVersion: detected.embedding_version,
+        source,
+      })),
+    );
+  }
+
+  return asset.asset_type === "video"
+    ? mergeVideoFaces(detectedFaces)
+    : detectedFaces;
 }
 
 function memberIdentityKeys(member: {
@@ -428,34 +608,10 @@ export async function POST(request: Request) {
       return jsonError("You must be logged in.", 401);
     }
 
-    const { data: existingFaces, error: existingError } = await supabase
-      .from("photo_faces")
-      .select("*")
-      .eq("media_asset_id", assetId)
-      .eq("trip_id", tripId)
-      .order("created_at", { ascending: true });
-
-    if (existingError) {
-      throw existingError;
-    }
-
-    if (existingFaces && existingFaces.length > 0) {
-      const recognizedFaces = await recognizeExistingFaces({
-        supabase,
-        tripId,
-        faces: existingFaces as PhotoFaceRow[],
-      });
-
-      return NextResponse.json({
-        faces: recognizedFaces.map(mapFace),
-        reused: true,
-      });
-    }
-
     const { data: asset, error: assetError } = await supabase
       .from("media_assets")
       .select(
-        "id, trip_id, asset_type, compressed_file_path, thumbnail_url, preview_url, thumbnail_drive_web_url, provider_thumbnail_url",
+        "id, trip_id, asset_type, compressed_file_path, width, height, thumbnail_width, thumbnail_height, thumbnail_url, preview_url, thumbnail_drive_web_url, provider_thumbnail_url, ai_metadata",
       )
       .eq("id", assetId)
       .eq("trip_id", tripId)
@@ -467,11 +623,55 @@ export async function POST(request: Request) {
     }
 
     const assetRow = asset as MediaAssetRow;
-    const imageUrl = publicImageUrlForAi(assetRow, request.url);
+    const detectionSources = detectionSourcesForAsset(assetRow, request.url);
 
-    const detected = await callFaceService(imageUrl);
+    const { data: existingFaces, error: existingError } = await supabase
+      .from("photo_faces")
+      .select("*")
+      .eq("media_asset_id", assetId)
+      .eq("trip_id", tripId)
+      .order("created_at", { ascending: true });
 
-    if (detected.faces.length === 0) {
+    if (existingError) {
+      throw existingError;
+    }
+
+    const existingRows = (existingFaces ?? []) as PhotoFaceRow[];
+    const canUpgradeSingleFrameVideoDetection =
+      assetRow.asset_type === "video" &&
+      detectionSources.length > 1 &&
+      existingRows.length > 0 &&
+      existingRows.length <= 1 &&
+      existingRows.every((face) => face.recognition_status !== "confirmed");
+
+    if (existingRows.length > 0 && !canUpgradeSingleFrameVideoDetection) {
+      const recognizedFaces = await recognizeExistingFaces({
+        supabase,
+        tripId,
+        faces: existingRows,
+      });
+
+      return NextResponse.json({
+        faces: recognizedFaces.map(mapFace),
+        reused: true,
+      });
+    }
+
+    if (canUpgradeSingleFrameVideoDetection) {
+      const { error: deleteError } = await supabase
+        .from("photo_faces")
+        .delete()
+        .eq("media_asset_id", assetId)
+        .eq("trip_id", tripId);
+
+      if (deleteError) {
+        throw deleteError;
+      }
+    }
+
+    const detectedFaces = await detectFacesForAsset(assetRow, request.url);
+
+    if (detectedFaces.length === 0) {
       return NextResponse.json({ faces: [], reused: false });
     }
 
@@ -483,9 +683,9 @@ export async function POST(request: Request) {
     const { data: insertedFaces, error: insertError } = await supabase
       .from("photo_faces")
       .insert(
-        detected.faces.map((face) => {
+        detectedFaces.map((detected) => {
           const match = findBestFaceMatchWithGlobalFallback(
-            face.embedding,
+            detected.face.embedding,
             samples,
             globalSamples,
           );
@@ -494,14 +694,18 @@ export async function POST(request: Request) {
             media_asset_id: assetId,
             trip_id: tripId,
             journey_member_id: match?.journeyMemberId ?? null,
-            bounding_box: face.bounding_box,
-            embedding: face.embedding,
-            confidence: face.confidence,
-            quality_score: face.quality_score,
+            bounding_box: faceBoundingBoxForSource(
+              detected.face,
+              assetRow,
+              detected.source,
+            ),
+            embedding: detected.face.embedding,
+            confidence: detected.face.confidence,
+            quality_score: detected.face.quality_score,
             recognition_status: match ? "recognized" : "unknown",
             recognized_name: match ? match.recognizedName : null,
-            model_name: detected.model_name,
-            embedding_version: detected.embedding_version,
+            model_name: detected.modelName,
+            embedding_version: detected.embeddingVersion,
           };
         }),
       )
@@ -514,6 +718,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       faces: ((insertedFaces ?? []) as PhotoFaceRow[]).map(mapFace),
       reused: false,
+      upgraded: canUpgradeSingleFrameVideoDetection,
     });
   } catch (error) {
     const message =

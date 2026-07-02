@@ -211,6 +211,40 @@ function videoThumbnailUrls(asset: PhotoAssetWithMemory | null) {
   ];
 }
 
+function getFaceSourceUrl(face?: PhotoFace | null) {
+  const sourceUrl = face?.boundingBox.sourceUrl ?? face?.boundingBox.source_url;
+  return typeof sourceUrl === "string" && sourceUrl.trim()
+    ? sourceUrl.trim()
+    : null;
+}
+
+function videoFaceReviewImageUrl(
+  asset?: PhotoAssetWithMemory | null,
+  face?: PhotoFace | null,
+) {
+  if (!asset || !isVideoAsset(asset)) return null;
+
+  const video = getRecord(asset.aiMetadata?.video);
+  const thumbnail = getRecord(video?.thumbnail);
+  const metadataThumbnailUrl = getMetadataString(thumbnail, "url");
+  const faceSourceUrl = getFaceSourceUrl(face);
+
+  return (
+    faceSourceUrl ??
+    asset.thumbnailUrl ??
+    metadataThumbnailUrl ??
+    asset.providerThumbnailUrl ??
+    asset.thumbnailDriveWebUrl ??
+    asset.displayUrl ??
+    null
+  );
+}
+
+function shouldShowFaceOnReviewImage(face: PhotoFace, reviewImageUrl: string | null) {
+  const sourceUrl = getFaceSourceUrl(face);
+  return !reviewImageUrl || !sourceUrl || sourceUrl === reviewImageUrl;
+}
+
 function getRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -246,6 +280,44 @@ function getMetadataBoolean(record: Record<string, unknown> | null, ...keys: str
     if (typeof value === "boolean") return value;
   }
   return null;
+}
+
+function getVideoRotation(asset: PhotoAssetWithMemory | null | undefined) {
+  if (!asset || !isVideoAsset(asset)) return 0;
+  const video = getRecord(asset.aiMetadata?.video);
+  const metadata = getRecord(video?.metadata);
+  const rotation = getMetadataNumber(metadata, "rotation");
+  if (rotation === null) return 0;
+  return ((Math.round(rotation) % 360) + 360) % 360;
+}
+
+function shouldSwapVideoDimensions(asset: PhotoAssetWithMemory | null | undefined) {
+  const rotation = getVideoRotation(asset);
+  return rotation === 90 || rotation === 270;
+}
+
+function getDisplayDimensions(
+  photo: PhotoAssetWithMemory,
+  loadedImageSize?: ImagePixelSize | null,
+) {
+  let width =
+    loadedImageSize?.width && loadedImageSize.width > 0
+      ? loadedImageSize.width
+      : photo.width && photo.width > 0
+        ? photo.width
+        : 4;
+  let height =
+    loadedImageSize?.height && loadedImageSize.height > 0
+      ? loadedImageSize.height
+      : photo.height && photo.height > 0
+        ? photo.height
+        : 3;
+
+  if (!loadedImageSize && shouldSwapVideoDimensions(photo)) {
+    [width, height] = [height, width];
+  }
+
+  return { width, height };
 }
 
 function formatFileSize(bytes: number | null | undefined) {
@@ -1411,6 +1483,12 @@ function TimelinePhotoLightbox({
   const driveUrl = getMediaAssetDriveUrl(activePhoto);
   const showDeleteAction = canCurrentUserManagePhoto(activeItem, currentUserId);
   const memoryId = activeItem.memory.id;
+  const faceReviewImageUrl = videoFaceReviewImageUrl(activePhoto, selectedFace?.face);
+  const showFaceReviewStill =
+    isVideo &&
+    Boolean(faceReviewImageUrl) &&
+    (selectedFace?.assetId === activePhoto.id || Boolean(selectedPersonName));
+  const canRenderFaceBoxes = !isVideo || showFaceReviewStill;
 
   function openFaceAssignment() {
     if (!item?.photo) return;
@@ -1559,7 +1637,21 @@ function TimelinePhotoLightbox({
             className="otr-photo-viewer-frame relative mx-auto grid min-h-0 max-h-full max-w-full place-items-center overflow-hidden rounded-3xl bg-black"
             style={getPhotoViewerFrameStyle(item.photo, viewerImageSize)}
           >
-            {isVideo && item.photo.displayPreviewUrl ? (
+            {showFaceReviewStill && faceReviewImageUrl ? (
+              <FallbackPhotoImage
+                src={faceReviewImageUrl}
+                fallbackSrc={[item.photo.displayUrl, item.photo.displayFallbackUrl]}
+                alt={item.memory.content || t("timeline.photo.alt")}
+                className="h-full w-full object-contain"
+                onPrimaryError={() => requestRepair(item.photo)}
+                onLoad={(event) =>
+                  setViewerImageSize({
+                    width: event.currentTarget.naturalWidth,
+                    height: event.currentTarget.naturalHeight,
+                  })
+                }
+              />
+            ) : isVideo && item.photo.displayPreviewUrl ? (
               <video
                 src={item.photo.displayPreviewUrl}
                 poster={item.photo.displayUrl}
@@ -1567,6 +1659,15 @@ function TimelinePhotoLightbox({
                 controls
                 autoPlay
                 playsInline
+                onLoadedMetadata={(event) => {
+                  const video = event.currentTarget;
+                  if (video.videoWidth > 0 && video.videoHeight > 0) {
+                    setViewerImageSize({
+                      width: video.videoWidth,
+                      height: video.videoHeight,
+                    });
+                  }
+                }}
               />
             ) : (
               <FallbackPhotoImage
@@ -1583,56 +1684,80 @@ function TimelinePhotoLightbox({
                 }
               />
             )}
-            {item.faces.map((face) => {
-              const boxStyle = getFaceBoxStyle(face, item.photo!, viewerImageSize);
-              if (!boxStyle) return null;
+            {canRenderFaceBoxes
+              ? item.faces.map((face) => {
+                  const boxStyle = getFaceBoxStyle(
+                    face,
+                    item.photo!,
+                    viewerImageSize,
+                  );
+                  if (!boxStyle) return null;
 
-              const isSelected =
-                selectedFace?.assetId === item.photo!.id &&
-                selectedFace.face.id === face.id;
-              const isPersonSelected =
-                Boolean(selectedPersonName) && face.recognizedName === selectedPersonName;
-              if (!isSelected && !isPersonSelected) return null;
-
-              const faceName = face.recognizedName || t("timeline.debug.confirmFace");
-
-              return (
-                <button
-                  type="button"
-                  key={face.id}
-                  onClick={() =>
-                    face.recognitionStatus === "confirmed"
-                      ? setSelectedPersonName(face.recognizedName ?? null)
-                      : setSelectedFace({
-                          assetId: item.photo!.id,
-                          face,
-                        })
+                  const isSelected =
+                    selectedFace?.assetId === item.photo!.id &&
+                    selectedFace.face.id === face.id;
+                  const isPersonSelected =
+                    Boolean(selectedPersonName) &&
+                    face.recognizedName === selectedPersonName;
+                  const isReviewCandidate =
+                    showFaceReviewStill &&
+                    face.recognitionStatus !== "confirmed" &&
+                    shouldShowFaceOnReviewImage(face, faceReviewImageUrl);
+                  if (!isSelected && !isPersonSelected && !isReviewCandidate) {
+                    return null;
                   }
-                  aria-label={t("timeline.debug.selectFace", { name: faceName })}
-                  className={`absolute rounded-xl border-2 transition ${
-                    isSelected
-                      ? "border-amber-300 bg-amber-300/20"
-                      : "border-emerald-300 bg-emerald-300/15"
-                  }`}
-                  style={boxStyle}
-                >
-                  <span
-                    className={`absolute left-1 top-1 max-w-28 truncate rounded-full px-2 py-1 text-[11px] font-black shadow-sm ${
-                      isSelected
-                        ? "bg-amber-300 text-stone-950"
-                        : "bg-emerald-600 text-white"
-                    }`}
-                  >
-                    {faceName}
-                  </span>
-                </button>
-              );
-            })}
+
+                  const faceName =
+                    face.recognizedName || t("timeline.debug.confirmFace");
+                  const showFaceLabel =
+                    isSelected || isPersonSelected || Boolean(face.recognizedName);
+
+                  return (
+                    <button
+                      type="button"
+                      key={face.id}
+                      onClick={() =>
+                        face.recognitionStatus === "confirmed"
+                          ? setSelectedPersonName(face.recognizedName ?? null)
+                          : setSelectedFace({
+                              assetId: item.photo!.id,
+                              face,
+                            })
+                      }
+                      aria-label={t("timeline.debug.selectFace", {
+                        name: faceName,
+                      })}
+                      className={`absolute rounded-xl border-2 transition ${
+                        isSelected
+                          ? "border-amber-300 bg-amber-300/20"
+                          : isReviewCandidate
+                            ? "border-white/90 bg-black/10"
+                            : "border-emerald-300 bg-emerald-300/15"
+                      }`}
+                      style={boxStyle}
+                    >
+                      {showFaceLabel ? (
+                        <span
+                          className={`absolute left-1 top-1 max-w-28 truncate rounded-full px-2 py-1 text-[11px] font-black shadow-sm ${
+                            isSelected
+                              ? "bg-amber-300 text-stone-950"
+                              : "bg-emerald-600 text-white"
+                          }`}
+                        >
+                          {faceName}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })
+              : null}
           </div>
 
           <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-3 md:p-4">
             <div className="space-y-4">
-              {isVideo ? <VideoInfoPanel asset={activePhoto} /> : null}
+              {isVideo && !showFaceReviewStill ? (
+                <VideoInfoPanel asset={activePhoto} />
+              ) : null}
 
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
@@ -2168,6 +2293,17 @@ function AlbumView({
     ? canCurrentUserManagePhoto(activeItem, currentUserId)
     : false;
   const activeIsVideo = isVideoAsset(activeItem?.photo);
+  const activeFaceReviewImageUrl = videoFaceReviewImageUrl(
+    activeItem?.photo,
+    selectedFace?.face,
+  );
+  const showActiveFaceReviewStill =
+    activeIsVideo &&
+    Boolean(activeFaceReviewImageUrl) &&
+    Boolean(activeItem?.photo) &&
+    (selectedFace?.assetId === activeItem?.photo?.id ||
+      Boolean(selectedPersonName));
+  const canRenderActiveFaceBoxes = !activeIsVideo || showActiveFaceReviewStill;
   const openedInitialAssetIdRef = useRef<string | null>(null);
   const returnToRef = useRef(returnTo);
   const initialViewerOpenRef = useRef(false);
@@ -2436,7 +2572,24 @@ function AlbumView({
                 className="otr-photo-viewer-frame relative mx-auto grid min-h-0 max-h-full max-w-full place-items-center overflow-hidden rounded-3xl bg-black"
                 style={getPhotoViewerFrameStyle(activeItem.photo, activeImageSize)}
               >
-                {activeIsVideo && activeItem.photo.displayPreviewUrl ? (
+                {showActiveFaceReviewStill && activeFaceReviewImageUrl ? (
+                  <FallbackPhotoImage
+                    src={activeFaceReviewImageUrl}
+                    fallbackSrc={[
+                      activeItem.photo.displayUrl,
+                      activeItem.photo.displayFallbackUrl,
+                    ]}
+                    alt={activeItem.memory.content || t("timeline.photo.alt")}
+                    className="h-full w-full object-contain"
+                    onPrimaryError={() => requestRepair(activeItem.photo)}
+                    onLoad={(event) =>
+                      setActiveImageSize({
+                        width: event.currentTarget.naturalWidth,
+                        height: event.currentTarget.naturalHeight,
+                      })
+                    }
+                  />
+                ) : activeIsVideo && activeItem.photo.displayPreviewUrl ? (
                   <video
                     src={activeItem.photo.displayPreviewUrl}
                     poster={activeItem.photo.displayUrl}
@@ -2444,6 +2597,15 @@ function AlbumView({
                     controls
                     autoPlay
                     playsInline
+                    onLoadedMetadata={(event) => {
+                      const video = event.currentTarget;
+                      if (video.videoWidth > 0 && video.videoHeight > 0) {
+                        setActiveImageSize({
+                          width: video.videoWidth,
+                          height: video.videoHeight,
+                        });
+                      }
+                    }}
                   />
                 ) : (
                   <FallbackPhotoImage
@@ -2463,7 +2625,8 @@ function AlbumView({
                     }
                   />
                 )}
-                {activeItem.faces.map((face) => {
+                {canRenderActiveFaceBoxes
+                  ? activeItem.faces.map((face) => {
                       const boxStyle = getFaceBoxStyle(
                         face,
                         activeItem.photo!,
@@ -2477,10 +2640,18 @@ function AlbumView({
                       const isPersonSelected =
                         Boolean(selectedPersonName) &&
                         face.recognizedName === selectedPersonName;
-                      if (!isSelected && !isPersonSelected) return null;
+                      const isReviewCandidate =
+                        showActiveFaceReviewStill &&
+                        face.recognitionStatus !== "confirmed" &&
+                        shouldShowFaceOnReviewImage(face, activeFaceReviewImageUrl);
+                      if (!isSelected && !isPersonSelected && !isReviewCandidate) {
+                        return null;
+                      }
 
                       const faceName =
                         face.recognizedName || t("timeline.debug.confirmFace");
+                      const showFaceLabel =
+                        isSelected || isPersonSelected || Boolean(face.recognizedName);
 
                       return (
                         <button
@@ -2500,27 +2671,32 @@ function AlbumView({
                           className={`absolute rounded-xl border-2 transition ${
                             isSelected
                               ? "border-amber-300 bg-amber-300/20"
-                              : "border-emerald-300 bg-emerald-300/15"
+                              : isReviewCandidate
+                                ? "border-white/90 bg-black/10"
+                                : "border-emerald-300 bg-emerald-300/15"
                           }`}
                           style={boxStyle}
                         >
-                          <span
-                            className={`absolute left-1 top-1 max-w-28 truncate rounded-full px-2 py-1 text-[11px] font-black shadow-sm ${
-                              isSelected
-                                ? "bg-amber-300 text-stone-950"
-                                : "bg-emerald-600 text-white"
-                            }`}
-                          >
-                            {faceName}
-                          </span>
+                          {showFaceLabel ? (
+                            <span
+                              className={`absolute left-1 top-1 max-w-28 truncate rounded-full px-2 py-1 text-[11px] font-black shadow-sm ${
+                                isSelected
+                                  ? "bg-amber-300 text-stone-950"
+                                  : "bg-emerald-600 text-white"
+                              }`}
+                            >
+                              {faceName}
+                            </span>
+                          ) : null}
                         </button>
                       );
-                    })}
+                    })
+                  : null}
               </div>
 
               <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-3 md:p-4">
                 <div className="space-y-4">
-                  {activeIsVideo ? (
+                  {activeIsVideo && !showActiveFaceReviewStill ? (
                     <VideoInfoPanel asset={activeItem.photo} />
                   ) : null}
 
@@ -2731,18 +2907,7 @@ function getPhotoViewerFrameStyle(
   photo: PhotoAssetWithMemory,
   loadedImageSize?: ImagePixelSize | null,
 ): CSSProperties {
-  const width =
-    loadedImageSize?.width && loadedImageSize.width > 0
-      ? loadedImageSize.width
-      : photo.width && photo.width > 0
-        ? photo.width
-        : 4;
-  const height =
-    loadedImageSize?.height && loadedImageSize.height > 0
-      ? loadedImageSize.height
-      : photo.height && photo.height > 0
-        ? photo.height
-        : 3;
+  const { width, height } = getDisplayDimensions(photo, loadedImageSize);
 
   return {
     aspectRatio: `${width} / ${height}`,
@@ -2910,8 +3075,12 @@ function VideoInfoPanel({ asset }: { asset: PhotoAssetWithMemory }) {
   const rotation = getMetadataNumber(metadata, "rotation");
   const hasAudio = getMetadataBoolean(metadata, "has_audio");
   const previewDuration = asset.previewUrl ? "0:03" : null;
-  const resolution = width && height
-    ? `${Math.round(width)} x ${Math.round(height)}${rotation ? ` · ${rotation}°` : ""}`
+  const displayDimensions =
+    width && height ? getDisplayDimensions({ ...asset, width, height }) : null;
+  const resolution = displayDimensions
+    ? `${Math.round(displayDimensions.width)} x ${Math.round(displayDimensions.height)}${
+        rotation ? ` · ${rotation}°` : ""
+      }`
     : null;
 
   const rows = [
