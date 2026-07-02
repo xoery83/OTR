@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo } from "react";
 import { useI18n } from "@/components/I18nProvider";
 import { MemoryEngagementActions } from "@/components/MemoryEngagementActions";
-import type { MemoryEntry } from "@/types";
+import type { MemoryEntry, PhotoAssetWithMemory } from "@/types";
 import { formatTime } from "@/lib/format";
 import type { MemoryEngagement } from "@/lib/supabase/memories";
 
@@ -24,6 +24,7 @@ export function DayMemoryPreview({
   memories,
   imageUrls = {},
   imageUrlCandidatesByMemoryId = {},
+  mediaAssetsByMemoryId = {},
   onOpenImage,
   onEngagementChange,
 }: {
@@ -32,6 +33,7 @@ export function DayMemoryPreview({
   memories: MemoryEntry[];
   imageUrls?: Record<string, string>;
   imageUrlCandidatesByMemoryId?: Record<string, string[]>;
+  mediaAssetsByMemoryId?: Record<string, PhotoAssetWithMemory>;
   onOpenImage?: (image: {
     src: string;
     alt: string;
@@ -41,8 +43,25 @@ export function DayMemoryPreview({
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const { t } = useI18n();
+  const mediaAssetForMemory = (memory: MemoryEntry) =>
+    mediaAssetsByMemoryId[memory.id] ?? null;
+  const videoPosterForMemory = (memory: MemoryEntry) => {
+    const asset = mediaAssetForMemory(memory);
+    if (asset?.assetType !== "video") return null;
+
+    return (
+      asset.displayUrl ??
+      asset.thumbnailUrl ??
+      asset.providerThumbnailUrl ??
+      asset.thumbnailDriveWebUrl ??
+      asset.displayFallbackUrl ??
+      `/api/media/assets/${asset.id}/thumbnail`
+    );
+  };
   const imageCandidatesForMemory = (memory: MemoryEntry) => {
+    const videoPoster = videoPosterForMemory(memory);
     const candidates = [
+      videoPoster,
       ...(imageUrlCandidatesByMemoryId[memory.id] ?? []),
       memory.mediaUrl ? imageUrls[memory.mediaUrl] : null,
     ].filter((value): value is string => Boolean(value));
@@ -81,7 +100,7 @@ export function DayMemoryPreview({
 
       return groups;
     }, []);
-  }, [imageUrlCandidatesByMemoryId, imageUrls, latestMemories]);
+  }, [imageUrlCandidatesByMemoryId, imageUrls, latestMemories, mediaAssetsByMemoryId]);
 
   return (
     <div className="space-y-3">
@@ -101,6 +120,8 @@ export function DayMemoryPreview({
                   {group.memories.map((memory) => {
                     const imageCandidates = imageCandidatesForMemory(memory);
                     const imageUrl = imageCandidates[0] ?? null;
+                    const isVideo =
+                      mediaAssetForMemory(memory)?.assetType === "video";
                     if (!imageUrl) return null;
 
                     return (
@@ -123,6 +144,7 @@ export function DayMemoryPreview({
                           sources={imageCandidates}
                           className="h-full w-full object-cover"
                         />
+                        {isVideo ? <VideoPlayBadge /> : null}
                       </button>
                     );
                   })}
@@ -133,6 +155,7 @@ export function DayMemoryPreview({
             const memory = group.memory;
             const imageCandidates = imageCandidatesForMemory(memory);
             const imageUrl = imageCandidates[0] ?? null;
+            const isVideo = mediaAssetForMemory(memory)?.assetType === "video";
 
             return (
               <article
@@ -170,6 +193,7 @@ export function DayMemoryPreview({
                         sources={imageCandidates}
                         className="size-full object-cover"
                       />
+                      {isVideo ? <VideoPlayBadge compact /> : null}
                     </button>
                   ) : null}
                   {memory.content ? (
@@ -194,6 +218,27 @@ export function DayMemoryPreview({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function VideoPlayBadge({ compact = false }: { compact?: boolean }) {
+  return (
+    <>
+      <span className="pointer-events-none absolute inset-0 grid place-items-center">
+        <span
+          className={`grid place-items-center rounded-full bg-stone-950/70 font-black text-white shadow-lg ${
+            compact ? "size-8 text-xs" : "size-10 text-sm"
+          }`}
+        >
+          ▶
+        </span>
+      </span>
+      {!compact ? (
+        <span className="pointer-events-none absolute bottom-2 left-2 rounded-full bg-stone-950/75 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-white">
+          VIDEO
+        </span>
+      ) : null}
+    </>
   );
 }
 

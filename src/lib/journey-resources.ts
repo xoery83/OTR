@@ -45,7 +45,7 @@ export const journeyResourceKey = {
   map: (tripId: string) => `journey:${tripId}:map:v2`,
   ledger: (tripId: string) => `journey:${tripId}:ledger:v2`,
   chat: (tripId: string) => `journey:${tripId}:chat:recent`,
-  timeline: (tripId: string) => `journey:${tripId}:timeline:page`,
+  timeline: (tripId: string) => `journey:${tripId}:timeline:page:v2`,
   people: (tripId: string) => `journey:${tripId}:people`,
   highlights: (tripId: string) => `journey:${tripId}:highlights`,
 };

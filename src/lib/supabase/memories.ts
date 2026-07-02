@@ -113,7 +113,10 @@ function isSystemCaptureUploadMemoryContent(content: string | null) {
 }
 
 function onlyVisibleMemoryRows(rows: MemoryRow[]) {
-  return rows.filter((row) => !isSystemCaptureUploadMemoryContent(row.content));
+  return rows.filter((row) => {
+    if (!isSystemCaptureUploadMemoryContent(row.content)) return true;
+    return row.type === "photo" && Boolean(row.media_url);
+  });
 }
 
 function isMissingParentMemoryColumn(error: unknown) {
@@ -184,25 +187,42 @@ export async function getTripMemoriesPage(
   await ensureCreatorMembership(tripId);
 
   const limit = Math.max(1, Math.min(options?.limit ?? 60, 100));
-  let query = supabase
-    .from("memory_entries")
-    .select(memorySelect)
-    .eq("trip_id", tripId)
-    .order("captured_at", { ascending: false })
-    .limit(limit + 1);
+  const batchSize = Math.max(limit + 1, 100);
+  const maxRowsToScan = 1000;
+  const visibleRows: MemoryRow[] = [];
+  let cursor = options?.beforeCapturedAt ?? null;
+  let scannedRows = 0;
 
-  if (options?.beforeCapturedAt) {
-    query = query.lt("captured_at", options.beforeCapturedAt);
+  while (visibleRows.length <= limit && scannedRows < maxRowsToScan) {
+    let query = supabase
+      .from("memory_entries")
+      .select(memorySelect)
+      .eq("trip_id", tripId)
+      .order("captured_at", { ascending: false })
+      .limit(batchSize);
+
+    if (cursor) {
+      query = query.lt("captured_at", cursor);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      throw error;
+    }
+
+    const rows = (data ?? []) as MemoryRow[];
+    if (rows.length === 0) break;
+
+    scannedRows += rows.length;
+    visibleRows.push(...onlyVisibleMemoryRows(rows));
+
+    const lastRow = rows[rows.length - 1];
+    cursor = lastRow?.captured_at ?? null;
+    if (rows.length < batchSize || !cursor) break;
   }
 
-  const { data, error } = await query;
-
-  if (error) {
-    throw error;
-  }
-
-  const rows = onlyVisibleMemoryRows((data ?? []) as MemoryRow[]);
-  const pageRows = rows.slice(0, limit);
+  const pageRows = visibleRows.slice(0, limit);
   const memories = await withMemoryEngagement(
     await withContributorProfiles(pageRows.map(mapMemory)),
   );
@@ -210,7 +230,9 @@ export async function getTripMemoriesPage(
   return {
     memories,
     nextCursor:
-      rows.length > limit ? pageRows[pageRows.length - 1]?.captured_at ?? null : null,
+      visibleRows.length > limit
+        ? pageRows[pageRows.length - 1]?.captured_at ?? null
+        : null,
   };
 }
 
@@ -776,6 +798,39 @@ export async function createPhotoMemory(
     mediaAssetId,
     title: caption.trim() || originalFileName || "Photo processing",
   }).catch(() => null);
+
+  const { data: journeyMember } = await supabase
+    .from("journey_members")
+    .select("id")
+    .eq("trip_id", tripId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  try {
+    await supabase.from("journey_chat_messages").upsert(
+      {
+        trip_id: tripId,
+        user_id: user.id,
+        journey_member_id:
+          (journeyMember as { id?: string } | null)?.id ?? null,
+        message_type: "image",
+        text_content: caption.trim() || null,
+        media_asset_id: mediaAssetId,
+        memory_entry_id: memoryId,
+        media_url: mediaKey,
+        source_type: "timeline_memory",
+        source_id: memoryId,
+        created_at: now,
+        metadata: {
+          capturedAt,
+          syncedFrom: "createPhotoMemory",
+        },
+      },
+      { onConflict: "trip_id,source_type,source_id", ignoreDuplicates: true },
+    );
+  } catch {
+    // The memory and media asset are valid even if chat sync is delayed.
+  }
 
   return {
     id: memoryId,

@@ -519,6 +519,13 @@ export async function updateItineraryEvent(input: UpdateItineraryEventInput) {
 }
 
 export async function deleteItineraryEvent(id: string) {
+  const { error: mapObjectError } = await supabase
+    .from("journey_map_objects")
+    .delete()
+    .eq("source_type", "itinerary_event")
+    .eq("source_id", id);
+  if (mapObjectError) throw mapObjectError;
+
   const { error } = await supabase.from("itinerary_events").delete().eq("id", id);
   if (error) throw error;
 }
@@ -592,6 +599,13 @@ export async function updateItineraryReservation(
 }
 
 export async function deleteItineraryReservation(id: string) {
+  const { error: mapObjectError } = await supabase
+    .from("journey_map_objects")
+    .delete()
+    .eq("source_type", "itinerary_reservation")
+    .eq("source_id", id);
+  if (mapObjectError) throw mapObjectError;
+
   const { error } = await supabase
     .from("itinerary_reservations")
     .delete()

@@ -227,17 +227,14 @@ export async function repairCurrentUserOrphanPhotoMemories(tripId: string) {
     .select(MEDIA_ASSET_SELECT)
     .eq("trip_id", tripId)
     .eq("user_id", user.id)
-    .eq("asset_type", "image")
+    .in("asset_type", ["image", "video"])
     .is("memory_entry_id", null)
-    .not("compressed_file_path", "is", null)
     .limit(50);
 
   if (assetError) return 0;
 
   let repaired = 0;
   for (const row of (assetRows ?? []) as MediaAssetRow[]) {
-    if (!row.compressed_file_path) continue;
-
     const memoryId = crypto.randomUUID();
     const capturedAt = row.taken_at ?? row.created_at ?? new Date().toISOString();
     const metadata =
@@ -252,7 +249,7 @@ export async function repairCurrentUserOrphanPhotoMemories(tripId: string) {
       trip_day_id: dayId,
       type: "photo",
       content: null,
-      media_url: row.compressed_file_path,
+      media_url: row.compressed_file_path ?? `drive:${row.id}`,
       location_name: null,
       location_text: null,
       location_status: "none",
@@ -451,10 +448,29 @@ export async function getTripVideoAssets(
   }
 
   const assets = ((assetRows ?? []) as MediaAssetRow[]).map(mapMediaAsset);
+  const memoryIds = [
+    ...new Set(assets.map((asset) => asset.memoryEntryId).filter(Boolean)),
+  ];
+
+  const memoriesById = new Map<string, MemoryEntry>();
+  if (memoryIds.length > 0) {
+    const { data: memoryRows, error: memoryError } = await supabase
+      .from("memory_entries")
+      .select(MEMORY_SELECT)
+      .in("id", memoryIds);
+
+    if (memoryError) {
+      throw memoryError;
+    }
+
+    for (const memory of ((memoryRows ?? []) as MemoryRow[]).map(mapMemory)) {
+      memoriesById.set(memory.id, memory);
+    }
+  }
 
   return assets.map((asset) => ({
     ...asset,
-    memory: null,
+    memory: memoriesById.get(asset.memoryEntryId) ?? null,
     displayUrl: getMediaAssetDisplayUrl(asset),
     displayPreviewUrl: getMediaAssetPreviewUrl(asset),
     displayFallbackUrl: undefined,

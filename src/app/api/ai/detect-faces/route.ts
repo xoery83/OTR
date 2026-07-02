@@ -192,12 +192,12 @@ function faceBoundingBoxForSource(
     source.width ??
     (asset.asset_type === "video"
       ? asset.thumbnail_width ?? asset.width ?? null
-      : asset.width ?? asset.thumbnail_width ?? null);
+      : null);
   const sourceHeight =
     source.height ??
     (asset.asset_type === "video"
       ? asset.thumbnail_height ?? asset.height ?? null
-      : asset.height ?? asset.thumbnail_height ?? null);
+      : null);
 
   return {
     ...face.bounding_box,

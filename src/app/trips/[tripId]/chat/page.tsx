@@ -258,6 +258,18 @@ function MessageBubble({
   const fromTimeline = message.sourceType === "timeline_memory";
   const pendingStatus = getLocalPendingStatus(message);
   const canRevoke = canRevokeChatMessage(message, mine, nowMs);
+  const isVideo = message.photoAsset?.assetType === "video";
+  const isPortraitVideo =
+    isVideo &&
+    (message.photoAsset?.thumbnailHeight ?? message.photoAsset?.height ?? 0) >
+      (message.photoAsset?.thumbnailWidth ?? message.photoAsset?.width ?? 0);
+  const mediaText = message.textContent?.trim() ?? "";
+  const shouldHideDefaultMediaText =
+    message.messageType === "image" &&
+    (Boolean(message.mediaDisplayUrl) ||
+      Boolean(message.photoAsset) ||
+      Boolean(message.mediaAssetId)) &&
+    (mediaText === "图片" || mediaText === "视频");
 
   if (message.deletedAt) {
     return (
@@ -293,15 +305,32 @@ function MessageBubble({
             <button
               type="button"
               onClick={() => onOpenImage(message)}
-              className="block overflow-hidden rounded-xl bg-stone-100"
-              aria-label="打开图片"
+              className={`relative block overflow-hidden rounded-xl bg-stone-100 ${
+                isVideo
+                  ? isPortraitVideo
+                    ? "aspect-[9/14] w-40 max-w-[64vw]"
+                    : "aspect-video w-56 max-w-[64vw]"
+                  : "max-w-[64vw]"
+              }`}
+              aria-label={isVideo ? "打开视频" : "打开图片"}
             >
               <img
                 src={message.mediaDisplayUrl}
-                alt={message.textContent || "聊天图片"}
+                alt={isVideo ? "" : message.textContent || "聊天图片"}
                 onLoad={onMediaLoad}
-                className="max-h-56 w-48 object-cover"
+                onError={(event) => {
+                  if (isVideo) {
+                    event.currentTarget.style.display = "none";
+                    onMediaLoad();
+                  }
+                }}
+                className={
+                  isVideo
+                    ? "h-full w-full object-cover"
+                    : "max-h-56 w-48 object-cover"
+                }
               />
+              {isVideo ? <ChatVideoBadge /> : null}
             </button>
           ) : null}
           {message.messageType === "image" && pendingStatus ? (
@@ -351,7 +380,7 @@ function MessageBubble({
             </div>
           ) : null}
 
-          {message.textContent && message.messageType !== "voice" ? (
+          {message.textContent && message.messageType !== "voice" && !shouldHideDefaultMediaText ? (
             <TranslatedText
               as="div"
               className={message.messageType === "image" ? "mt-2" : ""}
@@ -385,6 +414,21 @@ function MessageBubble({
   );
 }
 
+function ChatVideoBadge() {
+  return (
+    <>
+      <span className="pointer-events-none absolute inset-0 grid place-items-center">
+        <span className="grid size-10 place-items-center rounded-full bg-stone-950/70 text-sm font-black text-white shadow-lg">
+          ▶
+        </span>
+      </span>
+      <span className="pointer-events-none absolute bottom-2 left-2 rounded-full bg-stone-950/75 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-white">
+        VIDEO
+      </span>
+    </>
+  );
+}
+
 function ImageViewer({
   message,
   faces,
@@ -395,17 +439,106 @@ function ImageViewer({
   onClose: () => void;
 }) {
   if (!message?.mediaDisplayUrl) return null;
+  const isVideo = message.photoAsset?.assetType === "video";
+  if (isVideo) {
+    return <VideoViewer message={message} onClose={onClose} />;
+  }
 
   return (
     <PhotoLightbox
       imageUrl={message.mediaDisplayUrl}
-      title={message.textContent || "图片"}
+      title={message.textContent || (isVideo ? "视频" : "图片")}
       subtitle={`${message.senderName || "Traveler"} · ${formatMessageTime(message.createdAt)}`}
       photo={message.photoAsset}
       faces={faces}
       variant="minimal"
       onClose={onClose}
     />
+  );
+}
+
+function VideoViewer({
+  message,
+  onClose,
+}: {
+  message: JourneyChatMessage;
+  onClose: () => void;
+}) {
+  const previewSrc = message.photoAsset?.previewUrl ?? null;
+  const posterSrc = message.mediaDisplayUrl ?? message.photoAsset?.displayUrl ?? undefined;
+  const driveUrl =
+    message.photoAsset?.providerWebUrl ??
+    message.photoAsset?.originalDriveWebUrl ??
+    null;
+  const title = (() => {
+    const text = message.textContent?.trim();
+    if (!text || text === "图片" || text === "视频") return "视频";
+    return text;
+  })();
+  const isPortrait =
+    (message.photoAsset?.thumbnailHeight ?? message.photoAsset?.height ?? 0) >
+    (message.photoAsset?.thumbnailWidth ?? message.photoAsset?.width ?? 0);
+
+  return (
+    <div className="fixed inset-0 z-[80] flex flex-col bg-stone-950 text-white">
+      <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-3">
+        <div className="min-w-0">
+          <h2 className="truncate text-base font-black">
+            {title}
+          </h2>
+          <p className="text-xs font-bold text-white/60">
+            {message.senderName || "Traveler"} · {formatMessageTime(message.createdAt)}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {driveUrl ? (
+            <a
+              href={driveUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-full bg-white px-4 py-2 text-sm font-black text-stone-950"
+            >
+              打开云盘
+            </a>
+          ) : null}
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full bg-white/10 px-4 py-2 text-sm font-black text-white"
+          >
+            关闭
+          </button>
+        </div>
+      </div>
+      <div className="grid min-h-0 flex-1 place-items-center px-3 pb-5">
+        {previewSrc ? (
+          <video
+            src={previewSrc}
+            poster={posterSrc}
+            controls
+            autoPlay
+            playsInline
+            className={`max-h-full max-w-full rounded-2xl bg-black object-contain shadow-2xl ${
+              isPortrait ? "h-full" : "w-full"
+            }`}
+          />
+        ) : posterSrc ? (
+          <div className="grid gap-3 text-center">
+            <img
+              src={posterSrc}
+              alt=""
+              onError={(event) => {
+                event.currentTarget.style.display = "none";
+              }}
+              className="max-h-[72vh] max-w-full rounded-2xl bg-black object-contain shadow-2xl"
+            />
+            <p className="text-sm font-bold text-white/70">视频预览还在生成中。</p>
+          </div>
+        ) : (
+          <p className="text-sm font-bold text-white/70">视频预览还在生成中。</p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -693,6 +826,10 @@ function ChatContent() {
 
   useEffect(() => {
     let cancelled = false;
+    if (activeImage?.photoAsset?.assetType === "video") {
+      setActiveImageFaces([]);
+      return;
+    }
     const assetId = activeImage?.photoAsset?.id ?? activeImage?.mediaAssetId;
     setActiveImageFaces([]);
     if (!assetId) return;
@@ -943,7 +1080,7 @@ function ChatContent() {
           userId: currentUserId,
           journeyMemberId: null,
           messageType: "image" as const,
-          textContent: index === 0 ? caption || "图片" : "图片",
+          textContent: index === 0 ? caption || null : null,
           mediaAssetId: null,
           memoryEntryId: null,
           mediaUrl: null,

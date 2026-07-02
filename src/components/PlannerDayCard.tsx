@@ -4952,6 +4952,7 @@ export function PlannerDayCard({
             memories={memories.map(memoryWithEngagement)}
             imageUrls={imageUrlByMemoryPath}
             imageUrlCandidatesByMemoryId={memoryImageUrlCandidates}
+            mediaAssetsByMemoryId={photoAssetsByMemoryId}
             onOpenImage={setImagePreview}
             onEngagementChange={handleMemoryEngagementChange}
           />

@@ -336,6 +336,20 @@ function findObjectForSource(
   });
 }
 
+function isCurrentPlannerMapObject(
+  object: JourneyMapObject,
+  currentPlanSourceKeys: Set<string>,
+) {
+  if (
+    object.sourceType !== "itinerary_event" &&
+    object.sourceType !== "itinerary_reservation"
+  ) {
+    return true;
+  }
+  if (!object.sourceId) return false;
+  return currentPlanSourceKeys.has(`${object.sourceType}:${object.sourceId}`);
+}
+
 function coordinateLookupKey(
   sourceType: string,
   sourceId: string | null,
@@ -644,6 +658,13 @@ function dayLocationTargets(plannerDay: PlannerV2Day) {
   ];
 }
 
+function locationTargetKey(targets: ReturnType<typeof dayLocationTargets>) {
+  return targets
+    .map((target) => `${target.itemType}:${target.itemId}`)
+    .sort()
+    .join("|");
+}
+
 async function resolveDayLocations(
   journeyId: string,
   plannerDay: PlannerV2Day,
@@ -722,10 +743,13 @@ function JourneyMapContent() {
   }, [tripId]);
 
   const runLocationRepair = useCallback(
-    async (force = false, options: { silent?: boolean } = {}) => {
+    async (
+      force = false,
+      options: { refitOnResolved?: boolean; silent?: boolean } = {},
+    ) => {
       const silent = Boolean(options.silent);
       const scopedDay =
-        force && selectedDayId !== "journey"
+        selectedDayId !== "journey"
           ? days.find((plannerDay) => plannerDay.day.id === selectedDayId) ?? null
           : null;
       const resolvingTotal = scopedDay ? dayLocationTargets(scopedDay).length : 0;
@@ -751,6 +775,9 @@ function JourneyMapContent() {
         setLocationRepair({ ...summary, isResolving: false, error: null });
         if (summary.resolved > 0) {
           await refreshMapObjects();
+          if (options.refitOnResolved) {
+            setMapViewVersion((version) => version + 1);
+          }
         }
       } catch (repairError) {
         if (silent) return;
@@ -773,7 +800,7 @@ function JourneyMapContent() {
     cacheKey: journeyResourceKey.map(tripId),
     loader: () => loadJourneyMapResource(tripId),
     ttl: 90_000,
-    staleTime: 15_000,
+    staleTime: 0,
     keepPreviousData: true,
     backgroundRefresh: true,
   });
@@ -822,6 +849,22 @@ function JourneyMapContent() {
     () => days.find((day) => day.day.id === selectedDayId) ?? null,
     [days, selectedDayId],
   );
+  const currentPlanSourceKeys = useMemo(() => {
+    const keys = new Set<string>();
+    days.forEach((day) => {
+      day.reservations.forEach((reservation) => {
+        keys.add(`itinerary_reservation:${reservation.id}`);
+      });
+      day.activities.forEach((activity) => {
+        keys.add(`itinerary_event:${activity.id}`);
+      });
+    });
+    return keys;
+  }, [days]);
+  const selectedRepairTargetKey = useMemo(
+    () => (selectedDay ? locationTargetKey(dayLocationTargets(selectedDay)) : "journey"),
+    [selectedDay],
+  );
 
   useEffect(() => {
     if (!selectedDayId || selectedDayId === "journey") return;
@@ -868,14 +911,6 @@ function JourneyMapContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photoMemoryPathKey]);
 
-  useEffect(() => {
-    if (!trip || !days.length) return;
-    const key = `${tripId}:${days.length}`;
-    if (locationRepairKeyRef.current === key) return;
-    locationRepairKeyRef.current = key;
-    runLocationRepair(false, { silent: true }).catch(() => undefined);
-  }, [days.length, runLocationRepair, trip, tripId]);
-
   const hotelStops = useMemo(
     () =>
       days.flatMap((day) =>
@@ -899,6 +934,7 @@ function JourneyMapContent() {
   const hotelObjectStops = useMemo(
     () =>
       mapObjects.flatMap((object) => {
+        if (!isCurrentPlannerMapObject(object, currentPlanSourceKeys)) return [];
         if (object.type !== "hotel") return [];
         const coordinates = getCoordinates(object);
         if (!coordinates) return [];
@@ -919,7 +955,7 @@ function JourneyMapContent() {
           },
         ];
       }),
-    [mapObjects],
+    [currentPlanSourceKeys, mapObjects],
   );
 
   const journeyDayStops = useMemo(
@@ -1004,6 +1040,7 @@ function JourneyMapContent() {
   const journeyObjectStops = useMemo(
     () =>
       mapObjects.flatMap((object) => {
+        if (!isCurrentPlannerMapObject(object, currentPlanSourceKeys)) return [];
         if (object.type === "live_location" || object.type === "memory") return [];
         if (object.type === "hotel" && hotelStops.length) return [];
         const coordinates = getCoordinates(object);
@@ -1025,7 +1062,7 @@ function JourneyMapContent() {
           },
         ];
       }),
-    [hotelStops.length, mapObjects],
+    [currentPlanSourceKeys, hotelStops.length, mapObjects],
   );
 
   const selectedDayStops = useMemo(() => {
@@ -1138,6 +1175,7 @@ function JourneyMapContent() {
     );
 
     return mapObjects.flatMap((object) => {
+      if (!isCurrentPlannerMapObject(object, currentPlanSourceKeys)) return [];
       if (object.type === "live_location" || object.type === "memory") return [];
       if (dateKey(object.timestamp) !== selectedDay.day.dayDate) return [];
       const sourceKey =
@@ -1166,7 +1204,7 @@ function JourneyMapContent() {
         },
       ];
     });
-  }, [mapObjects, selectedDay, selectedDayStops, t]);
+  }, [currentPlanSourceKeys, mapObjects, selectedDay, selectedDayStops, t]);
 
   const memoryStops = useMemo(
     () =>
@@ -1237,11 +1275,21 @@ function JourneyMapContent() {
     () => ({ latitude: 0, longitude: 0 }),
     [],
   );
-  const activePlanStops = selectedDay
-    ? [...selectedDayStops, ...selectedDayObjectStops]
-    : journeyStops.length
-      ? journeyStops
-      : journeyObjectStops;
+  const activePlanStops = useMemo(
+    () =>
+      selectedDay
+        ? [...selectedDayStops, ...selectedDayObjectStops]
+        : journeyStops.length
+          ? journeyStops
+          : journeyObjectStops,
+    [
+      journeyObjectStops,
+      journeyStops,
+      selectedDay,
+      selectedDayObjectStops,
+      selectedDayStops,
+    ],
+  );
   const focusCoordinates = useMemo(
     () =>
       activePlanStops.length
@@ -1249,6 +1297,25 @@ function JourneyMapContent() {
         : [fallbackCenter],
     [activePlanStops, fallbackCenter],
   );
+
+  useEffect(() => {
+    if (!trip || !days.length) return;
+    const key = `${tripId}:${selectedDayId}:${selectedRepairTargetKey}`;
+    if (locationRepairKeyRef.current === key) return;
+    locationRepairKeyRef.current = key;
+    runLocationRepair(false, {
+      refitOnResolved: activePlanStops.length === 0,
+      silent: true,
+    }).catch(() => undefined);
+  }, [
+    activePlanStops.length,
+    days.length,
+    runLocationRepair,
+    selectedDayId,
+    selectedRepairTargetKey,
+    trip,
+    tripId,
+  ]);
 
   const liveMarkers = memberLocations.flatMap((memberLocation) => {
     const coordinates = getCoordinates(memberLocation.location);
@@ -1562,7 +1629,11 @@ function JourneyMapContent() {
               </button>
               <button
                 type="button"
-                onClick={() => runLocationRepair(true)}
+                onClick={() =>
+                  runLocationRepair(true, {
+                    refitOnResolved: activePlanStops.length === 0,
+                  })
+                }
                 disabled={locationRepair?.isResolving}
                 className="rounded-full bg-white px-2.5 py-2 text-xs font-black text-emerald-800 shadow-sm disabled:opacity-60"
               >
@@ -1680,7 +1751,11 @@ function JourneyMapContent() {
               </p>
               <button
                 type="button"
-                onClick={() => runLocationRepair(true)}
+                onClick={() =>
+                  runLocationRepair(true, {
+                    refitOnResolved: activePlanStops.length === 0,
+                  })
+                }
                 className="rounded-full bg-emerald-700 px-3 py-1 text-xs font-black text-white"
               >
                 {t("map.repair.retry")}

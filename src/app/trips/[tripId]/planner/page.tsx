@@ -23,7 +23,10 @@ import {
 } from "@/lib/day-view-storage";
 import { getErrorMessage } from "@/lib/errors";
 import { formatJourneyTime } from "@/lib/format";
-import { useJourneyCachedResource } from "@/hooks/useJourneyCachedResource";
+import {
+  invalidateJourneyResource,
+  useJourneyCachedResource,
+} from "@/hooks/useJourneyCachedResource";
 import { getActiveJourneyMembers } from "@/lib/journeys/stats";
 import { getLedgerData } from "@/lib/supabase/ledger";
 import {
@@ -606,8 +609,9 @@ function PlannerContent() {
   }
 
   const refreshPlanner = useCallback(async () => {
+    invalidateJourneyResource(journeyResourceKey.map(tripId));
     await plannerResource.refresh(true);
-  }, [plannerResource]);
+  }, [plannerResource, tripId]);
 
   useEffect(() => {
     function refreshAfterCapture() {

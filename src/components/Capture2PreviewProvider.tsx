@@ -134,6 +134,7 @@ const RECOMMENDED_VIDEO_BYTES = 100 * 1024 * 1024;
 const HARD_VIDEO_BYTES = 300 * 1024 * 1024;
 const RECOMMENDED_VIDEO_SECONDS = 30;
 const HARD_VIDEO_SECONDS = 120;
+const CAPTURE2_SPEECH_ENABLED_KEY = "otr.capture2.speechEnabled";
 const capture2PlannerKinds: Capture2PlannerKind[] = [
   "activity",
   "hotel",
@@ -554,6 +555,30 @@ function todayDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function initialSpeechEnabledPreference() {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(CAPTURE2_SPEECH_ENABLED_KEY) === "true";
+}
+
+function speechLangForLocale(locale: string) {
+  if (locale.toLowerCase().startsWith("zh")) return "zh-CN";
+  if (locale.toLowerCase().startsWith("en")) return "en-US";
+  return locale || "en-US";
+}
+
+function matchingSpeechVoice(
+  synthesis: SpeechSynthesis,
+  language: string,
+) {
+  const voices = synthesis.getVoices();
+  const baseLanguage = language.split("-")[0]?.toLowerCase();
+  return (
+    voices.find((voice) => voice.lang.toLowerCase() === language.toLowerCase()) ||
+    voices.find((voice) => voice.lang.toLowerCase().startsWith(`${baseLanguage}-`)) ||
+    null
+  );
+}
+
 function uploadStatusTranslationKey(item: Capture2UploadItem): TranslationKey {
   if (item.status === "uploading" && item.phase === "saving") {
     return "capture2.upload.status.saving";
@@ -690,7 +715,9 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
   const [interpretation, setInterpretation] = useState<Capture2Interpretation | null>(
     null,
   );
-  const [isSpeechEnabled, setIsSpeechEnabled] = useState(false);
+  const [isSpeechEnabled, setIsSpeechEnabled] = useState(
+    initialSpeechEnabledPreference,
+  );
   const autoMemoryHandledRef = useRef<string | null>(null);
 
   const recorder = useVoiceRecorder({
@@ -974,15 +1001,40 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
   function speakInterpretation(nextInterpretation: Capture2Interpretation | null) {
     if (!nextInterpretation || typeof window === "undefined") return;
     const synthesis = window.speechSynthesis;
-    if (!synthesis) return;
+    if (!synthesis) {
+      setError(t("capture2.error.speechUnavailable"));
+      return;
+    }
     synthesis.cancel();
+    synthesis.resume();
+    const language = speechLangForLocale(locale);
     const utterance = new SpeechSynthesisUtterance(
       spokenTextForInterpretation(nextInterpretation),
     );
-    utterance.lang = locale;
+    utterance.lang = language;
+    const voice = matchingSpeechVoice(synthesis, language);
+    if (voice) utterance.voice = voice;
+    if (!voice && synthesis.getVoices().length === 0) {
+      synthesis.onvoiceschanged = () => {
+        synthesis.onvoiceschanged = null;
+        speakInterpretation(nextInterpretation);
+      };
+    }
     utterance.rate = 1;
+    utterance.onerror = () => {
+      setError(t("capture2.error.speechFailed"));
+    };
+    window.setTimeout(() => synthesis.resume(), 0);
     synthesis.speak(utterance);
   }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      CAPTURE2_SPEECH_ENABLED_KEY,
+      isSpeechEnabled ? "true" : "false",
+    );
+  }, [isSpeechEnabled]);
 
   useEffect(() => {
     if (!isSpeechEnabled || !interpretation) return;
@@ -2001,6 +2053,26 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
     setStatus(t("capture2.status.deferred"));
   }
 
+  async function closeFeedbackWithoutReview(
+    nextInterpretation: Capture2Interpretation,
+  ) {
+    setError(null);
+    setIsSaving(true);
+    try {
+      await markCaptureEventProcessed(nextInterpretation.captureEventId, {
+        action: "dismissed_feedback",
+        dismissedAt: new Date().toISOString(),
+      });
+      setInterpretation(null);
+      setStatus(null);
+      window.dispatchEvent(new CustomEvent("otr:capture2-changed"));
+    } catch (dismissError) {
+      setError(getErrorMessage(dismissError, t("capture2.error.save")));
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   function openQuickFormFromFeedback(kind: "memory" | "expense" | "planner" | "bulk") {
     setInterpretation(null);
     openQuickForm(kind);
@@ -2062,7 +2134,11 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
                   target instanceof Element &&
                   !target.closest("[data-capture2-panel]")
                 ) {
-                  closeCapture2();
+                  if (interpretation) {
+                    void closeFeedbackWithoutReview(interpretation);
+                  } else {
+                    closeCapture2();
+                  }
                 }
               }}
             >
@@ -2192,7 +2268,8 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
                           <button
                             type="button"
                             onClick={() => setInterpretation(null)}
-                            className="w-full rounded-2xl bg-emerald-700 px-4 py-4 text-base font-black text-white"
+                            disabled={isSaving}
+                            className="w-full rounded-2xl bg-emerald-700 px-4 py-4 text-base font-black text-white disabled:opacity-50"
                           >
                             关闭
                           </button>
@@ -2234,8 +2311,9 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
                         <div className="mt-4 space-y-3">
                           <button
                             type="button"
-                            onClick={() => setInterpretation(null)}
-                            className="w-full rounded-2xl bg-emerald-700 px-4 py-4 text-base font-black text-white"
+                            onClick={() => void closeFeedbackWithoutReview(interpretation)}
+                            disabled={isSaving}
+                            className="w-full rounded-2xl bg-emerald-700 px-4 py-4 text-base font-black text-white disabled:opacity-50"
                           >
                             关闭
                           </button>

@@ -135,7 +135,73 @@ async function enqueueVideoFaceJobs(input: {
     },
   ];
 
-  const { error } = await input.supabase.from("background_jobs").insert(jobs);
+  const { data: existingJobs, error: existingError } = await input.supabase
+    .from("background_jobs")
+    .select("job_type")
+    .eq("journey_id", input.tripId)
+    .in("job_type", ["face_detection", "face_recognition"])
+    .contains("payload", { mediaAssetId: input.assetId });
+  if (existingError) throw existingError;
+
+  const existingTypes = new Set(
+    (existingJobs ?? []).map((job) => (job as { job_type?: string }).job_type),
+  );
+  const missingJobs = jobs.filter((job) => !existingTypes.has(job.job_type));
+  if (missingJobs.length === 0) return;
+
+  const { error } = await input.supabase.from("background_jobs").insert(missingJobs);
+  if (error && error.code !== "23505") throw error;
+}
+
+async function getCurrentJourneyMemberId(input: {
+  supabase: ReturnType<typeof getSupabaseForRequest>;
+  tripId: string;
+  userId: string;
+}) {
+  const { data } = await input.supabase
+    .from("journey_members")
+    .select("id")
+    .eq("trip_id", input.tripId)
+    .eq("user_id", input.userId)
+    .maybeSingle();
+
+  return (data as { id?: string } | null)?.id ?? null;
+}
+
+async function upsertMediaChatMessage(input: {
+  supabase: ReturnType<typeof getSupabaseForRequest>;
+  tripId: string;
+  userId: string;
+  journeyMemberId: string | null;
+  assetId: string;
+  memoryId: string;
+  mediaUrl: string;
+  capturedAt: string;
+  createdAt: string;
+  originalFileName: string;
+}) {
+  const { error } = await input.supabase.from("journey_chat_messages").upsert(
+    {
+      trip_id: input.tripId,
+      user_id: input.userId,
+      journey_member_id: input.journeyMemberId,
+      message_type: "image",
+      text_content: null,
+      media_asset_id: input.assetId,
+      memory_entry_id: input.memoryId,
+      media_url: input.mediaUrl,
+      source_type: "timeline_memory",
+      source_id: input.memoryId,
+      created_at: input.createdAt,
+      metadata: {
+        capturedAt: input.capturedAt,
+        originalFileName: input.originalFileName,
+        syncedFrom: "capture2_media_upload",
+      },
+    },
+    { onConflict: "trip_id,source_type,source_id", ignoreDuplicates: true },
+  );
+
   if (error && error.code !== "23505") throw error;
 }
 
@@ -330,6 +396,11 @@ export async function POST(request: Request) {
     if (tripError || !trip) {
       return jsonError("Journey not found.", 404);
     }
+    const journeyMemberId = await getCurrentJourneyMemberId({
+      supabase,
+      tripId,
+      userId: userData.user.id,
+    });
 
     const { data: connection, error: connectionError } = await supabase
       .from("journey_storage_connections")
@@ -459,11 +530,29 @@ export async function POST(request: Request) {
         }
       }
 
+      const memoryId = kind === "video" ? randomUUID() : null;
+      if (memoryId) {
+        const { error: memoryError } = await supabase.from("memory_entries").insert({
+          id: memoryId,
+          trip_id: tripId,
+          user_id: userData.user.id,
+          type: "photo",
+          content: null,
+          media_url: `drive:${assetId}`,
+          location_name: null,
+          location_text: null,
+          location_status: "none",
+          captured_at: capturedAt,
+        });
+
+        if (memoryError) throw memoryError;
+      }
+
       const { error: insertError } = await supabase.from("media_assets").insert({
         id: assetId,
         trip_id: tripId,
         user_id: userData.user.id,
-        memory_entry_id: null,
+        memory_entry_id: memoryId,
         asset_type: kind,
         storage_provider: "google_drive",
         storage_bucket: "google-drive",
@@ -494,6 +583,7 @@ export async function POST(request: Request) {
           kind === "video"
             ? {
                 source: "capture2_preview",
+                memoryEntryId: memoryId,
                 ...videoAiMetadata({
                   processing: videoProcessing,
                   durationSeconds,
@@ -522,6 +612,26 @@ export async function POST(request: Request) {
       });
 
       if (insertError) throw insertError;
+
+      if (memoryId) {
+        await upsertMediaChatMessage({
+          supabase,
+          tripId,
+          userId: userData.user.id,
+          journeyMemberId,
+          assetId,
+          memoryId,
+          mediaUrl: `drive:${assetId}`,
+          capturedAt,
+          createdAt: capturedAt,
+          originalFileName: file.name,
+        }).catch((error) => {
+          warnings.push(
+            error instanceof Error ? error.message : "Video chat message was not created.",
+          );
+          return null;
+        });
+      }
 
       if (kind === "video" && thumbnailUrl) {
         await enqueueVideoFaceJobs({

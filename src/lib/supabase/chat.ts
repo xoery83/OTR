@@ -239,10 +239,10 @@ function mapPhotoAsset(row: MediaRow, displayUrl?: string | null) {
   };
 }
 
-function directImageDisplayUrl(media: MediaRow) {
+function directMediaDisplayUrl(media: MediaRow) {
   return (
     media.thumbnail_url ??
-    media.preview_url ??
+    (media.asset_type === "video" ? null : media.preview_url) ??
     media.provider_thumbnail_url ??
     media.thumbnail_drive_web_url ??
     null
@@ -251,7 +251,7 @@ function directImageDisplayUrl(media: MediaRow) {
 
 function messageTextFromMemory(memory: MemorySyncRow) {
   const content = cleanSyncedMemoryContent(memory.content);
-  if (memory.type === "photo") return content || "图片";
+  if (memory.type === "photo") return content || null;
   if (memory.type === "voice") return content || "语音";
   if (memory.type === "location") return content || "位置";
   return content;
@@ -329,7 +329,7 @@ async function enrichMessages(messages: JourneyChatMessage[]) {
       messages
         .map((message) => {
           const media = mediaById.get(message.mediaAssetId ?? "");
-          if (media && directImageDisplayUrl(media)) return null;
+          if (media && directMediaDisplayUrl(media)) return null;
           return media?.thumbnail_file_path ?? media?.compressed_file_path;
         })
         .filter((path): path is string => Boolean(path)),
@@ -358,8 +358,8 @@ async function enrichMessages(messages: JourneyChatMessage[]) {
       ? signedUrls.get(mediaDisplayPath) ?? null
       : null;
     const mediaDisplayUrl =
-      media && media.asset_type === "image"
-        ? directImageDisplayUrl(media) ??
+      media && (media.asset_type === "image" || media.asset_type === "video")
+        ? directMediaDisplayUrl(media) ??
           legacyMediaDisplayUrl ??
           `/api/media/assets/${media.id}/thumbnail`
         : legacyMediaDisplayUrl;
@@ -370,7 +370,9 @@ async function enrichMessages(messages: JourneyChatMessage[]) {
       senderAvatarUrl: profile?.avatar_url || journeyMember?.avatar_url || null,
       mediaDisplayUrl,
       photoAsset:
-        media && media.asset_type === "image" ? mapPhotoAsset(media, mediaDisplayUrl) : null,
+        media && (media.asset_type === "image" || media.asset_type === "video")
+          ? mapPhotoAsset(media, mediaDisplayUrl)
+          : null,
     };
   });
 }
