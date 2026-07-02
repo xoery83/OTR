@@ -237,17 +237,14 @@ export async function enqueueMediaProcessingJobs(input: {
       currentStep,
       payload,
     },
-  ];
-
-  if (input.placeholder) {
-    jobsToCreate.push({
+    {
       journeyId: input.tripId,
       jobType: "face_recognition",
       title: "Face recognition",
       currentStep,
       payload,
-    });
-  }
+    },
+  ];
 
   return Promise.all(jobsToCreate.map((job) => createBackgroundJob(job)));
 }

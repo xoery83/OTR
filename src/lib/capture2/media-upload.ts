@@ -11,7 +11,7 @@ export type Capture2UploadFileMetadata = {
 };
 
 export type Capture2UploadResponse = {
-  captureEventId: string;
+  captureEventId?: string;
   mediaAssetIds: string[];
   warnings: string[];
   assets: Array<{
@@ -31,10 +31,18 @@ export type Capture2UploadResponse = {
   }>;
 };
 
+export type Capture2UploadProgress = {
+  loaded: number;
+  total: number;
+  percent: number;
+  phase: "uploading" | "server_processing" | "completed";
+};
+
 export async function uploadCapture2Media(input: {
   tripId: string;
   files: File[];
   fileMetadata: Capture2UploadFileMetadata[];
+  onUploadProgress?: (progress: Capture2UploadProgress) => void;
 }) {
   const { data } = await supabase.auth.getSession();
   const accessToken = data.session?.access_token;
@@ -50,20 +58,44 @@ export async function uploadCapture2Media(input: {
   formData.append("fileMetadata", JSON.stringify(input.fileMetadata));
   input.files.forEach((file) => formData.append("files", file, file.name));
 
-  const response = await fetch("/api/capture2/media/upload", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: formData,
+  return new Promise<Capture2UploadResponse>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+
+    request.open("POST", "/api/capture2/media/upload");
+    request.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+
+    request.upload.onprogress = (event) => {
+      if (!event.lengthComputable || !input.onUploadProgress) return;
+      input.onUploadProgress({
+        loaded: event.loaded,
+        total: event.total,
+        percent: Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100))),
+        phase: event.loaded >= event.total ? "server_processing" : "uploading",
+      });
+    };
+
+    request.onload = () => {
+      let payload: Partial<Capture2UploadResponse> & { error?: string } = {};
+      try {
+        payload = JSON.parse(request.responseText || "{}") as Partial<Capture2UploadResponse> & {
+          error?: string;
+        };
+      } catch {
+        reject(new Error("Could not read media upload response."));
+        return;
+      }
+
+      if (request.status < 200 || request.status >= 300 || !payload.mediaAssetIds) {
+        reject(new Error(payload.error || "Could not upload media."));
+        return;
+      }
+
+      input.onUploadProgress?.({ loaded: 1, total: 1, percent: 100, phase: "completed" });
+      resolve(payload as Capture2UploadResponse);
+    };
+
+    request.onerror = () => reject(new Error("Could not upload media."));
+    request.onabort = () => reject(new Error("Media upload was cancelled."));
+    request.send(formData);
   });
-  const payload = (await response.json()) as Partial<Capture2UploadResponse> & {
-    error?: string;
-  };
-
-  if (!response.ok || !payload.captureEventId || !payload.mediaAssetIds) {
-    throw new Error(payload.error || "Could not upload media.");
-  }
-
-  return payload as Capture2UploadResponse;
 }

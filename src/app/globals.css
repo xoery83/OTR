@@ -517,23 +517,3 @@ input[type="date"] {
     touch-action: none;
   }
 }
-
-@keyframes capture2-upload-flow {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(100%);
-  }
-}
-
-.capture2-upload-flow {
-  background: linear-gradient(
-    90deg,
-    rgba(16, 185, 129, 0.08) 0%,
-    rgba(16, 185, 129, 0.88) 42%,
-    rgba(20, 184, 166, 0.95) 58%,
-    rgba(16, 185, 129, 0.08) 100%
-  );
-  animation: capture2-upload-flow 1.05s linear infinite;
-}

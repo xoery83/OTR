@@ -14,6 +14,26 @@ export type MediaWorkerGenerateResponse = {
   preview: MediaWorkerVariant;
 };
 
+export type MediaWorkerVideoMetadata = {
+  duration_seconds: number | null;
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  rotation: number | null;
+  codec: string | null;
+  bitrate: number | null;
+  has_audio: boolean;
+};
+
+export type MediaWorkerVideoProcessResponse = {
+  asset_id: string;
+  journey_id: string;
+  metadata: MediaWorkerVideoMetadata;
+  thumbnail: MediaWorkerVariant;
+  thumbnails: MediaWorkerVariant[];
+  preview: MediaWorkerVariant;
+};
+
 function uniqueWorkerUrls(primaryUrl: string) {
   const urls = [
     primaryUrl,
@@ -26,9 +46,10 @@ function uniqueWorkerUrls(primaryUrl: string) {
   return [...new Set(urls)];
 }
 
-async function postToWorker(
+async function postToWorker<TResponse extends { asset_id: string }>(
   workerUrl: string,
   workerSecret: string,
+  endpoint: "generate" | "process-video",
   input: {
     assetId: string;
     filename: string;
@@ -46,7 +67,7 @@ async function postToWorker(
     input.filename,
   );
 
-  const response = await fetch(`${workerUrl}/generate`, {
+  const response = await fetch(`${workerUrl}/${endpoint}`, {
     method: "POST",
     headers: {
       "x-media-worker-secret": workerSecret,
@@ -55,11 +76,11 @@ async function postToWorker(
   });
 
   const payload = (await response.json().catch(() => null)) as
-    | MediaWorkerGenerateResponse
+    | TResponse
     | { detail?: string }
     | null;
 
-  if (!response.ok || !payload || !("thumbnail" in payload)) {
+  if (!response.ok || !payload || !("asset_id" in payload)) {
     throw new Error(
       (payload && "detail" in payload ? payload.detail : null) ||
         `Could not generate media variants via ${workerUrl}.`,
@@ -88,7 +109,12 @@ export async function generateHetznerMediaVariants(input: {
 
   for (const url of urls) {
     try {
-      return await postToWorker(url, workerSecret, input);
+      return await postToWorker<MediaWorkerGenerateResponse>(
+        url,
+        workerSecret,
+        "generate",
+        input,
+      );
     } catch (error) {
       lastError = error;
     }
@@ -98,5 +124,42 @@ export async function generateHetznerMediaVariants(input: {
     lastError instanceof Error
       ? lastError.message
       : "Could not reach the Hetzner media worker.",
+  );
+}
+
+export async function processHetznerVideo(input: {
+  journeyId: string;
+  assetId: string;
+  filename: string;
+  mimeType: string;
+  originalBuffer: Buffer;
+}) {
+  const workerUrl = process.env.MEDIA_WORKER_URL?.replace(/\/$/, "");
+  const workerSecret = process.env.MEDIA_WORKER_SECRET;
+
+  if (!workerUrl || !workerSecret) {
+    throw new Error("MEDIA_WORKER_URL and MEDIA_WORKER_SECRET are required.");
+  }
+
+  const urls = uniqueWorkerUrls(workerUrl);
+  let lastError: unknown = null;
+
+  for (const url of urls) {
+    try {
+      return await postToWorker<MediaWorkerVideoProcessResponse>(
+        url,
+        workerSecret,
+        "process-video",
+        input,
+      );
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    lastError instanceof Error
+      ? lastError.message
+      : "Could not process video via the Hetzner media worker.",
   );
 }

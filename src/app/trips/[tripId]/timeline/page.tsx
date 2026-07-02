@@ -28,6 +28,8 @@ import {
   getMediaAssetPreviewUrl,
   getMediaAssetsByMemoryIds,
   getPhotoFacesForAssets,
+  getTripVideoAssets,
+  deleteMediaAsset,
   repairCurrentUserOrphanPhotoMemories,
   requestDriveThumbnailRepairForAssets,
   requestFaceConfirmation,
@@ -130,6 +132,7 @@ type TimelineItem = {
   id: string;
   memory: MemoryEntry;
   photo: PhotoAssetWithMemory | null;
+  assetOnly?: boolean;
   faces: PhotoFace[];
   uploadedAt: string;
   capturedAt: string;
@@ -174,6 +177,124 @@ function getAiSummary(asset: PhotoAssetWithMemory) {
 function getAiError(asset: PhotoAssetWithMemory) {
   const error = asset.aiMetadata?.error;
   return typeof error === "string" && error.trim() ? error : null;
+}
+
+function isVideoAsset(asset?: PhotoAssetWithMemory | null) {
+  return asset?.assetType === "video" || asset?.mimeType?.startsWith("video/");
+}
+
+function mediaAssetTitle(asset: PhotoAssetWithMemory | null, fallback: string) {
+  if (!asset) return fallback;
+  const capture2 = asset.aiMetadata?.capture2;
+  if (capture2 && typeof capture2 === "object") {
+    const fileName = (capture2 as { fileName?: unknown }).fileName;
+    if (typeof fileName === "string" && fileName.trim()) return fileName;
+  }
+  return asset.originalFilePath || fallback;
+}
+
+function videoThumbnailUrls(asset: PhotoAssetWithMemory | null) {
+  const video = asset?.aiMetadata?.video;
+  if (!video || typeof video !== "object") return [];
+  const thumbnails = (video as { thumbnails?: unknown }).thumbnails;
+  if (!Array.isArray(thumbnails)) return [];
+  return [
+    ...new Set(
+      thumbnails
+        .map((item) =>
+          item && typeof item === "object" && "url" in item
+            ? (item as { url?: unknown }).url
+            : null,
+        )
+        .filter((url): url is string => typeof url === "string" && url.length > 0),
+    ),
+  ];
+}
+
+function getRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function getMetadataNumber(record: Record<string, unknown> | null, ...keys: string[]) {
+  if (!record) return null;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+}
+
+function getMetadataString(record: Record<string, unknown> | null, ...keys: string[]) {
+  if (!record) return null;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function getMetadataBoolean(record: Record<string, unknown> | null, ...keys: string[]) {
+  if (!record) return null;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") return value;
+  }
+  return null;
+}
+
+function formatFileSize(bytes: number | null | undefined) {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) return null;
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatDuration(seconds: number | null | undefined) {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) {
+    return null;
+  }
+  const rounded = Math.round(seconds);
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const secs = rounded % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+function formatBitrate(bitsPerSecond: number | null | undefined) {
+  if (
+    typeof bitsPerSecond !== "number" ||
+    !Number.isFinite(bitsPerSecond) ||
+    bitsPerSecond <= 0
+  ) {
+    return null;
+  }
+  return bitsPerSecond >= 1_000_000
+    ? `${(bitsPerSecond / 1_000_000).toFixed(1)} Mbps`
+    : `${Math.round(bitsPerSecond / 1000)} Kbps`;
+}
+
+function processingStatusLabel(status: PhotoAssetWithMemory["processingStatus"]) {
+  if (status === "ready") return "已生成";
+  if (status === "processing") return "处理中";
+  if (status === "pending") return "等待处理";
+  if (status === "failed") return "处理失败";
+  if (status === "legacy") return "旧数据";
+  return null;
 }
 
 function stringifyAiMetadataValue(value: unknown): string {
@@ -379,6 +500,7 @@ function getTimelineItems(input: {
       id: memory.id,
       memory,
       photo: photo && displayUrl ? { ...photo, displayUrl } : photo,
+      assetOnly: false,
       faces,
       uploadedAt,
       capturedAt: memory.capturedAt,
@@ -409,6 +531,62 @@ function getTimelineItems(input: {
   }
 
   const allItems = input.memories.map(toTimelineItem);
+  for (const asset of input.photoAssets) {
+    if (asset.memoryEntryId || !isVideoAsset(asset)) continue;
+
+    const capturedAt = asset.takenAt ?? asset.createdAt;
+    const title = mediaAssetTitle(asset, "Video");
+    const faces = input.facesByAssetId[asset.id] ?? [];
+    const peopleNames = [
+      ...new Set(
+        faces
+          .map((face) => face.recognizedName)
+          .filter((name): name is string => Boolean(name)),
+      ),
+    ];
+    const virtualMemory: MemoryEntry = {
+      id: `asset:${asset.id}`,
+      tripId: asset.tripId,
+      userId: asset.userId,
+      type: "photo",
+      content: title,
+      mediaUrl: asset.thumbnailUrl ?? asset.providerThumbnailUrl ?? null,
+      mediaAssetId: asset.id,
+      locationName: null,
+      capturedAt,
+      createdAt: asset.createdAt,
+      contributorName: undefined,
+      contributorAvatarUrl: null,
+    };
+
+    allItems.push({
+      id: virtualMemory.id,
+      memory: virtualMemory,
+      photo: asset,
+      assetOnly: true,
+      faces,
+      uploadedAt: asset.createdAt,
+      capturedAt,
+      dateKey: getLocalDateKey(capturedAt),
+      searchText: normalizeSearch(
+        [
+          title,
+          asset.ocrText,
+          asset.sceneTags?.join(" "),
+          getLocationHints(asset).join(" "),
+          peopleNames.join(" "),
+        ]
+          .filter(Boolean)
+          .join(" "),
+      ),
+      peopleNames,
+      hasUnassignedFaces: faces.some(
+        (face) => face.recognitionStatus !== "confirmed",
+      ),
+      linkedPlannerItem: null,
+      replies: [],
+    });
+  }
   const itemsById = new Map(allItems.map((item) => [item.id, item]));
   const rootItems: TimelineItem[] = [];
 
@@ -657,6 +835,7 @@ function CompactMemoryCard({
   currentUserId,
   onSave,
   onDelete,
+  onDeleteAsset,
   onReplyCreated,
   onEngagementChange,
   onOpenPhoto,
@@ -669,12 +848,17 @@ function CompactMemoryCard({
     input: { content: string; locationName: string; capturedAt: string },
   ) => Promise<void>;
   onDelete: (memoryId: string) => Promise<void>;
+  onDeleteAsset: (assetId: string) => Promise<void>;
   onReplyCreated: () => Promise<void>;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
   onOpenPhoto?: (item: TimelineItem) => void;
 }) {
   const isPhoto = item.memory.type === "photo" && item.photo?.displayUrl;
-  const canManage = item.memory.userId === currentUserId;
+  const isVideo = isVideoAsset(item.photo);
+  const canManageMemory = !item.assetOnly && item.memory.userId === currentUserId;
+  const canManageAsset = Boolean(
+    item.assetOnly && item.photo?.userId === currentUserId,
+  );
   const [isEditing, setIsEditing] = useState(false);
   const [contentDraft, setContentDraft] = useState(item.memory.content);
   const [locationDraft, setLocationDraft] = useState(item.memory.locationName ?? "");
@@ -739,8 +923,8 @@ function CompactMemoryCard({
       );
     } finally {
       setIsPreparingImage(false);
+    }
   }
-}
 
   async function maybeCreateReplyExpense(text: string, image: typeof replyImage) {
     if (!looksLikeExpenseReply(text) && !image) return;
@@ -859,7 +1043,11 @@ function CompactMemoryCard({
     setIsWorking(true);
     setCardError(null);
     try {
-      await onDelete(item.memory.id);
+      if (item.assetOnly && item.photo) {
+        await onDeleteAsset(item.photo.id);
+      } else {
+        await onDelete(item.memory.id);
+      }
     } catch (deleteError) {
       setCardError(
         deleteError instanceof Error
@@ -880,14 +1068,15 @@ function CompactMemoryCard({
             className="block w-full overflow-hidden text-left"
             aria-label={t("planner.memory.openImage")}
           >
-            <FallbackPhotoImage
-              src={item.photo!.displayUrl!}
-              fallbackSrc={item.photo!.displayFallbackUrl}
+            <MediaAssetPoster
+              asset={item.photo!}
               alt={item.memory.content || t("timeline.photo.alt")}
               className="h-auto w-full cursor-zoom-in object-cover transition duration-200 hover:scale-[1.01]"
               onPrimaryError={() => requestRepair(item.photo)}
             />
           </button>
+          {isVideo ? <VideoPlayBadge /> : null}
+          {!item.assetOnly ? (
           <div className="pointer-events-auto absolute bottom-2 right-2 z-10">
             <MemoryEngagementActions
               memory={item.memory}
@@ -896,6 +1085,7 @@ function CompactMemoryCard({
               variant="overlay"
             />
           </div>
+          ) : null}
         </div>
       ) : (
         <div className="px-4 pt-4 sm:px-5">
@@ -1028,7 +1218,7 @@ function CompactMemoryCard({
         ) : null}
         <div className="mt-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            {canManage ? (
+            {canManageMemory ? (
               <>
                 <button
                   type="button"
@@ -1048,16 +1238,28 @@ function CompactMemoryCard({
                 </button>
               </>
             ) : null}
+            {canManageAsset ? (
+              <button
+                type="button"
+                onClick={deleteItem}
+                disabled={isWorking}
+                className="rounded-full bg-red-50 px-3 py-2 text-xs font-black text-red-700 disabled:opacity-50"
+              >
+                {isVideo ? "删除视频" : "删除媒体"}
+              </button>
+            ) : null}
           </div>
-          <button
-            type="button"
-            onClick={() => setIsReplying((current) => !current)}
-            className="rounded-full bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-800"
-          >
-            {isReplying ? "取消回复" : "回复"}
-          </button>
+          {!item.assetOnly ? (
+            <button
+              type="button"
+              onClick={() => setIsReplying((current) => !current)}
+              className="rounded-full bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-800"
+            >
+              {isReplying ? "取消回复" : "回复"}
+            </button>
+          ) : null}
         </div>
-        {isReplying ? (
+        {isReplying && !item.assetOnly ? (
           <div className="mt-3 rounded-3xl border border-emerald-100 bg-[#fffdf8] p-3">
             <textarea
               value={replyText}
@@ -1163,6 +1365,7 @@ function TimelinePhotoLightbox({
   currentUserId,
   onClose,
   onDelete,
+  onDeleteAsset,
   onFaceConfirmed,
   onEngagementChange,
 }: {
@@ -1172,6 +1375,7 @@ function TimelinePhotoLightbox({
   currentUserId: string;
   onClose: () => void;
   onDelete: (memoryId: string) => Promise<void>;
+  onDeleteAsset: (assetId: string) => Promise<void>;
   onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
@@ -1199,11 +1403,14 @@ function TimelinePhotoLightbox({
     setViewerImageSize(null);
   }, [item?.id]);
 
-  if (!item?.photo?.displayUrl) return null;
+  if (!item || !item.photo || !item.photo.displayUrl) return null;
+  const activeItem = item;
+  const activePhoto = item.photo;
 
-  const driveUrl = getMediaAssetDriveUrl(item.photo);
-  const showDeleteAction = canCurrentUserManagePhoto(item, currentUserId);
-  const memoryId = item.memory.id;
+  const isVideo = isVideoAsset(activePhoto);
+  const driveUrl = getMediaAssetDriveUrl(activePhoto);
+  const showDeleteAction = canCurrentUserManagePhoto(activeItem, currentUserId);
+  const memoryId = activeItem.memory.id;
 
   function openFaceAssignment() {
     if (!item?.photo) return;
@@ -1285,7 +1492,11 @@ function TimelinePhotoLightbox({
     setIsDeleting(true);
     setDeleteError(null);
     try {
-      await onDelete(memoryId);
+      if (activeItem.assetOnly) {
+        await onDeleteAsset(activePhoto.id);
+      } else {
+        await onDelete(memoryId);
+      }
       onClose();
     } catch (error) {
       setDeleteError(
@@ -1315,12 +1526,14 @@ function TimelinePhotoLightbox({
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {!item.assetOnly ? (
             <MemoryEngagementActions
               memory={item.memory}
               onChange={onEngagementChange}
               compact
               className="rounded-full bg-white/10 px-1 py-1 text-white"
             />
+            ) : null}
             {driveUrl ? (
               <a
                 href={driveUrl}
@@ -1346,19 +1559,30 @@ function TimelinePhotoLightbox({
             className="otr-photo-viewer-frame relative mx-auto grid min-h-0 max-h-full max-w-full place-items-center overflow-hidden rounded-3xl bg-black"
             style={getPhotoViewerFrameStyle(item.photo, viewerImageSize)}
           >
-            <FallbackPhotoImage
-              src={item.photo.displayPreviewUrl ?? item.photo.displayUrl}
-              fallbackSrc={[item.photo.displayUrl, item.photo.displayFallbackUrl]}
-              alt={item.memory.content || t("timeline.photo.alt")}
-              className="h-full w-full object-contain"
-              onPrimaryError={() => requestRepair(item.photo)}
-              onLoad={(event) =>
-                setViewerImageSize({
-                  width: event.currentTarget.naturalWidth,
-                  height: event.currentTarget.naturalHeight,
-                })
-              }
-            />
+            {isVideo && item.photo.displayPreviewUrl ? (
+              <video
+                src={item.photo.displayPreviewUrl}
+                poster={item.photo.displayUrl}
+                className="h-full w-full object-contain"
+                controls
+                autoPlay
+                playsInline
+              />
+            ) : (
+              <FallbackPhotoImage
+                src={item.photo.displayPreviewUrl ?? item.photo.displayUrl}
+                fallbackSrc={[item.photo.displayUrl, item.photo.displayFallbackUrl]}
+                alt={item.memory.content || t("timeline.photo.alt")}
+                className="h-full w-full object-contain"
+                onPrimaryError={() => requestRepair(item.photo)}
+                onLoad={(event) =>
+                  setViewerImageSize({
+                    width: event.currentTarget.naturalWidth,
+                    height: event.currentTarget.naturalHeight,
+                  })
+                }
+              />
+            )}
             {item.faces.map((face) => {
               const boxStyle = getFaceBoxStyle(face, item.photo!, viewerImageSize);
               if (!boxStyle) return null;
@@ -1408,6 +1632,8 @@ function TimelinePhotoLightbox({
 
           <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-3 md:p-4">
             <div className="space-y-4">
+              {isVideo ? <VideoInfoPanel asset={activePhoto} /> : null}
+
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
                   {t("timeline.album.people")}
@@ -1519,7 +1745,7 @@ function TimelinePhotoLightbox({
                     disabled={isDeleting}
                     className="rounded-full bg-red-50 px-3 py-1.5 text-xs font-black text-red-700 disabled:opacity-50"
                   >
-                    {isDeleting ? "删除中" : "删除图片"}
+                    {isDeleting ? "删除中" : isVideo ? "删除视频" : "删除图片"}
                   </button>
                   {deleteError ? (
                     <p className="mt-2 text-xs font-semibold text-red-700">
@@ -1600,6 +1826,7 @@ function UploadFeedView({
   currentUserId,
   onSaveMemory,
   onDeleteMemory,
+  onDeleteAsset,
   onReplyCreated,
   onEngagementChange,
   onOpenPhoto,
@@ -1612,6 +1839,7 @@ function UploadFeedView({
     input: { content: string; locationName: string; capturedAt: string },
   ) => Promise<void>;
   onDeleteMemory: (memoryId: string) => Promise<void>;
+  onDeleteAsset: (assetId: string) => Promise<void>;
   onReplyCreated: () => Promise<void>;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
   onOpenPhoto?: (item: TimelineItem) => void;
@@ -1631,6 +1859,7 @@ function UploadFeedView({
             currentUserId={currentUserId}
             onSave={onSaveMemory}
             onDelete={onDeleteMemory}
+            onDeleteAsset={onDeleteAsset}
             onReplyCreated={onReplyCreated}
             onEngagementChange={onEngagementChange}
             onOpenPhoto={onOpenPhoto}
@@ -1650,6 +1879,7 @@ function TrueTimelineView({
   onFilterInteraction,
   onSaveMemory,
   onDeleteMemory,
+  onDeleteAsset,
   onReplyCreated,
   onEngagementChange,
   onOpenPhoto,
@@ -1666,6 +1896,7 @@ function TrueTimelineView({
     input: { content: string; locationName: string; capturedAt: string },
   ) => Promise<void>;
   onDeleteMemory: (memoryId: string) => Promise<void>;
+  onDeleteAsset: (assetId: string) => Promise<void>;
   onReplyCreated: () => Promise<void>;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
   onOpenPhoto?: (item: TimelineItem) => void;
@@ -1856,6 +2087,7 @@ function TrueTimelineView({
                     currentUserId={currentUserId}
                     onSave={onSaveMemory}
                     onDelete={onDeleteMemory}
+                    onDeleteAsset={onDeleteAsset}
                     onReplyCreated={onReplyCreated}
                     onEngagementChange={onEngagementChange}
                     onOpenPhoto={onOpenPhoto}
@@ -1889,6 +2121,7 @@ function AlbumView({
   onInitialAssetClosed,
   onFaceConfirmed,
   onDeleteMemory,
+  onDeleteAsset,
   onEngagementChange,
 }: {
   items: TimelineItem[];
@@ -1902,6 +2135,7 @@ function AlbumView({
   onInitialAssetClosed?: () => void;
   onFaceConfirmed: (assetId: string, face: PhotoFace) => void;
   onDeleteMemory: (memoryId: string) => Promise<void>;
+  onDeleteAsset: (assetId: string) => Promise<void>;
   onEngagementChange?: (memoryId: string, engagement: MemoryEngagement) => void;
 }) {
   const { t } = useI18n();
@@ -1933,6 +2167,7 @@ function AlbumView({
   const canDeleteActivePhoto = activeItem
     ? canCurrentUserManagePhoto(activeItem, currentUserId)
     : false;
+  const activeIsVideo = isVideoAsset(activeItem?.photo);
   const openedInitialAssetIdRef = useRef<string | null>(null);
   const returnToRef = useRef(returnTo);
   const initialViewerOpenRef = useRef(false);
@@ -2017,7 +2252,11 @@ function AlbumView({
     setIsDeletingPhoto(true);
     setDeletePhotoError(null);
     try {
-      await onDeleteMemory(activeItem.memory.id);
+      if (activeItem.assetOnly && activeItem.photo) {
+        await onDeleteAsset(activeItem.photo.id);
+      } else {
+        await onDeleteMemory(activeItem.memory.id);
+      }
       closeViewer();
     } catch (error) {
       setDeletePhotoError(
@@ -2114,15 +2353,15 @@ function AlbumView({
             }}
             className="group relative aspect-square overflow-hidden bg-stone-100 text-left"
           >
-            <FallbackPhotoImage
-              src={item.photo!.displayUrl!}
-              fallbackSrc={item.photo!.displayFallbackUrl}
+            <MediaAssetPoster
+              asset={item.photo!}
               alt={item.memory.content || t("timeline.photo.alt")}
               className="h-full w-full object-cover"
               loading={index < 12 ? "eager" : "lazy"}
               fetchPriority={index < 12 ? "high" : "auto"}
               onPrimaryError={() => requestRepair(item.photo)}
             />
+            {isVideoAsset(item.photo) ? <VideoPlayBadge /> : null}
             <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-stone-950/80 via-stone-950/20 to-transparent p-2 text-white opacity-0 transition group-hover:opacity-100">
               <p className="line-clamp-2 text-xs font-bold">
                 {item.memory.content ||
@@ -2164,12 +2403,14 @@ function AlbumView({
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                {!activeItem.assetOnly ? (
                 <MemoryEngagementActions
                   memory={activeItem.memory}
                   onChange={onEngagementChange}
                   compact
                   className="rounded-full bg-white/10 px-1 py-1 text-white"
                 />
+                ) : null}
                 {activeDriveUrl ? (
                   <a
                     href={activeDriveUrl}
@@ -2195,22 +2436,33 @@ function AlbumView({
                 className="otr-photo-viewer-frame relative mx-auto grid min-h-0 max-h-full max-w-full place-items-center overflow-hidden rounded-3xl bg-black"
                 style={getPhotoViewerFrameStyle(activeItem.photo, activeImageSize)}
               >
-                <FallbackPhotoImage
-                  src={activeItem.photo.displayPreviewUrl ?? activeItem.photo.displayUrl}
-                  fallbackSrc={[
-                    activeItem.photo.displayUrl,
-                    activeItem.photo.displayFallbackUrl,
-                  ]}
-                  alt={activeItem.memory.content || t("timeline.photo.alt")}
-                  className="h-full w-full object-contain"
-                  onPrimaryError={() => requestRepair(activeItem.photo)}
-                  onLoad={(event) =>
-                    setActiveImageSize({
-                      width: event.currentTarget.naturalWidth,
-                      height: event.currentTarget.naturalHeight,
-                    })
-                  }
-                />
+                {activeIsVideo && activeItem.photo.displayPreviewUrl ? (
+                  <video
+                    src={activeItem.photo.displayPreviewUrl}
+                    poster={activeItem.photo.displayUrl}
+                    className="h-full w-full object-contain"
+                    controls
+                    autoPlay
+                    playsInline
+                  />
+                ) : (
+                  <FallbackPhotoImage
+                    src={activeItem.photo.displayPreviewUrl ?? activeItem.photo.displayUrl}
+                    fallbackSrc={[
+                      activeItem.photo.displayUrl,
+                      activeItem.photo.displayFallbackUrl,
+                    ]}
+                    alt={activeItem.memory.content || t("timeline.photo.alt")}
+                    className="h-full w-full object-contain"
+                    onPrimaryError={() => requestRepair(activeItem.photo)}
+                    onLoad={(event) =>
+                      setActiveImageSize({
+                        width: event.currentTarget.naturalWidth,
+                        height: event.currentTarget.naturalHeight,
+                      })
+                    }
+                  />
+                )}
                 {activeItem.faces.map((face) => {
                       const boxStyle = getFaceBoxStyle(
                         face,
@@ -2268,6 +2520,10 @@ function AlbumView({
 
               <aside className="min-h-0 overflow-y-auto rounded-3xl bg-white p-3 md:p-4">
                 <div className="space-y-4">
+                  {activeIsVideo ? (
+                    <VideoInfoPanel asset={activeItem.photo} />
+                  ) : null}
+
                   <div>
                     <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
                       {t("timeline.album.people")}
@@ -2379,7 +2635,11 @@ function AlbumView({
                           disabled={isDeletingPhoto}
                           className="rounded-full bg-red-50 px-3 py-1.5 text-xs font-black text-red-700 disabled:opacity-50"
                         >
-                          {isDeletingPhoto ? "删除中" : "删除图片"}
+                          {isDeletingPhoto
+                            ? "删除中"
+                            : activeIsVideo
+                              ? "删除视频"
+                              : "删除图片"}
                         </button>
                         {deletePhotoError ? (
                           <p className="mt-2 text-xs font-semibold text-red-700">
@@ -2556,6 +2816,152 @@ function FallbackPhotoImage({
   );
 }
 
+function MediaAssetPoster({
+  asset,
+  alt,
+  className,
+  loading = "lazy",
+  fetchPriority,
+  onPrimaryError,
+  onLoad,
+}: {
+  asset: PhotoAssetWithMemory;
+  alt: string;
+  className?: string;
+  loading?: "eager" | "lazy";
+  fetchPriority?: "high" | "low" | "auto";
+  onPrimaryError?: () => void;
+  onLoad?: (event: SyntheticEvent<HTMLImageElement>) => void;
+}) {
+  const thumbnailUrls = videoThumbnailUrls(asset);
+  const [thumbnailIndex, setThumbnailIndex] = useState(0);
+  const isVideo = isVideoAsset(asset);
+  const posterSrc =
+    isVideo && thumbnailUrls.length > 0
+      ? thumbnailUrls[thumbnailIndex % thumbnailUrls.length]
+      : asset.displayUrl;
+
+  useEffect(() => {
+    if (!isVideo || thumbnailUrls.length < 2) return undefined;
+    const timer = window.setInterval(() => {
+      setThumbnailIndex((current) => (current + 1) % thumbnailUrls.length);
+    }, 2200);
+    return () => window.clearInterval(timer);
+  }, [isVideo, thumbnailUrls.length]);
+
+  if (!posterSrc) {
+    return (
+      <div className="grid h-full w-full place-items-center bg-stone-100 text-3xl">
+        {isVideo ? "VIDEO" : "PHOTO"}
+      </div>
+    );
+  }
+
+  return (
+    <FallbackPhotoImage
+      src={posterSrc}
+      fallbackSrc={[asset.displayUrl, asset.displayFallbackUrl]}
+      alt={alt}
+      className={className}
+      loading={loading}
+      fetchPriority={fetchPriority}
+      onPrimaryError={onPrimaryError}
+      onLoad={onLoad}
+    />
+  );
+}
+
+function VideoPlayBadge() {
+  return (
+    <>
+      <span className="pointer-events-none absolute inset-0 grid place-items-center">
+        <span className="grid size-11 place-items-center rounded-full bg-stone-950/70 text-sm font-black text-white shadow-lg">
+          ▶
+        </span>
+      </span>
+      <span className="pointer-events-none absolute bottom-2 left-2 rounded-full bg-stone-950/75 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-white">
+        VIDEO
+      </span>
+    </>
+  );
+}
+
+function VideoInfoPanel({ asset }: { asset: PhotoAssetWithMemory }) {
+  const video = getRecord(asset.aiMetadata?.video);
+  const metadata = getRecord(video?.metadata);
+  const capture2 = getRecord(asset.aiMetadata?.capture2);
+  const preview = getRecord(video?.preview);
+  const thumbnail = getRecord(video?.thumbnail);
+  const thumbnails = video?.thumbnails;
+
+  const width = getMetadataNumber(metadata, "width") ?? asset.width;
+  const height = getMetadataNumber(metadata, "height") ?? asset.height;
+  const duration =
+    getMetadataNumber(metadata, "duration_seconds") ??
+    getMetadataNumber(capture2, "durationSeconds");
+  const originalSize =
+    asset.originalFileSize ?? getMetadataNumber(capture2, "fileSizeBytes");
+  const previewSize =
+    getMetadataNumber(preview, "file_size") ?? asset.compressedFileSize;
+  const thumbnailSize =
+    getMetadataNumber(thumbnail, "file_size") ?? asset.thumbnailSize ?? null;
+  const thumbnailCount = Array.isArray(thumbnails) ? thumbnails.length : null;
+  const fps = getMetadataNumber(metadata, "fps");
+  const rotation = getMetadataNumber(metadata, "rotation");
+  const hasAudio = getMetadataBoolean(metadata, "has_audio");
+  const previewDuration = asset.previewUrl ? "0:03" : null;
+  const resolution = width && height
+    ? `${Math.round(width)} x ${Math.round(height)}${rotation ? ` · ${rotation}°` : ""}`
+    : null;
+
+  const rows = [
+    ["分辨率", resolution],
+    ["长度", formatDuration(duration)],
+    ["原文件大小", formatFileSize(originalSize)],
+    ["格式", asset.mimeType],
+    ["帧率", fps ? `${fps.toFixed(fps >= 10 ? 0 : 1)} fps` : null],
+    ["音频", hasAudio === null ? null : hasAudio ? "有" : "无"],
+    [
+      "预览",
+      [previewDuration, formatFileSize(previewSize)].filter(Boolean).join(" · ") || null,
+    ],
+    [
+      "缩略图",
+      [
+        thumbnailCount ? `${thumbnailCount} 张` : null,
+        formatFileSize(thumbnailSize),
+      ]
+        .filter(Boolean)
+        .join(" · ") || null,
+    ],
+  ].filter((row): row is [string, string] => Boolean(row[1]));
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="rounded-3xl border border-stone-100 bg-stone-50 p-4">
+      <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
+        视频信息
+      </p>
+      <dl className="mt-3 grid grid-cols-2 gap-1.5">
+        {rows.map(([label, value]) => (
+          <div
+            key={label}
+            className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-stone-100 bg-white px-3 py-2"
+          >
+            <dt className="shrink-0 whitespace-nowrap text-[11px] font-black text-stone-500">
+              {label}
+            </dt>
+            <dd className="min-w-0 truncate whitespace-nowrap text-right text-xs font-black leading-5 text-stone-950 sm:text-sm">
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
 function useDriveThumbnailRepair(tripId: string) {
   const repairRequestedAssetIdsRef = useRef<Set<string>>(new Set());
 
@@ -2622,7 +3028,9 @@ function PhotoGalleryView({
 
   async function indexPendingPhotos() {
     const pending = photos.filter(
-      (photo) => photo.aiStatus === "pending" || photo.aiStatus === "failed",
+      (photo) =>
+        photo.assetType === "image" &&
+        (photo.aiStatus === "pending" || photo.aiStatus === "failed"),
     );
 
     for (const photo of pending) {
@@ -2766,9 +3174,8 @@ function PhotoGalleryView({
                 }}
               >
                 {photo.displayUrl ? (
-                  <FallbackPhotoImage
-                    src={photo.displayUrl}
-                    fallbackSrc={photo.displayFallbackUrl}
+                  <MediaAssetPoster
+                    asset={photo}
                     alt={photo.memory?.content || t("timeline.photo.alt")}
                     className="h-full w-full object-cover"
                     loading={index < 12 ? "eager" : "lazy"}
@@ -2780,6 +3187,7 @@ function PhotoGalleryView({
                     {t("timeline.debug.noPreview")}
                   </div>
                 )}
+                {isVideoAsset(photo) ? <VideoPlayBadge /> : null}
                 {faces.map((face, index) => {
                   const boxStyle = getFaceBoxStyle(face, photo);
                   if (!boxStyle) return null;
@@ -3158,24 +3566,32 @@ function TimelineContent({ user }: { user: User }) {
         beforeCapturedAt,
       });
       const memoryIds = memoryPage.memories.map((memory) => memory.id);
-      const assetData = await getMediaAssetsByMemoryIds(memoryIds);
+      const [memoryAssetData, videoAssets] = await Promise.all([
+        getMediaAssetsByMemoryIds(memoryIds),
+        beforeCapturedAt ? Promise.resolve([]) : getTripVideoAssets(tripId),
+      ]);
       const [signedUrls, legacyUrlsByAssetId, faceData] = await Promise.all([
         getSignedMemoryImageUrls(memoryPage.memories),
-        getMediaAssetLegacySignedUrlById(assetData),
-        getPhotoFacesForAssets(assetData.map((asset) => asset.id)),
+        getMediaAssetLegacySignedUrlById(memoryAssetData),
+        getPhotoFacesForAssets(
+          [...memoryAssetData, ...videoAssets].map((asset) => asset.id),
+        ),
       ]);
       const memoryById = new Map(
         memoryPage.memories.map((memory) => [memory.id, memory]),
       );
-      const photoAssetsForPage: PhotoAssetWithMemory[] = assetData.map((asset) => {
-        return {
-          ...asset,
-          memory: memoryById.get(asset.memoryEntryId) ?? null,
-          displayUrl: getMediaAssetDisplayUrl(asset),
-          displayPreviewUrl: getMediaAssetPreviewUrl(asset),
-          displayFallbackUrl: legacyUrlsByAssetId[asset.id],
-        };
-      });
+      const photoAssetsForPage: PhotoAssetWithMemory[] = [
+        ...memoryAssetData.map((asset) => {
+          return {
+            ...asset,
+            memory: memoryById.get(asset.memoryEntryId) ?? null,
+            displayUrl: getMediaAssetDisplayUrl(asset),
+            displayPreviewUrl: getMediaAssetPreviewUrl(asset),
+            displayFallbackUrl: legacyUrlsByAssetId[asset.id],
+          };
+        }),
+        ...videoAssets,
+      ];
       return { memoryPage, assetData: photoAssetsForPage, signedUrls, faceData };
     },
     [tripId],
@@ -3410,7 +3826,15 @@ function TimelineContent({ user }: { user: User }) {
   );
   const filteredPhotos = useMemo(() => {
     const allowedMemoryIds = new Set(filteredItems.map((item) => item.id));
-    return photoAssets.filter((photo) => allowedMemoryIds.has(photo.memoryEntryId));
+    const allowedAssetIds = new Set(
+      filteredItems
+        .map((item) => item.photo?.id)
+        .filter((id): id is string => Boolean(id)),
+    );
+    return photoAssets.filter(
+      (photo) =>
+        allowedMemoryIds.has(photo.memoryEntryId) || allowedAssetIds.has(photo.id),
+    );
   }, [filteredItems, photoAssets]);
   const loadedPhotoMemoryCount = useMemo(
     () =>
@@ -3632,6 +4056,16 @@ function TimelineContent({ user }: { user: User }) {
     setPhotoAssets((current) =>
       current.filter((photo) => photo.memoryEntryId !== memoryId),
     );
+  }
+
+  async function handleDeleteAsset(assetId: string) {
+    await deleteMediaAsset(assetId);
+    setPhotoAssets((current) => current.filter((photo) => photo.id !== assetId));
+    setFacesByAssetId((current) => {
+      const next = { ...current };
+      delete next[assetId];
+      return next;
+    });
   }
 
   function handleMemoryEngagementChange(
@@ -3893,6 +4327,7 @@ function TimelineContent({ user }: { user: User }) {
           initialDate={initialTimelineDate}
           onSaveMemory={handleSaveMemory}
           onDeleteMemory={handleDeleteMemory}
+          onDeleteAsset={handleDeleteAsset}
           onReplyCreated={refreshMemorySnapshot}
           onEngagementChange={handleMemoryEngagementChange}
           onOpenPhoto={(item) => setActivePhotoItemId(item.id)}
@@ -3909,6 +4344,7 @@ function TimelineContent({ user }: { user: User }) {
           currentUserId={user.id}
           onSaveMemory={handleSaveMemory}
           onDeleteMemory={handleDeleteMemory}
+          onDeleteAsset={handleDeleteAsset}
           onReplyCreated={refreshMemorySnapshot}
           onEngagementChange={handleMemoryEngagementChange}
           onOpenPhoto={(item) => setActivePhotoItemId(item.id)}
@@ -3928,6 +4364,7 @@ function TimelineContent({ user }: { user: User }) {
           onInitialAssetClosed={() => setAlbumDeepLink(null)}
           onFaceConfirmed={handleFaceConfirmed}
           onDeleteMemory={handleDeleteMemory}
+          onDeleteAsset={handleDeleteAsset}
           onEngagementChange={handleMemoryEngagementChange}
         />
       ) : null}
@@ -3958,6 +4395,7 @@ function TimelineContent({ user }: { user: User }) {
         currentUserId={user.id}
         onClose={() => setActivePhotoItemId(null)}
         onDelete={handleDeleteMemory}
+        onDeleteAsset={handleDeleteAsset}
         onFaceConfirmed={handleFaceConfirmed}
         onEngagementChange={handleMemoryEngagementChange}
       />

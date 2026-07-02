@@ -48,6 +48,13 @@ export type CreateMemoryBaseInput = {
   itineraryReservationId?: string | null;
 };
 
+export type UploadProgress = {
+  loaded: number;
+  total: number;
+  percent: number;
+  phase: "uploading" | "server_processing" | "completed";
+};
+
 const emptyMemoryEngagement = {
   likeCount: 0,
   favoriteCount: 0,
@@ -98,6 +105,15 @@ function decodeMemoryContent(content: string | null, parentMemoryId?: string | n
     content: raw.slice(match[0].length),
     parentMemoryId: parentMemoryId ?? match[1],
   };
+}
+
+function isSystemCaptureUploadMemoryContent(content: string | null) {
+  const raw = content?.trim() ?? "";
+  return /^Capture (?:2\.0 media upload|photo upload):/i.test(raw);
+}
+
+function onlyVisibleMemoryRows(rows: MemoryRow[]) {
+  return rows.filter((row) => !isSystemCaptureUploadMemoryContent(row.content));
 }
 
 function isMissingParentMemoryColumn(error: unknown) {
@@ -157,7 +173,7 @@ export async function getTripMemories(
   }
 
   return withMemoryEngagement(
-    await withContributorProfiles((data ?? []).map(mapMemory)),
+    await withContributorProfiles(onlyVisibleMemoryRows((data ?? []) as MemoryRow[]).map(mapMemory)),
   );
 }
 
@@ -185,7 +201,7 @@ export async function getTripMemoriesPage(
     throw error;
   }
 
-  const rows = (data ?? []) as MemoryRow[];
+  const rows = onlyVisibleMemoryRows((data ?? []) as MemoryRow[]);
   const pageRows = rows.slice(0, limit);
   const memories = await withMemoryEngagement(
     await withContributorProfiles(pageRows.map(mapMemory)),
@@ -204,58 +220,25 @@ export async function getTripMemorySummary(
 ): Promise<TripMemorySummary> {
   await ensureCreatorMembership(tripId);
 
-  async function countMemories(type?: MemoryEntry["type"]) {
-    let query = supabase
-      .from("memory_entries")
-      .select("id", { count: "exact", head: true })
-      .eq("trip_id", tripId);
-    if (type) query = query.eq("type", type);
-    if (options?.userId) query = query.eq("user_id", options.userId);
-    return query;
-  }
-
-  let contributorQuery = supabase
-    .from("memory_entries")
-    .select("user_id")
-    .eq("trip_id", tripId)
-    .not("user_id", "is", null);
-  if (options?.userId) contributorQuery = contributorQuery.eq("user_id", options.userId);
-
-  let latestQuery = supabase
+  let query = supabase
     .from("memory_entries")
     .select(memorySelect)
     .eq("trip_id", tripId)
-    .order("captured_at", { ascending: false })
-    .limit(1);
-  if (options?.userId) latestQuery = latestQuery.eq("user_id", options.userId);
+    .order("captured_at", { ascending: false });
+  if (options?.userId) query = query.eq("user_id", options.userId);
 
-  const [totalResult, photoResult, textResult, contributorResult, latestResult] =
-    await Promise.all([
-      countMemories(),
-      countMemories("photo"),
-      countMemories("text"),
-      contributorQuery,
-      latestQuery,
-    ]);
+  const { data, error } = await query;
+  if (error) throw error;
 
-  const firstError =
-    totalResult.error ||
-    photoResult.error ||
-    textResult.error ||
-    contributorResult.error ||
-    latestResult.error;
-  if (firstError) throw firstError;
-
-  const contributorRows = (contributorResult.data ?? []) as { user_id: string | null }[];
-  const latestRows = ((latestResult.data ?? []) as MemoryRow[]).map(mapMemory);
-  const [latestWithProfile] = await withContributorProfiles(latestRows);
+  const rows = onlyVisibleMemoryRows((data ?? []) as MemoryRow[]);
+  const memories = rows.map(mapMemory);
+  const [latestWithProfile] = await withContributorProfiles(memories.slice(0, 1));
 
   return {
-    total: totalResult.count ?? 0,
-    photos: photoResult.count ?? 0,
-    text: textResult.count ?? 0,
-    contributors: new Set(contributorRows.map((row) => row.user_id).filter(Boolean))
-      .size,
+    total: memories.length,
+    photos: memories.filter((memory) => memory.type === "photo").length,
+    text: memories.filter((memory) => memory.type === "text").length,
+    contributors: new Set(memories.map((memory) => memory.userId).filter(Boolean)).size,
     latest: latestWithProfile ?? null,
   };
 }
@@ -280,7 +263,9 @@ export async function getTripMemoriesForDate(tripId: string, date: string) {
   }
 
   return withMemoryEngagement(
-    await withContributorProfiles((data ?? []).map(mapMemory)),
+    await withContributorProfiles(
+      onlyVisibleMemoryRows((data ?? []) as MemoryRow[]).map(mapMemory),
+    ),
   );
 }
 
@@ -650,6 +635,9 @@ export async function createPhotoMemory(
   caption: string,
   input: CreateMemoryBaseInput,
   originalFile?: File | null,
+  options?: {
+    onUploadProgress?: (progress: UploadProgress) => void;
+  },
 ) {
   const user = await getCurrentUser();
 
@@ -770,18 +758,7 @@ export async function createPhotoMemory(
     form.append("capturedDate", input.capturedAt.slice(0, 10));
     form.append("file", uploadFile, uploadFile.name);
 
-    const response = await fetch("/api/google-drive/upload-photo", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: form,
-    });
-    const payload = (await response.json()) as { error?: string };
-
-    if (!response.ok) {
-      throw new Error(payload.error || "Google Drive photo upload failed.");
-    }
+    await uploadPhotoFormToDrive(form, accessToken, options?.onUploadProgress);
   } catch (driveUploadError) {
     await supabase
       .from("media_assets")
@@ -823,6 +800,51 @@ export async function createPhotoMemory(
     myLikeCount: 0,
     isFavorited: false,
   } satisfies MemoryEntry;
+}
+
+function uploadPhotoFormToDrive(
+  form: FormData,
+  accessToken: string,
+  onUploadProgress?: (progress: UploadProgress) => void,
+) {
+  return new Promise<void>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+
+    request.open("POST", "/api/google-drive/upload-photo");
+    request.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+
+    request.upload.onprogress = (event) => {
+      if (!event.lengthComputable || !onUploadProgress) return;
+      onUploadProgress({
+        loaded: event.loaded,
+        total: event.total,
+        percent: Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100))),
+        phase: event.loaded >= event.total ? "server_processing" : "uploading",
+      });
+    };
+
+    request.onload = () => {
+      let payload: { error?: string } = {};
+      try {
+        payload = JSON.parse(request.responseText || "{}") as { error?: string };
+      } catch {
+        reject(new Error("Could not read Google Drive photo upload response."));
+        return;
+      }
+
+      if (request.status < 200 || request.status >= 300) {
+        reject(new Error(payload.error || "Google Drive photo upload failed."));
+        return;
+      }
+
+      onUploadProgress?.({ loaded: 1, total: 1, percent: 100, phase: "completed" });
+      resolve();
+    };
+
+    request.onerror = () => reject(new Error("Google Drive photo upload failed."));
+    request.onabort = () => reject(new Error("Google Drive photo upload was cancelled."));
+    request.send(form);
+  });
 }
 
 export async function getSignedMemoryImageUrls(memories: MemoryEntry[]) {

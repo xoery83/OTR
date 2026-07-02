@@ -27,6 +27,36 @@ import {
 
 const FAILED_WARNING_AUTO_HIDE_MS = 18000;
 const FACE_AUTO_REVIEW_CONFIDENCE_THRESHOLD = 0.7;
+const JOB_RUN_LOCK_TTL_MS = 2 * 60_000;
+
+function jobRunLockKey(jobId: string) {
+  return `otr:background-job-lock:${jobId}`;
+}
+
+function acquireJobRunLock(jobId: string) {
+  if (typeof window === "undefined") return true;
+  const key = jobRunLockKey(jobId);
+  const now = Date.now();
+
+  try {
+    const existing = window.localStorage.getItem(key);
+    const parsed = existing ? Number(existing) : 0;
+    if (Number.isFinite(parsed) && parsed > now) return false;
+    window.localStorage.setItem(key, String(now + JOB_RUN_LOCK_TTL_MS));
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+function releaseJobRunLock(jobId: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(jobRunLockKey(jobId));
+  } catch {
+    // Ignore storage failures; the lock has a short TTL.
+  }
+}
 
 function payloadString(job: BackgroundJob, key: string) {
   const value = job.payload[key];
@@ -474,6 +504,7 @@ export function ActivityCenter() {
         ),
     );
     if (!next) return;
+    if (!acquireJobRunLock(next.id)) return;
 
     runningJobIds.current.add(next.id);
     runJob(next, t, locale)
@@ -488,6 +519,7 @@ export function ActivityCenter() {
       })
       .finally(() => {
         runningJobIds.current.delete(next.id);
+        releaseJobRunLock(next.id);
         void refreshJobs();
       });
   }, [jobs, locale, refreshJobs, t]);

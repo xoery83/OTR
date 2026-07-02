@@ -175,7 +175,32 @@ function formatBytes(bytes: number | null) {
 }
 
 function mediaPreviewUrl(asset: MediaAssetRow) {
+  if (asset.asset_type === "video" || asset.mime_type?.startsWith("video/")) {
+    return videoThumbnailUrls(asset)[0] || asset.thumbnail_url || asset.provider_thumbnail_url;
+  }
   return asset.preview_url || asset.thumbnail_url || asset.provider_thumbnail_url;
+}
+
+function videoThumbnailUrls(asset: MediaAssetRow) {
+  const video = asset.ai_metadata?.video;
+  if (!video || typeof video !== "object") return [];
+  const thumbnails = (video as { thumbnails?: unknown }).thumbnails;
+  if (!Array.isArray(thumbnails)) return [];
+  return [
+    ...new Set(
+      thumbnails
+        .map((item) =>
+          item && typeof item === "object" && "url" in item
+            ? (item as { url?: unknown }).url
+            : null,
+        )
+        .filter((url): url is string => typeof url === "string" && url.length > 0),
+    ),
+  ];
+}
+
+function mediaDriveUrl(asset: MediaAssetRow) {
+  return asset.provider_web_url || asset.original_drive_web_url;
 }
 
 function mediaFileName(asset: MediaAssetRow) {
@@ -185,6 +210,114 @@ function mediaFileName(asset: MediaAssetRow) {
     if (typeof fileName === "string" && fileName.trim()) return fileName;
   }
   return asset.original_file_path || asset.id;
+}
+
+function RotatingVideoPoster({
+  asset,
+  alt,
+}: {
+  asset: MediaAssetRow;
+  alt: string;
+}) {
+  const urls = videoThumbnailUrls(asset);
+  const [index, setIndex] = useState(0);
+  const fallbackUrl = asset.thumbnail_url || asset.provider_thumbnail_url;
+  const src = urls[index % Math.max(urls.length, 1)] || fallbackUrl;
+
+  useEffect(() => {
+    if (urls.length < 2) return undefined;
+    const timer = window.setInterval(() => {
+      setIndex((current) => (current + 1) % urls.length);
+    }, 2200);
+    return () => window.clearInterval(timer);
+  }, [urls.length]);
+
+  if (!src) {
+    return (
+      <div className="grid size-full place-items-center text-3xl">
+        🎥
+      </div>
+    );
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={alt}
+      className="size-full object-cover transition-opacity duration-300"
+    />
+  );
+}
+
+function MediaAssetPreviewDialog({
+  asset,
+  onClose,
+}: {
+  asset: MediaAssetRow;
+  onClose: () => void;
+}) {
+  const isVideo = asset.asset_type === "video" || asset.mime_type?.startsWith("video/");
+  const title = mediaFileName(asset);
+  const posterUrl = mediaPreviewUrl(asset);
+  const driveUrl = mediaDriveUrl(asset);
+
+  return (
+    <div
+      className="fixed inset-0 z-[2147482600] flex flex-col bg-stone-950/95 p-3 text-white sm:p-6"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="flex shrink-0 items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-black">{title}</p>
+          <p className="mt-1 text-xs font-bold text-white/60">
+            {isVideo ? "3 秒预览" : "图片预览"}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {driveUrl ? (
+            <a
+              href={driveUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-full bg-white px-3 py-2 text-xs font-black text-stone-950"
+            >
+              查看完整视频
+            </a>
+          ) : null}
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full bg-white/15 px-4 py-2 text-sm font-black text-white"
+          >
+            关闭
+          </button>
+        </div>
+      </div>
+      <div className="mt-4 grid min-h-0 flex-1 place-items-center overflow-hidden rounded-lg bg-black p-2">
+        {isVideo && asset.preview_url ? (
+          <video
+            src={asset.preview_url}
+            poster={posterUrl ?? undefined}
+            className="max-h-full max-w-full"
+            controls
+            autoPlay
+            loop
+            muted
+            playsInline
+          />
+        ) : posterUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={posterUrl} alt={title} className="max-h-full max-w-full object-contain" />
+        ) : (
+          <div className="grid size-full place-items-center text-5xl">
+            {isVideo ? "🎥" : "📷"}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function plannerKindForInboxEvent(
@@ -226,6 +359,9 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
   const [expandedActions, setExpandedActions] = useState<Record<string, boolean>>({});
   const [developerMode, setDeveloperMode] = useState(false);
   const [reviewMode, setReviewMode] = useState<"pending" | "archived">("pending");
+  const [selectedMediaAsset, setSelectedMediaAsset] = useState<MediaAssetRow | null>(
+    null,
+  );
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -704,27 +840,43 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                         asset.asset_type === "video" ||
                         asset.mime_type?.startsWith("video/");
                       return (
-                        <div
+                        <button
+                          type="button"
                           key={asset.id}
+                          onClick={() => setSelectedMediaAsset(asset)}
                           className="overflow-hidden rounded-lg border border-stone-100 bg-stone-50"
                         >
                           <div className="relative aspect-square bg-stone-200">
                             {previewUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={previewUrl}
-                                alt={mediaFileName(asset)}
-                                className="size-full object-cover"
-                              />
+                              isVideo ? (
+                                <RotatingVideoPoster
+                                  asset={asset}
+                                  alt={mediaFileName(asset)}
+                                />
+                              ) : (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={previewUrl}
+                                  alt={mediaFileName(asset)}
+                                  className="size-full object-cover"
+                                />
+                              )
                             ) : (
                               <div className="grid size-full place-items-center text-3xl">
                                 {isVideo ? "🎥" : "📷"}
                               </div>
                             )}
                             {isVideo ? (
-                              <span className="absolute bottom-2 left-2 rounded-full bg-stone-950/75 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-white">
-                                {t("capture2.media.video")}
-                              </span>
+                              <>
+                                <span className="absolute inset-0 grid place-items-center">
+                                  <span className="grid size-11 place-items-center rounded-full bg-stone-950/70 text-sm font-black text-white shadow-lg">
+                                    ▶
+                                  </span>
+                                </span>
+                                <span className="absolute bottom-2 left-2 rounded-full bg-stone-950/75 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-white">
+                                  {t("capture2.media.video")}
+                                </span>
+                              </>
                             ) : null}
                           </div>
                           <div className="px-2 py-1.5">
@@ -737,7 +889,7 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
                                 t("captureInbox.media.generic")}
                             </p>
                           </div>
-                        </div>
+                        </button>
                       );
                     })}
                     {eventMedia.length > 8 ? (
@@ -923,6 +1075,12 @@ export function Capture2InboxContent({ tripId }: { tripId?: string | null }) {
             ) : null}
           </div>
         </div>
+        {selectedMediaAsset ? (
+          <MediaAssetPreviewDialog
+            asset={selectedMediaAsset}
+            onClose={() => setSelectedMediaAsset(null)}
+          />
+        ) : null}
       </div>
     </main>
   );

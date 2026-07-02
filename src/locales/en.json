@@ -853,6 +853,7 @@
   "capture2.upload.hardDuration": "Over the 2-minute hard limit",
   "capture2.upload.status.queued": "Queued",
   "capture2.upload.status.uploading": "Uploading",
+  "capture2.upload.status.saving": "Saving",
   "capture2.upload.status.completed": "In background",
   "capture2.upload.status.failed": "Failed",
   "capture2.upload.status.rejected": "Rejected",

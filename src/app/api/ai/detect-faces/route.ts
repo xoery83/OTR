@@ -10,6 +10,7 @@ type DetectFacesRequest = {
 type MediaAssetRow = {
   id: string;
   trip_id: string;
+  asset_type: "image" | "video";
   compressed_file_path: string | null;
   thumbnail_url?: string | null;
   preview_url?: string | null;
@@ -81,6 +82,15 @@ function normalizeEmail(email?: string | null) {
 }
 
 function publicImageUrlForAi(asset: MediaAssetRow, requestUrl: string) {
+  if (asset.asset_type === "video") {
+    return (
+      asset.thumbnail_url ??
+      asset.provider_thumbnail_url ??
+      asset.thumbnail_drive_web_url ??
+      new URL(`/api/media/assets/${asset.id}/thumbnail`, requestUrl).toString()
+    );
+  }
+
   return (
     asset.preview_url ??
     asset.thumbnail_url ??
@@ -445,15 +455,15 @@ export async function POST(request: Request) {
     const { data: asset, error: assetError } = await supabase
       .from("media_assets")
       .select(
-        "id, trip_id, compressed_file_path, thumbnail_url, preview_url, thumbnail_drive_web_url, provider_thumbnail_url",
+        "id, trip_id, asset_type, compressed_file_path, thumbnail_url, preview_url, thumbnail_drive_web_url, provider_thumbnail_url",
       )
       .eq("id", assetId)
       .eq("trip_id", tripId)
-      .eq("asset_type", "image")
+      .in("asset_type", ["image", "video"])
       .single();
 
     if (assetError || !asset) {
-      return jsonError("Photo asset was not found.", 404);
+      return jsonError("Media asset was not found.", 404);
     }
 
     const assetRow = asset as MediaAssetRow;

@@ -283,6 +283,7 @@ export async function repairCurrentUserOrphanPhotoMemories(tripId: string) {
 type MediaAssetDisplayFields = Pick<
   MediaAsset,
   | "id"
+  | "assetType"
   | "compressedFilePath"
   | "thumbnailFilePath"
   | "legacySupabasePath"
@@ -308,6 +309,15 @@ export function getMediaAssetDriveUrl(asset: MediaAssetDriveLinkFields) {
 }
 
 export function getMediaAssetDisplayUrl(asset: MediaAssetDisplayFields) {
+  if (asset.assetType === "video") {
+    return (
+      asset.thumbnailUrl ??
+      asset.providerThumbnailUrl ??
+      asset.thumbnailDriveWebUrl ??
+      `/api/media/assets/${asset.id}/thumbnail`
+    );
+  }
+
   return (
     asset.thumbnailUrl ??
     asset.previewUrl ??
@@ -318,6 +328,10 @@ export function getMediaAssetDisplayUrl(asset: MediaAssetDisplayFields) {
 }
 
 export function getMediaAssetPreviewUrl(asset: MediaAssetDisplayFields) {
+  if (asset.assetType === "video") {
+    return asset.previewUrl ?? asset.thumbnailUrl ?? `/api/media/assets/${asset.id}/thumbnail`;
+  }
+
   return asset.previewUrl ?? `/api/media/assets/${asset.id}/preview`;
 }
 
@@ -418,6 +432,59 @@ export async function getTripPhotoAssets(
       displayFallbackUrl: legacyUrlsByAssetId[asset.id],
     };
   });
+}
+
+export async function getTripVideoAssets(
+  tripId: string,
+  options?: { limit?: number },
+): Promise<PhotoAssetWithMemory[]> {
+  const { data: assetRows, error: assetError } = await supabase
+    .from("media_assets")
+    .select(MEDIA_ASSET_SELECT)
+    .eq("trip_id", tripId)
+    .eq("asset_type", "video")
+    .order("created_at", { ascending: false })
+    .limit(options?.limit ?? 120);
+
+  if (assetError) {
+    throw assetError;
+  }
+
+  const assets = ((assetRows ?? []) as MediaAssetRow[]).map(mapMediaAsset);
+
+  return assets.map((asset) => ({
+    ...asset,
+    memory: null,
+    displayUrl: getMediaAssetDisplayUrl(asset),
+    displayPreviewUrl: getMediaAssetPreviewUrl(asset),
+    displayFallbackUrl: undefined,
+  }));
+}
+
+export async function deleteMediaAsset(assetId: string) {
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  const user = userData.user;
+
+  if (userError || !user) {
+    throw new Error("You must be logged in to delete media.");
+  }
+
+  await supabase.from("photo_faces").delete().eq("media_asset_id", assetId);
+
+  const { data, error } = await supabase
+    .from("media_assets")
+    .delete()
+    .eq("id", assetId)
+    .eq("user_id", user.id)
+    .select("id");
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data || data.length === 0) {
+    throw new Error("Could not delete this media. It may belong to another user.");
+  }
 }
 
 export async function getMediaAssetsByMemoryIds(memoryIds: string[]) {

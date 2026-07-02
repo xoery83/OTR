@@ -94,6 +94,8 @@ type Capture2UploadItem = {
   kind: "image" | "video" | "unsupported";
   size: number;
   status: "queued" | "uploading" | "completed" | "failed" | "rejected";
+  progress: number;
+  phase: "queued" | "uploading" | "saving" | "done";
   message?: string | null;
 };
 
@@ -451,6 +453,15 @@ function itemId(file: File, index: number) {
   return `${file.name}-${file.size}-${file.lastModified}-${index}`;
 }
 
+function clampProgress(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function uploadVisibleProgress(percent: number) {
+  return clampProgress(percent * 0.85);
+}
+
 function readImageMetadata(file: File) {
   return new Promise<Pick<Capture2UploadFileMetadata, "width" | "height">>((resolve) => {
     const url = URL.createObjectURL(file);
@@ -543,11 +554,14 @@ function todayDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function uploadStatusTranslationKey(status: Capture2UploadItem["status"]): TranslationKey {
-  if (status === "uploading") return "capture2.upload.status.uploading";
-  if (status === "completed") return "capture2.upload.status.completed";
-  if (status === "failed") return "capture2.upload.status.failed";
-  if (status === "rejected") return "capture2.upload.status.rejected";
+function uploadStatusTranslationKey(item: Capture2UploadItem): TranslationKey {
+  if (item.status === "uploading" && item.phase === "saving") {
+    return "capture2.upload.status.saving";
+  }
+  if (item.status === "uploading") return "capture2.upload.status.uploading";
+  if (item.status === "completed") return "capture2.upload.status.completed";
+  if (item.status === "failed") return "capture2.upload.status.failed";
+  if (item.status === "rejected") return "capture2.upload.status.rejected";
   return "capture2.upload.status.queued";
 }
 
@@ -1566,6 +1580,8 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
           kind,
           size: file.size,
           status: shouldReject ? "rejected" : "queued",
+          progress: 0,
+          phase: shouldReject ? "done" : "queued",
           message:
             kind === "unsupported"
               ? t("capture2.upload.unsupported")
@@ -1590,7 +1606,9 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
 
       setUploadItems((items) =>
         items.map((item) =>
-          item.status === "queued" ? { ...item, status: "uploading" } : item,
+          item.status === "queued"
+            ? { ...item, status: "uploading", progress: 0, phase: "uploading" }
+            : item,
         ),
       );
 
@@ -1604,9 +1622,10 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
       if (imageIndexes.length === 1) {
         const imageIndex = imageIndexes[0];
         const imageFile = files[imageIndex];
+        const imageItemId = itemId(imageFile, imageIndex);
         const compressed = await compressImageFile(imageFile);
         try {
-          const memory = await createPhotoMemory(
+          await createPhotoMemory(
             activeTripId,
             compressed,
             imageFile.name || "capture-photo.jpg",
@@ -1618,24 +1637,32 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
               locationName: "",
             },
             imageFile,
-          );
-          await createRawCaptureEvent({
-            tripId: activeTripId,
-            inputType: "photo",
-            originalInput: `Capture photo upload: ${imageFile.name || "photo"}`,
-            capturedAt: new Date().toISOString(),
-            metadata: {
-              source: "capture2_photo_memory",
-              capture2: {
-                version: "preview",
-                entryPoint: "upload_media",
-                status: "processed",
-                routedTo: "photo_memory",
-                memoryEntryId: memory.id,
-                mediaAssetIds: memory.mediaAssetId ? [memory.mediaAssetId] : [],
+            {
+              onUploadProgress: (progress) => {
+                setUploadItems((items) =>
+                  items.map((item) =>
+                    item.id === imageItemId
+                      ? {
+                          ...item,
+                          progress:
+                            progress.phase === "completed"
+                              ? 100
+                              : progress.phase === "server_processing"
+                                ? 85
+                                : uploadVisibleProgress(progress.percent),
+                          phase:
+                            progress.phase === "completed"
+                              ? "done"
+                              : progress.phase === "server_processing"
+                                ? "saving"
+                                : "uploading",
+                        }
+                      : item,
+                  ),
+                );
               },
             },
-          }).catch(() => null);
+          );
         } finally {
           URL.revokeObjectURL(compressed.previewUrl);
         }
@@ -1645,36 +1672,64 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
           files: imageIndexes.map((index) => files[index]),
           triggeredBy: "capture2_preview",
         });
-        await createRawCaptureEvent({
-          tripId: activeTripId,
-          inputType: "photo",
-          originalInput: `Capture photo upload: ${imageIndexes.length} file(s)`,
-          capturedAt: new Date().toISOString(),
-          metadata: {
-            source: "capture2_photo_memory",
-            capture2: {
-              version: "preview",
-              entryPoint: "upload_media",
-              status: "background_processing",
-              routedTo: "photo_memory_batch",
-              fileCount: imageIndexes.length,
-            },
-          },
-        }).catch(() => null);
       }
 
       if (videoIndexes.length > 0) {
+        const videoTotalBytes = videoIndexes.reduce(
+          (sum, index) => sum + Math.max(files[index].size, 1),
+          0,
+        );
         await uploadCapture2Media({
           tripId: activeTripId,
           files: videoIndexes.map((index) => files[index]),
           fileMetadata: videoIndexes.map((index) => metadata[index]),
+          onUploadProgress: (progress) => {
+            if (progress.phase === "server_processing") {
+              setUploadItems((items) =>
+                items.map((item) =>
+                  videoIndexes.some((index) => item.id === itemId(files[index], index))
+                    ? { ...item, progress: 85, phase: "saving" }
+                    : item,
+                ),
+              );
+              return;
+            }
+
+            const uploadedBytes = videoTotalBytes * (progress.percent / 100);
+            let previousBytes = 0;
+            const progressById = new Map<string, number>();
+
+            videoIndexes.forEach((index) => {
+              const fileSize = Math.max(files[index].size, 1);
+              const uploadedForFile = Math.max(
+                0,
+                Math.min(fileSize, uploadedBytes - previousBytes),
+              );
+              progressById.set(
+                itemId(files[index], index),
+                uploadVisibleProgress((uploadedForFile / fileSize) * 100),
+              );
+              previousBytes += fileSize;
+            });
+
+            setUploadItems((items) =>
+              items.map((item) => {
+                const nextProgress = progressById.get(item.id);
+                return nextProgress === undefined
+                  ? item
+                  : { ...item, progress: nextProgress, phase: "uploading" };
+              }),
+            );
+          },
         });
       }
       window.dispatchEvent(new CustomEvent("otr:capture2-changed"));
 
       setUploadItems((items) =>
         items.map((item) =>
-          item.status === "uploading" ? { ...item, status: "completed" } : item,
+          item.status === "uploading"
+            ? { ...item, status: "completed", progress: 100, phase: "done" }
+            : item,
         ),
       );
       if (imageIndexes.length > 0 && videoIndexes.length > 0) {
@@ -1684,12 +1739,17 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
       } else {
         setStatus(t("capture2.status.videosUploaded"));
       }
-      setLastMediaFiles([]);
     } catch (uploadError) {
       setUploadItems((items) =>
         items.map((item) =>
           item.status === "uploading" || item.status === "queued"
-            ? { ...item, status: "failed", message: t("capture2.upload.failed") }
+            ? {
+                ...item,
+                status: "failed",
+                progress: 100,
+                phase: "done",
+                message: t("capture2.upload.failed"),
+              }
             : item,
         ),
       );
@@ -2873,8 +2933,19 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
                           className="overflow-hidden rounded-2xl border border-stone-200 bg-white text-sm shadow-sm"
                         >
                           {item.status === "uploading" ? (
-                            <div className="h-2 bg-stone-100">
-                              <div className="capture2-upload-flow h-full w-full" />
+                            <div
+                              className="h-2 bg-stone-100"
+                              role="progressbar"
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={item.progress}
+                            >
+                              <div
+                                className={`h-full rounded-r-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-[width] duration-200 ease-out ${
+                                  item.phase === "saving" ? "animate-pulse" : ""
+                                }`}
+                                style={{ width: `${item.progress}%` }}
+                              />
                             </div>
                           ) : null}
                           <div className="flex items-center justify-between gap-3 px-3 py-2">
@@ -2899,7 +2970,10 @@ export function Capture2PreviewProvider({ children }: { children: ReactNode }) {
                                     : "bg-stone-100 text-stone-700"
                               }`}
                             >
-                              {t(uploadStatusTranslationKey(item.status))}
+                              {t(uploadStatusTranslationKey(item))}
+                              {item.status === "uploading" && item.phase === "uploading"
+                                ? ` ${item.progress}%`
+                                : ""}
                             </span>
                           </div>
                         </div>

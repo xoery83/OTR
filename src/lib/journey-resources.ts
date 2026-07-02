@@ -16,6 +16,7 @@ import {
   getMediaAssetPreviewUrl,
   getMediaAssetsByMemoryIds,
   getPhotoFacesForAssets,
+  getTripVideoAssets,
   getTripFaceTagCountsByMember,
   getTripImageUploadCountsByUser,
 } from "@/lib/supabase/media-assets";
@@ -141,20 +142,24 @@ export async function loadJourneyTimelineResource(tripId: string) {
     getTripMemorySummary(tripId),
   ]);
   const memoryIds = memoryPage.memories.map((memory) => memory.id);
-  const [plannerData, assetRows, signedUrls] = await Promise.all([
+  const [plannerData, assetRows, videoAssets, signedUrls] = await Promise.all([
     getPlannerV2(tripData, { includeMemories: false }),
     getMediaAssetsByMemoryIds(memoryIds),
+    getTripVideoAssets(tripId),
     getSignedMemoryImageUrls(memoryPage.memories),
   ]);
   const memoryById = new Map(memoryPage.memories.map((memory) => [memory.id, memory]));
   const legacyUrlsByAssetId = await getMediaAssetLegacySignedUrlById(assetRows);
-  const assetData: PhotoAssetWithMemory[] = assetRows.map((asset) => ({
-    ...asset,
-    memory: memoryById.get(asset.memoryEntryId) ?? null,
-    displayUrl: getMediaAssetDisplayUrl(asset),
-    displayPreviewUrl: getMediaAssetPreviewUrl(asset),
-    displayFallbackUrl: legacyUrlsByAssetId[asset.id],
-  }));
+  const assetData: PhotoAssetWithMemory[] = [
+    ...assetRows.map((asset) => ({
+      ...asset,
+      memory: memoryById.get(asset.memoryEntryId) ?? null,
+      displayUrl: getMediaAssetDisplayUrl(asset),
+      displayPreviewUrl: getMediaAssetPreviewUrl(asset),
+      displayFallbackUrl: legacyUrlsByAssetId[asset.id],
+    })),
+    ...videoAssets,
+  ];
   const faceData = await getPhotoFacesForAssets(assetData.map((asset) => asset.id)).catch(
     () => ({}),
   );

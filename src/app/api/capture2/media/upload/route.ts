@@ -2,7 +2,11 @@ import { randomUUID } from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import sharp from "sharp";
-import { generateHetznerMediaVariants } from "@/lib/server/media-worker";
+import {
+  generateHetznerMediaVariants,
+  processHetznerVideo,
+  type MediaWorkerVideoProcessResponse,
+} from "@/lib/server/media-worker";
 import { decryptGoogleToken } from "@/lib/server/google-token";
 import {
   ensureGoogleDriveFolder,
@@ -65,6 +69,75 @@ type UploadResult = {
   previewUrl: string | null;
   warnings: string[];
 };
+
+function videoAiMetadata(input: {
+  processing?: MediaWorkerVideoProcessResponse | null;
+  durationSeconds: number | null;
+  fileName: string;
+  fileSize: number;
+  lastModified: number | null;
+  warnings: string[];
+  processingError: string | null;
+}) {
+  return {
+    video: input.processing
+      ? {
+          metadata: input.processing.metadata,
+          thumbnail: input.processing.thumbnail,
+          thumbnails: input.processing.thumbnails,
+          preview: input.processing.preview,
+        }
+      : null,
+    capture2: {
+      version: "preview",
+      entryPoint: "upload_media",
+      originalStorage: "google_drive",
+      durationSeconds:
+        input.processing?.metadata.duration_seconds ?? input.durationSeconds,
+      fileName: input.fileName,
+      fileSizeBytes: input.fileSize,
+      lastModified: input.lastModified,
+      warnings: input.warnings,
+      processingError: input.processingError,
+      reservedJobTypes: RESERVED_VIDEO_JOB_TYPES,
+    },
+  };
+}
+
+async function enqueueVideoFaceJobs(input: {
+  supabase: ReturnType<typeof getSupabaseForRequest>;
+  userId: string;
+  assetId: string;
+  tripId: string;
+  locale?: string | null;
+}) {
+  const payload = {
+    tripId: input.tripId,
+    mediaAssetId: input.assetId,
+    locale: input.locale === "zh-CN" ? "zh-CN" : "en",
+  };
+  const jobs = [
+    {
+      journey_id: input.tripId,
+      user_id: input.userId,
+      job_type: "face_detection",
+      title: "Face detection",
+      current_step: "Queued",
+      payload,
+    },
+    {
+      journey_id: input.tripId,
+      user_id: input.userId,
+      job_type: "face_recognition",
+      title: "Face recognition",
+      current_step: "Queued",
+      payload,
+    },
+  ];
+
+  const { error } = await input.supabase.from("background_jobs").insert(jobs);
+  if (error && error.code !== "23505") throw error;
+}
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
@@ -324,6 +397,7 @@ export async function POST(request: Request) {
       let thumbnailHeight: number | null = null;
       let processingStatus: "pending" | "ready" = kind === "image" ? "ready" : "pending";
       let processingError: string | null = null;
+      let videoProcessing: MediaWorkerVideoProcessResponse | null = null;
 
       if (kind === "image") {
         const image = sharp(originalBuffer, { failOn: "none" }).rotate();
@@ -360,6 +434,31 @@ export async function POST(request: Request) {
           : null;
       const warnings = kind === "video" ? videoWarnings(file, clientFile) : [];
 
+      if (kind === "video") {
+        try {
+          videoProcessing = await processHetznerVideo({
+            journeyId: tripId,
+            assetId,
+            filename: safeName,
+            mimeType,
+            originalBuffer,
+          });
+          thumbnailUrl = videoProcessing.thumbnail.url;
+          previewUrl = videoProcessing.preview.url;
+          thumbnailSize = videoProcessing.thumbnail.file_size;
+          previewSize = videoProcessing.preview.file_size;
+          thumbnailWidth = videoProcessing.thumbnail.width;
+          thumbnailHeight = videoProcessing.thumbnail.height;
+          width = videoProcessing.metadata.width ?? width;
+          height = videoProcessing.metadata.height ?? height;
+          processingStatus = "ready";
+        } catch (error) {
+          processingStatus = "pending";
+          processingError =
+            error instanceof Error ? error.message : "Video preview was not generated.";
+        }
+      }
+
       const { error: insertError } = await supabase.from("media_assets").insert({
         id: assetId,
         trip_id: tripId,
@@ -391,24 +490,53 @@ export async function POST(request: Request) {
         is_original_preserved: true,
         processing_status: processingStatus,
         ai_status: "pending",
-        ai_metadata: {
-          source: "capture2_preview",
-          capture2: {
-            version: "preview",
-            entryPoint: "upload_media",
-            originalStorage: "google_drive",
-            durationSeconds,
-            fileName: file.name,
-            fileSizeBytes: file.size,
-            lastModified: clientFile.lastModified ?? file.lastModified ?? null,
-            warnings,
-            processingError,
-            reservedJobTypes: kind === "video" ? RESERVED_VIDEO_JOB_TYPES : [],
-          },
-        },
+        ai_metadata:
+          kind === "video"
+            ? {
+                source: "capture2_preview",
+                ...videoAiMetadata({
+                  processing: videoProcessing,
+                  durationSeconds,
+                  fileName: file.name,
+                  fileSize: file.size,
+                  lastModified: clientFile.lastModified ?? file.lastModified ?? null,
+                  warnings,
+                  processingError,
+                }),
+              }
+            : {
+                source: "capture2_preview",
+                capture2: {
+                  version: "preview",
+                  entryPoint: "upload_media",
+                  originalStorage: "google_drive",
+                  durationSeconds,
+                  fileName: file.name,
+                  fileSizeBytes: file.size,
+                  lastModified: clientFile.lastModified ?? file.lastModified ?? null,
+                  warnings,
+                  processingError,
+                  reservedJobTypes: [],
+                },
+              },
       });
 
       if (insertError) throw insertError;
+
+      if (kind === "video" && thumbnailUrl) {
+        await enqueueVideoFaceJobs({
+          supabase,
+          userId: userData.user.id,
+          assetId,
+          tripId,
+          locale: request.headers.get("accept-language")?.startsWith("zh") ? "zh-CN" : "en",
+        }).catch((error) => {
+          warnings.push(
+            error instanceof Error ? error.message : "Video face jobs were not queued.",
+          );
+          return null;
+        });
+      }
 
       results.push({
         id: assetId,
@@ -427,69 +555,9 @@ export async function POST(request: Request) {
       });
     }
 
-    const photoIds = results
-      .filter((asset) => asset.assetType === "image")
-      .map((asset) => asset.id);
-    const videoIds = results
-      .filter((asset) => asset.assetType === "video")
-      .map((asset) => asset.id);
-    const inputType =
-      photoIds.length > 0 && videoIds.length > 0
-        ? "attachment"
-        : videoIds.length > 0
-          ? "video"
-          : "photo";
     const warnings = [...new Set(results.flatMap((asset) => asset.warnings))];
 
-    const { data: eventRow, error: eventError } = await supabase
-      .from("journey_capture_events")
-      .insert({
-        journey_id: tripId,
-        user_id: userData.user.id,
-        input_type: inputType,
-        original_input: `Capture 2.0 media upload: ${results.length} file(s)`,
-        captured_at: new Date(capturedAt).toISOString(),
-        timezone: timezone || null,
-        referenced_photo_ids: photoIds,
-        referenced_video_ids: videoIds,
-        metadata: {
-          source: "capture2_preview",
-          capture2: {
-            version: "preview",
-            entryPoint: "upload_media",
-            safetyClass: "deferred",
-            status: "captured",
-            deferReason: "Media upload is deferred for background organization",
-            mediaAssetIds: results.map((asset) => asset.id),
-            photoAssetIds: photoIds,
-            videoAssetIds: videoIds,
-            originalStorage: "google_drive",
-            reservedVideoJobTypes: RESERVED_VIDEO_JOB_TYPES,
-            warnings,
-          },
-          files: results.map((asset) => ({
-            id: asset.id,
-            name: asset.fileName,
-            type: asset.mimeType,
-            size: asset.fileSize,
-            mediaType: asset.assetType,
-            durationSeconds: asset.durationSeconds,
-            width: asset.width,
-            height: asset.height,
-            driveFileId: asset.driveFileId,
-          })),
-        },
-        status: "raw",
-      })
-      .select("id")
-      .single();
-
-    if (eventError || !eventRow) {
-      throw eventError || new Error("Could not save capture event.");
-    }
-
     return NextResponse.json({
-      captureEventId: eventRow.id,
       mediaAssetIds: results.map((asset) => asset.id),
       assets: results,
       warnings,

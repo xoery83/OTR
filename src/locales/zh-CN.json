@@ -853,6 +853,7 @@
   "capture2.upload.hardDuration": "超过 2 分钟硬限制",
   "capture2.upload.status.queued": "等待中",
   "capture2.upload.status.uploading": "上传中",
+  "capture2.upload.status.saving": "保存中",
   "capture2.upload.status.completed": "已进入后台",
   "capture2.upload.status.failed": "失败",
   "capture2.upload.status.rejected": "已拒绝",
